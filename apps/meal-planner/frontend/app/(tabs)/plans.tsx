@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -8,21 +8,25 @@ import {
   RefreshControl,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { Calendar, DateData } from "react-native-calendars";
 import { listMealPlans, getMealPlan } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
-import { MealPlan, MealPlanSummary } from "../../lib/types";
+import { MealPlan, MealPlanSummary, Meal } from "../../lib/types";
 import MealCard from "../../components/MealCard";
 import MacroBar from "../../components/MacroBar";
 
 export default function PlansScreen() {
   const router = useRouter();
+  const scrollRef = useRef<ScrollView>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<MealPlanSummary[]>([]);
   const [activePlan, setActivePlan] = useState<MealPlan | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const dayOffsetsRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     loadUserId().then(setUserId);
@@ -52,10 +56,11 @@ export default function PlansScreen() {
     const plan = await getMealPlan(planId);
     setActivePlan(plan);
     setSelectedDate(plan.start_date);
+    dayOffsetsRef.current = {};
   }
 
   // Build calendar marked dates from active plan
-  const markedDates: Record<string, { marked: boolean; dotColor: string }> = {};
+  const markedDates: Record<string, { marked: boolean; dotColor: string; selected?: boolean; selectedColor?: string }> = {};
   if (activePlan) {
     for (const meal of activePlan.meals) {
       markedDates[meal.scheduled_date] = { marked: true, dotColor: "#16a34a" };
@@ -65,13 +70,31 @@ export default function PlansScreen() {
     markedDates[selectedDate] = {
       ...markedDates[selectedDate],
       marked: true,
-      dotColor: "#16a34a",
+      dotColor: selectedDate === selectedDate ? "#ffffff" : "#16a34a",
+      selected: true,
+      selectedColor: "#16a34a",
     };
   }
 
-  const mealsForDay = activePlan?.meals.filter(
-    (m) => m.scheduled_date === selectedDate
-  ) ?? [];
+  // Group meals by date for the full schedule view
+  const mealsByDate: [string, Meal[]][] = activePlan
+    ? Array.from(
+        activePlan.meals.reduce((map, meal) => {
+          const arr = map.get(meal.scheduled_date) ?? [];
+          arr.push(meal);
+          map.set(meal.scheduled_date, arr);
+          return map;
+        }, new Map<string, Meal[]>())
+      ).sort(([a], [b]) => a.localeCompare(b))
+    : [];
+
+  function handleDayPress(day: DateData) {
+    setSelectedDate(day.dateString);
+    const offset = dayOffsetsRef.current[day.dateString];
+    if (offset !== undefined) {
+      scrollRef.current?.scrollTo({ y: offset - 8, animated: true });
+    }
+  }
 
   if (loading) {
     return (
@@ -101,37 +124,72 @@ export default function PlansScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       className="flex-1 bg-white"
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadSummaries(); }} />
       }
     >
-      {/* Plan selector */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        className="px-4 py-3 border-b border-gray-100"
-      >
-        {summaries.map((s) => (
+      {/* Active plan header + history toggle */}
+      <View className="px-4 pt-4 pb-2 flex-row items-center justify-between border-b border-gray-100">
+        <View className="flex-1 mr-3">
+          <Text className="text-xs text-gray-400 uppercase tracking-wider font-medium mb-0.5">
+            Active Plan
+          </Text>
+          <Text className="text-base font-semibold text-gray-900" numberOfLines={1}>
+            {activePlan?.name ?? "—"}
+          </Text>
+          {activePlan && (
+            <Text className="text-xs text-gray-400 mt-0.5">
+              {new Date(activePlan.start_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+              {activePlan.start_date !== activePlan.end_date
+                ? " – " + new Date(activePlan.end_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                : ", " + new Date(activePlan.start_date + "T12:00:00").getFullYear()}
+            </Text>
+          )}
+        </View>
+        {summaries.length > 1 && (
           <Pressable
-            key={s.id}
-            onPress={() => loadPlan(s.id)}
-            className={`mr-2 px-4 py-2 rounded-full border ${
-              activePlan?.id === s.id
-                ? "bg-primary-600 border-primary-600"
-                : "bg-white border-gray-200"
-            }`}
+            onPress={() => setShowHistory((v) => !v)}
+            className="flex-row items-center gap-1 bg-gray-100 px-3 py-2 rounded-xl"
           >
-            <Text
-              className={`text-sm font-medium ${
-                activePlan?.id === s.id ? "text-white" : "text-gray-700"
-              }`}
-            >
-              {s.name}
+            <Ionicons name={showHistory ? "chevron-up" : "time-outline"} size={14} color="#6b7280" />
+            <Text className="text-xs font-medium text-gray-600">
+              {showHistory ? "Hide" : `History (${summaries.length})`}
             </Text>
           </Pressable>
-        ))}
-      </ScrollView>
+        )}
+      </View>
+
+      {/* History list */}
+      {showHistory && (
+        <View className="border-b border-gray-100 bg-gray-50">
+          {summaries.map((s) => {
+            const isActive = activePlan?.id === s.id;
+            const start = new Date(s.start_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+            const end = new Date(s.end_date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+            const dateRange = s.start_date === s.end_date ? start + ", " + new Date(s.end_date + "T12:00:00").getFullYear() : `${start} – ${end}`;
+            return (
+              <Pressable
+                key={s.id}
+                onPress={() => { loadPlan(s.id); setShowHistory(false); }}
+                className={`flex-row items-center px-4 py-3 border-b border-gray-100 ${isActive ? "bg-primary-50" : "active:bg-gray-100"}`}
+              >
+                <View className={`w-2 h-2 rounded-full mr-3 flex-shrink-0 ${isActive ? "bg-primary-600" : "bg-gray-300"}`} />
+                <View className="flex-1">
+                  <Text className={`text-sm font-medium ${isActive ? "text-primary-700" : "text-gray-800"}`} numberOfLines={1}>
+                    {s.name}
+                  </Text>
+                  <Text className="text-xs text-gray-400 mt-0.5">
+                    {dateRange} · {s.meal_count} meals
+                  </Text>
+                </View>
+                {isActive && <Ionicons name="checkmark" size={16} color="#16a34a" />}
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
 
       {activePlan && (
         <>
@@ -152,7 +210,7 @@ export default function PlansScreen() {
             minDate={activePlan.start_date}
             maxDate={activePlan.end_date}
             markedDates={markedDates}
-            onDayPress={(day: DateData) => setSelectedDate(day.dateString)}
+            onDayPress={handleDayPress}
             theme={{
               selectedDayBackgroundColor: "#16a34a",
               todayTextColor: "#16a34a",
@@ -160,21 +218,42 @@ export default function PlansScreen() {
             }}
           />
 
-          {/* Meals for selected day */}
-          <View className="px-4 py-3">
-            {selectedDate ? (
-              <>
-                <Text className="text-base font-semibold text-gray-800 mb-3">
-                  {new Date(selectedDate + "T12:00:00").toLocaleDateString("en-US", {
-                    weekday: "long",
-                    month: "long",
-                    day: "numeric",
-                  })}
-                </Text>
-                {mealsForDay.length === 0 ? (
-                  <Text className="text-gray-400 text-sm">No meals scheduled for this day.</Text>
-                ) : (
-                  mealsForDay.map((meal) => (
+          {/* Full schedule — all meals grouped by date */}
+          <View className="px-4 pt-2 pb-6">
+            <Text className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-3 mt-2">
+              Full Schedule
+            </Text>
+            {mealsByDate.map(([date, meals]) => {
+              const isSelected = date === selectedDate;
+              const label = new Date(date + "T12:00:00").toLocaleDateString("en-US", {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+              });
+              return (
+                <View
+                  key={date}
+                  onLayout={(e) => {
+                    dayOffsetsRef.current[date] = e.nativeEvent.layout.y;
+                  }}
+                >
+                  {/* Day header */}
+                  <Pressable
+                    onPress={() => setSelectedDate(date)}
+                    className="flex-row items-center mb-2 mt-3"
+                  >
+                    <View
+                      className={`w-2 h-2 rounded-full mr-2 ${isSelected ? "bg-primary-600" : "bg-gray-300"}`}
+                    />
+                    <Text
+                      className={`text-sm font-semibold ${isSelected ? "text-primary-700" : "text-gray-700"}`}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+
+                  {/* Meals for this day */}
+                  {meals.map((meal) => (
                     <MealCard
                       key={meal.id}
                       meal={meal}
@@ -185,12 +264,10 @@ export default function PlansScreen() {
                         })
                       }
                     />
-                  ))
-                )}
-              </>
-            ) : (
-              <Text className="text-gray-400 text-sm">Select a day to view meals.</Text>
-            )}
+                  ))}
+                </View>
+              );
+            })}
           </View>
         </>
       )}

@@ -138,7 +138,15 @@ async def get_meal_plan(plan_id: uuid.UUID):
         meal_rows = conn.execute(
             """
             SELECT id, name, meal_type, scheduled_date, instructions, notes
-            FROM meals WHERE meal_plan_id = %s ORDER BY scheduled_date, meal_type
+            FROM meals WHERE meal_plan_id = %s
+            ORDER BY scheduled_date,
+              CASE meal_type
+                WHEN 'breakfast' THEN 0
+                WHEN 'snack'     THEN 1
+                WHEN 'lunch'     THEN 2
+                WHEN 'dinner'    THEN 3
+                ELSE 4
+              END
             """,
             (str(plan_id),),
         ).fetchall()

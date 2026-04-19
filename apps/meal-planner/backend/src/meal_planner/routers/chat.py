@@ -8,7 +8,7 @@ from meal_planner.models.user import UserProfileResponse
 from meal_planner.models.meal_plan import MealPlanCreate, MealIn, MealFoodIn
 from meal_planner.routers.meal_plans import create_meal_plan
 from meal_planner.services import ai as ai_svc
-from datetime import date
+from datetime import date, datetime
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -21,6 +21,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     user_id: uuid.UUID
     message: str
+    session_id: uuid.UUID | None = None
 
 
 def _load_profile(conn, user_id: uuid.UUID) -> UserProfileResponse | None:
@@ -46,23 +47,27 @@ def _load_profile(conn, user_id: uuid.UUID) -> UserProfileResponse | None:
     )
 
 
-def _load_conversation(conn, user_id: uuid.UUID) -> tuple[uuid.UUID, list[dict]]:
-    row = conn.execute(
-        "SELECT id, messages FROM conversations WHERE user_id = %s ORDER BY updated_at DESC LIMIT 1",
-        (str(user_id),),
-    ).fetchone()
-    if row:
-        return row[0], row[1] if row[1] else []
+def _load_conversation(conn, user_id: uuid.UUID, session_id: uuid.UUID | None) -> tuple[uuid.UUID, list[dict], bool]:
+    """Load existing session or create a new one. Returns (convo_id, messages, is_new)."""
+    if session_id:
+        row = conn.execute(
+            "SELECT id, messages FROM conversations WHERE id = %s AND user_id = %s",
+            (str(session_id), str(user_id)),
+        ).fetchone()
+        if row:
+            return row[0], row[1] if row[1] else [], False
+
+    # Always create a new session (no reuse of latest)
     convo_id = uuid.uuid4()
     conn.execute(
-        "INSERT INTO conversations (id, user_id, messages) VALUES (%s, %s, '[]'::jsonb)",
+        "INSERT INTO conversations (id, user_id, messages, created_at) VALUES (%s, %s, '[]'::jsonb, NOW())",
         (str(convo_id), str(user_id)),
     )
     conn.commit()
-    return convo_id, []
+    return convo_id, [], True
 
 
-def _save_conversation(conn, convo_id: uuid.UUID, messages: list[dict]) -> None:
+def _save_conversation(conn, convo_id: uuid.UUID, messages: list[dict], title: str | None = None) -> None:
     # Store only role+text content to avoid serializing tool blocks
     serializable = []
     for msg in messages:
@@ -75,10 +80,17 @@ def _save_conversation(conn, convo_id: uuid.UUID, messages: list[dict]) -> None:
             ]
             if text_parts:
                 serializable.append({"role": msg["role"], "content": " ".join(text_parts)})
-    conn.execute(
-        "UPDATE conversations SET messages = %s::jsonb, updated_at = NOW() WHERE id = %s",
-        (json.dumps(serializable), str(convo_id)),
-    )
+
+    if title:
+        conn.execute(
+            "UPDATE conversations SET messages = %s::jsonb, updated_at = NOW(), title = COALESCE(title, %s) WHERE id = %s",
+            (json.dumps(serializable), title, str(convo_id)),
+        )
+    else:
+        conn.execute(
+            "UPDATE conversations SET messages = %s::jsonb, updated_at = NOW() WHERE id = %s",
+            (json.dumps(serializable), str(convo_id)),
+        )
     conn.commit()
 
 
@@ -93,7 +105,10 @@ async def chat_stream(body: ChatRequest):
             raise HTTPException(status_code=404, detail="User not found")
 
         profile = _load_profile(conn, body.user_id)
-        convo_id, history = _load_conversation(conn, body.user_id)
+        convo_id, history, is_new = _load_conversation(conn, body.user_id, body.session_id)
+
+    # Derive title from first user message (truncated)
+    title = body.message[:60].strip() if is_new else None
 
     # Build messages list for Claude
     messages = history + [{"role": "user", "content": body.message}]
@@ -101,6 +116,10 @@ async def chat_stream(body: ChatRequest):
     async def event_stream():
         full_assistant_text = []
         plan_data = None
+
+        # Emit session_created so frontend can persist the session ID
+        if is_new:
+            yield f"data: {json.dumps({'type': 'session_created', 'session_id': str(convo_id)})}\n\n"
 
         async for chunk in ai_svc.chat_stream(messages, profile):
             yield chunk
@@ -120,7 +139,7 @@ async def chat_stream(body: ChatRequest):
             {"role": "assistant", "content": "".join(full_assistant_text)}
         ]
         with get_conn() as conn:
-            _save_conversation(conn, convo_id, updated_messages)
+            _save_conversation(conn, convo_id, updated_messages, title)
 
             # If the AI created a plan, persist it to the DB
             if plan_data:
@@ -153,14 +172,81 @@ async def chat_stream(body: ChatRequest):
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
+        yield "data: [DONE]\n\n"
+
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/{user_id}/sessions")
+def list_sessions(user_id: uuid.UUID):
+    with get_conn() as conn:
+        user = conn.execute(
+            "SELECT id FROM users WHERE id = %s", (str(user_id),)
+        ).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        rows = conn.execute(
+            """
+            SELECT id,
+                   COALESCE(
+                       NULLIF(title, ''),
+                       LEFT((messages -> 0 ->> 'content'), 60)
+                   ) AS resolved_title,
+                   updated_at, created_at,
+                   jsonb_array_length(messages) AS message_count
+            FROM conversations
+            WHERE user_id = %s
+            ORDER BY updated_at DESC
+            LIMIT 50
+            """,
+            (str(user_id),),
+        ).fetchall()
+
+    return [
+        {
+            "id": str(r[0]),
+            "title": r[1] or "Untitled conversation",
+            "updated_at": r[2].isoformat() if r[2] else None,
+            "created_at": r[3].isoformat() if r[3] else None,
+            "message_count": r[4] or 0,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/{user_id}/sessions/{session_id}")
+def get_session(user_id: uuid.UUID, session_id: uuid.UUID):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, title, messages, updated_at FROM conversations WHERE id = %s AND user_id = %s",
+            (str(session_id), str(user_id)),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "id": str(row[0]),
+        "title": row[1] or "Untitled conversation",
+        "messages": row[2] if row[2] else [],
+        "updated_at": row[3].isoformat() if row[3] else None,
+    }
+
+
+@router.delete("/{user_id}/sessions/{session_id}", status_code=204)
+def delete_session(user_id: uuid.UUID, session_id: uuid.UUID):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM conversations WHERE id = %s AND user_id = %s",
+            (str(session_id), str(user_id)),
+        )
+        conn.commit()
 
 
 @router.delete("/{user_id}/history", status_code=204)
 def clear_history(user_id: uuid.UUID):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE conversations SET messages = '[]'::jsonb, updated_at = NOW() WHERE user_id = %s",
+            "DELETE FROM conversations WHERE user_id = %s",
             (str(user_id),),
         )
         conn.commit()

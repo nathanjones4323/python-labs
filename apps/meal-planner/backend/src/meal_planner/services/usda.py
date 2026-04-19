@@ -42,6 +42,8 @@ from meal_planner.models.food import FoodResult, NutrientSummary
 
 NUTRIENT_MAP = {
     1008: "calories",
+    1062: "calories",   # Energy (Atwater General Factors)
+    2048: "calories",   # Energy (Atwater Specific Factors)
     1003: "protein_g",
     1004: "fat_g",
     1005: "carbs_g",
@@ -75,10 +77,24 @@ def _parse_nutrients(food_nutrients: list[dict]) -> NutrientSummary:
     for n in food_nutrients:
         nutrient = n.get("nutrient", n)
         nid = nutrient.get("id") or nutrient.get("nutrientId")
-        amount = n.get("amount", 0.0) or 0.0
+        # USDA detail API uses "amount"; search API uses "value"
+        amount = n.get("amount") or n.get("value") or 0.0
         if nid in NUTRIENT_MAP:
-            data[NUTRIENT_MAP[nid]] = round(float(amount), 4)
-    return NutrientSummary(**data)
+            field = NUTRIENT_MAP[nid]
+            val = round(float(amount), 4)
+            # For calories, take the first non-zero value seen
+            if field == "calories":
+                if val > 0 or "calories" not in data:
+                    data["calories"] = val
+            else:
+                data[field] = val
+    result = NutrientSummary(**data)
+    # Fallback: calculate calories from macros if missing or zero
+    if result.calories == 0 and (result.protein_g or result.carbs_g or result.fat_g):
+        result = result.model_copy(update={
+            "calories": round(result.protein_g * 4 + result.carbs_g * 4 + result.fat_g * 9, 4)
+        })
+    return result
 
 
 def _to_food_result(item: dict) -> FoodResult:
