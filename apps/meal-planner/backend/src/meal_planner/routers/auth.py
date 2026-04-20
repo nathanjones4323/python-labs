@@ -26,23 +26,22 @@ async def google_sign_in(body: GoogleAuthRequest):
             params={"access_token": body.access_token},
         )
 
-    if resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid Google token")
+        if resp.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid Google token")
 
-    info = resp.json()
+        info = resp.json()
 
-    # Verify the token was issued for our app
-    if info.get("azp") != GOOGLE_CLIENT_ID and info.get("aud") != GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=401, detail="Token was not issued for this app")
+        # Verify the token was issued for our app
+        if info.get("azp") != GOOGLE_CLIENT_ID and info.get("aud") != GOOGLE_CLIENT_ID:
+            raise HTTPException(status_code=401, detail="Token was not issued for this app")
 
-    if not info.get("email_verified", False):
-        raise HTTPException(status_code=401, detail="Google email not verified")
+        if not info.get("email_verified", False):
+            raise HTTPException(status_code=401, detail="Google email not verified")
 
-    google_id: str = info["sub"]
-    email: str = info["email"]
+        google_id: str = info["sub"]
+        email: str = info["email"]
 
-    # Fetch display name from userinfo (tokeninfo doesn't include name)
-    async with httpx.AsyncClient() as client:
+        # Fetch display name from userinfo (tokeninfo doesn't include name)
         ui_resp = await client.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {body.access_token}"},

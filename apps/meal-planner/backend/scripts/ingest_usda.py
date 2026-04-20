@@ -108,9 +108,9 @@ def fetch_all_foods(data_type: str) -> list[tuple]:
             print(f"  {data_type}: page {page}/{total_pages} ({len(rows)} so far)\r", end="", flush=True)
             page += 1
 
-            # Brief pause to be respectful of rate limits
+            # Brief pause to stay under DEMO_KEY rate limit (30 req/hr = 1 req/120s)
             if USDA_API_KEY == "DEMO_KEY":
-                time.sleep(2.5)  # ~24 req/min stays under 30 req/hr
+                time.sleep(120)
 
     print(f"  {data_type}: {len(rows)} foods fetched          ")
     return rows

@@ -293,10 +293,12 @@ export default function PlansScreen() {
                 : ", " + new Date(activePlan.start_date + "T12:00:00").getFullYear()}
             </Text>
           )}
-          {summaries[0]?.created_at && (
+          {summaries.find(s => s.id === activePlan?.id)?.created_at && (
             <Text className="text-xs text-gray-400 mt-0.5">
-              Created {new Date(summaries[0].created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-              {summaries[0].conversation_title ? ` · from "${summaries[0].conversation_title}"` : ""}
+              {(() => {
+                const s = summaries.find(s => s.id === activePlan?.id)!;
+                return `Created ${new Date(s.created_at!).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}${s.conversation_title ? ` · from "${s.conversation_title}"` : ""}`;
+              })()}
             </Text>
           )}
         </View>

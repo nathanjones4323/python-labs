@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from db import get_conn
-from meal_planner.config import ANTHROPIC_API_KEY
+from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def run_extraction(conversation_id: uuid.UUID) -> None:
 
         try:
             response = _sync_client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=CLAUDE_MODEL,
                 max_tokens=1000,
                 system=EXTRACTION_SYSTEM_PROMPT,
                 messages=[{
@@ -135,13 +135,9 @@ def run_extraction(conversation_id: uuid.UUID) -> None:
             raw = response.content[0].text.strip()
         except Exception:
             logger.exception(
-                "Extraction LLM call failed for conversation %s", conversation_id
+                "Extraction LLM call failed for conversation %s — will retry next time",
+                conversation_id,
             )
-            conn.execute(
-                "UPDATE conversations SET extracted = TRUE WHERE id = %s",
-                (str(conversation_id),),
-            )
-            conn.commit()
             return
 
         try:
