@@ -17,6 +17,12 @@
       "output": "static",
       "favicon": "./assets/favicon.png"
     },
+    "ios": {
+      "bundleIdentifier": "com.nathanjones.mealplanner"
+    },
+    "android": {
+      "package": "com.nathanjones.mealplanner"
+    },
     "plugins": [
       "expo-router",
       "expo-font"

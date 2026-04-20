@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, ActivityIndicator, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
@@ -13,12 +13,19 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // expo-auth-session throws if webClientId is undefined; fall back to "" so
-  // the hook initialises safely and we disable the button instead of crashing.
-  const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  // Platform-specific IDs are required on native; keep backward compatibility
+  // with EXPO_PUBLIC_GOOGLE_CLIENT_ID as a generic fallback.
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  const androidClientId =
+    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
+  const hasPlatformClientId =
+    Platform.OS === "ios" ? Boolean(iosClientId) : Platform.OS === "android" ? Boolean(androidClientId) : Boolean(webClientId);
 
   const [request, response, promptAsync] = Google.useAuthRequest({
-    webClientId: googleClientId,
+    webClientId,
+    iosClientId,
+    androidClientId,
   });
 
   useEffect(() => {
@@ -74,9 +81,9 @@ export default function AuthScreen() {
       {/* Google sign-in button */}
       <Pressable
         onPress={handleSignIn}
-        disabled={loading || !request || !googleClientId}
+        disabled={loading || !request || !hasPlatformClientId}
         className="flex-row items-center justify-center gap-3 bg-white border border-gray-300 rounded-2xl px-6 py-4 w-full max-w-sm shadow-sm active:bg-gray-50"
-        style={{ opacity: loading || !request || !googleClientId ? 0.6 : 1 }}
+        style={{ opacity: loading || !request || !hasPlatformClientId ? 0.6 : 1 }}
       >
         {loading ? (
           <ActivityIndicator color="#374151" />
@@ -91,9 +98,10 @@ export default function AuthScreen() {
         )}
       </Pressable>
 
-      {!process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID && (
+      {!hasPlatformClientId && (
         <Text className="text-orange-500 text-xs text-center mt-4 max-w-sm">
-          Missing EXPO_PUBLIC_GOOGLE_CLIENT_ID — restart Metro after adding it to .env
+          Missing Google client ID for this platform. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID / EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID /
+          EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID (or EXPO_PUBLIC_GOOGLE_CLIENT_ID fallback) and restart Metro.
         </Text>
       )}
 
