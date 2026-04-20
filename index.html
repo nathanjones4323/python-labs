@@ -343,9 +343,24 @@
       box-shadow: 0 20px 60px rgba(0,0,0,0.3);
     }
 
-    .project-card.featured { grid-column: span 12; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
-    .project-card.half      { grid-column: span 6; }
-    .project-card.third     { grid-column: span 4; }
+    .project-card.featured { grid-column: span 12; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+
+    .project-features-full {
+      grid-column: 1 / -1;
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 14px; padding-top: 32px;
+      border-top: 1px solid var(--border); margin-top: 8px;
+    }
+
+    .feature-item {
+      padding: 18px 16px; border-radius: 12px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);
+      transition: border-color 0.25s, transform 0.25s;
+    }
+    .feature-item:hover { border-color: rgba(0,212,255,0.18); transform: translateY(-2px); }
+    .feature-icon { font-size: 1.3rem; margin-bottom: 10px; }
+    .feature-title { font-size: 0.85rem; font-weight: 700; color: var(--text); margin-bottom: 5px; }
+    .feature-desc { font-size: 0.78rem; color: var(--muted); line-height: 1.55; }
 
     .project-visual {
       width: 100%; aspect-ratio: 16/9; border-radius: 12px;
@@ -560,8 +575,7 @@
       .about-stats { grid-template-columns: 1fr 1fr; }
 
       .project-card.featured { grid-column: span 12; grid-template-columns: 1fr; }
-      .project-card.half   { grid-column: span 12; }
-      .project-card.third  { grid-column: span 12; }
+      .project-features-full { grid-template-columns: 1fr 1fr; }
 
       .exp-layout { grid-template-columns: 1fr; gap: 48px; }
     }
@@ -570,6 +584,7 @@
       .about-stats { grid-template-columns: 1fr; }
       .hero-actions { flex-direction: column; align-items: center; }
       .contact-links { flex-direction: column; align-items: center; }
+      .project-features-full { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -757,13 +772,13 @@
       <div class="section-label">Featured Projects</div>
       <h2 class="section-title">Things I've built.</h2>
       <p class="section-desc">
-        A mix of full-stack apps, AI integrations, and automation tools — all production-grade and battle-tested.
+        My current flagship project — a production-grade, full-stack AI application. More coming soon.
       </p>
     </div>
 
     <div class="projects-grid">
 
-      <!-- FEATURED: AI Meal Planner -->
+      <!-- AI Meal Planner (expanded solo) -->
       <div class="project-card featured reveal">
         <div class="project-visual pv-1">
           <div class="project-visual-pattern"></div>
@@ -773,14 +788,15 @@
           <div class="project-meta">
             <span class="project-badge pb-featured">Featured</span>
             <span class="project-badge pb-tool" style="background:rgba(0,229,160,0.1);color:var(--green);border-color:rgba(0,229,160,0.2);">AI-Powered</span>
+            <span class="project-badge pb-tool" style="background:rgba(124,92,252,0.1);color:var(--purple);border-color:rgba(124,92,252,0.2);">Full-Stack</span>
           </div>
           <h3 class="project-title">AI Meal Planner</h3>
           <p class="project-desc">
-            Full-stack nutrition app where users chat with an AI agent to generate personalized meal plans.
-            Claude autonomously searches the USDA FoodData Central database, calculates nutrient profiles,
-            creates week-long plans with recipes, and streams real-time progress back to the UI.
-            Includes Google OAuth, dietary preference learning, shopping list generation, and a
-            cross-platform mobile frontend.
+            A full-stack nutrition app where users chat with an AI agent to generate personalized meal plans.
+            Claude autonomously searches the USDA FoodData Central database, calculates precise nutrient profiles,
+            and assembles week-long plans complete with recipes and step-by-step cooking instructions —
+            all streamed live to the UI as the agent works. Built with a FastAPI backend, cross-platform
+            React Native frontend, and a fully migrated PostgreSQL schema.
           </p>
           <div class="project-stack">
             <span class="stack-tag">FastAPI</span>
@@ -802,137 +818,38 @@
             </a>
           </div>
         </div>
-      </div>
 
-      <!-- WJ-IV Report Automator -->
-      <div class="project-card half reveal reveal-delay-1">
-        <div class="project-visual pv-2" style="margin-bottom:24px;">
-          <div class="project-visual-pattern"></div>
-          <span class="project-visual-icon">📊</span>
-        </div>
-        <div class="project-meta">
-          <span class="project-badge pb-tool">Automation</span>
-        </div>
-        <h3 class="project-title">Automated Report Generator</h3>
-        <p class="project-desc">
-          Streamlit application that automates the creation of educator assessment reports.
-          Eliminates hours of manual data entry by programmatically generating formatted
-          reports from raw assessment data — built for real practitioners who needed a faster workflow.
-        </p>
-        <div class="project-stack">
-          <span class="stack-tag">Python</span>
-          <span class="stack-tag">Streamlit</span>
-          <span class="stack-tag">Pandas</span>
-        </div>
-        <div class="project-links">
-          <a href="https://github.com/nathanjones4323/wj-iv-report-automator" class="project-link pl-primary" target="_blank" rel="noopener">
-            <i class="fa-brands fa-github"></i> GitHub
-          </a>
-        </div>
-      </div>
-
-      <!-- Coupyons -->
-      <div class="project-card half reveal reveal-delay-2">
-        <div class="project-visual pv-3" style="margin-bottom:24px;">
-          <div class="project-visual-pattern"></div>
-          <span class="project-visual-icon">🏷️</span>
-        </div>
-        <div class="project-meta">
-          <span class="project-badge pb-tool">Automation</span>
-        </div>
-        <h3 class="project-title">Coupyons</h3>
-        <p class="project-desc">
-          Python automation tool that clips every available digital coupon from grocery store
-          loyalty apps automatically. Saves real money with zero manual effort — a weekend
-          hack that actually gets used weekly.
-        </p>
-        <div class="project-stack">
-          <span class="stack-tag">Python</span>
-          <span class="stack-tag">Web Automation</span>
-        </div>
-        <div class="project-links">
-          <a href="https://github.com/nathanjones4323/coupyons" class="project-link pl-primary" target="_blank" rel="noopener">
-            <i class="fa-brands fa-github"></i> GitHub
-          </a>
-        </div>
-      </div>
-
-      <!-- ML Workflow -->
-      <div class="project-card third reveal reveal-delay-1">
-        <div class="project-visual pv-4" style="margin-bottom:24px; aspect-ratio:unset; height:100px;">
-          <div class="project-visual-pattern"></div>
-          <span class="project-visual-icon">🤖</span>
-        </div>
-        <div class="project-meta">
-          <span class="project-badge pb-ml">ML</span>
-        </div>
-        <h3 class="project-title">ML Notebook Template</h3>
-        <p class="project-desc">
-          Opinionated Jupyter notebook template for supervised machine learning workflows.
-          Standardizes the EDA → feature engineering → training → evaluation loop.
-        </p>
-        <div class="project-stack">
-          <span class="stack-tag">Python</span>
-          <span class="stack-tag">Scikit-learn</span>
-          <span class="stack-tag">Pandas</span>
-          <span class="stack-tag">Jupyter</span>
-        </div>
-        <div class="project-links">
-          <a href="https://github.com/nathanjones4323/machine-learning-notebook-template" class="project-link pl-primary" target="_blank" rel="noopener">
-            <i class="fa-brands fa-github"></i> GitHub
-          </a>
-        </div>
-      </div>
-
-      <!-- Data Analysis -->
-      <div class="project-card third reveal reveal-delay-2">
-        <div class="project-visual pv-1" style="margin-bottom:24px; aspect-ratio:unset; height:100px;">
-          <div class="project-visual-pattern"></div>
-          <span class="project-visual-icon">📈</span>
-        </div>
-        <div class="project-meta">
-          <span class="project-badge pb-data">Analysis</span>
-        </div>
-        <h3 class="project-title">CA Teacher Salary Analysis</h3>
-        <p class="project-desc">
-          Exploratory data analysis of California teacher salaries for 2020–21. Surfaces
-          district-level pay disparities and trends with interactive visualizations.
-        </p>
-        <div class="project-stack">
-          <span class="stack-tag">Python</span>
-          <span class="stack-tag">Pandas</span>
-          <span class="stack-tag">Plotly</span>
-          <span class="stack-tag">Jupyter</span>
-        </div>
-        <div class="project-links">
-          <a href="https://github.com/nathanjones4323/ca_teacher_salaries_2020_2021" class="project-link pl-primary" target="_blank" rel="noopener">
-            <i class="fa-brands fa-github"></i> GitHub
-          </a>
-        </div>
-      </div>
-
-      <!-- ML Flowchart -->
-      <div class="project-card third reveal reveal-delay-3">
-        <div class="project-visual pv-3" style="margin-bottom:24px; aspect-ratio:unset; height:100px;">
-          <div class="project-visual-pattern"></div>
-          <span class="project-visual-icon">🗺️</span>
-        </div>
-        <div class="project-meta">
-          <span class="project-badge pb-ml">Reference</span>
-        </div>
-        <h3 class="project-title">ML Workflow Flowchart</h3>
-        <p class="project-desc">
-          Visual reference guide for the end-to-end supervised machine learning process —
-          from problem framing through model selection, tuning, and deployment decisions.
-        </p>
-        <div class="project-stack">
-          <span class="stack-tag">Python</span>
-          <span class="stack-tag">Diagrams</span>
-        </div>
-        <div class="project-links">
-          <a href="https://github.com/nathanjones4323/Supervised-Machine-Learning-Workflow-Flowchart" class="project-link pl-primary" target="_blank" rel="noopener">
-            <i class="fa-brands fa-github"></i> GitHub
-          </a>
+        <div class="project-features-full">
+          <div class="feature-item">
+            <div class="feature-icon">🤖</div>
+            <div class="feature-title">Agentic AI</div>
+            <div class="feature-desc">Claude uses three custom tools — search foods, fetch nutrition data, and persist meal plans — orchestrating multi-step reasoning on every request.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">📡</div>
+            <div class="feature-title">Real-Time Streaming</div>
+            <div class="feature-desc">Server-sent events stream each agent step live to the chat UI, showing which tools fired and what data was fetched as it happens.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">🗄️</div>
+            <div class="feature-title">Production Database</div>
+            <div class="feature-desc">Seven-table PostgreSQL schema — users, profiles, conversations, foods, meal plans, meals, and meal foods — managed with full Alembic migration history.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">📱</div>
+            <div class="feature-title">Cross-Platform Mobile</div>
+            <div class="feature-desc">Single React Native codebase targets iOS, Android, and Web via Expo Router with NativeWind styling and shimmer loading animations.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">🔐</div>
+            <div class="feature-title">Auth & Secrets</div>
+            <div class="feature-desc">Google OAuth handles user authentication while SOPS and age encryption secure all secrets in the CI/CD pipeline — no credentials in plaintext.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">🚀</div>
+            <div class="feature-title">Production-Ready DevOps</div>
+            <div class="feature-desc">Fully containerized with Docker Compose, wired to GitHub Actions for CI, and using psycopg connection pooling for high-throughput database access.</div>
+          </div>
         </div>
       </div>
 
