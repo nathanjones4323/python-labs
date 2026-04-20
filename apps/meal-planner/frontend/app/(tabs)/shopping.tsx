@@ -8,6 +8,7 @@ import {
   RefreshControl,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { listMealPlans, getMealPlan } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
 import { MealPlan, MealPlanSummary } from "../../lib/types";
@@ -20,6 +21,7 @@ export default function ShoppingScreen() {
   const [activePlan, setActivePlan] = useState<MealPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadUserId().then(setUserId);
@@ -33,10 +35,13 @@ export default function ShoppingScreen() {
 
   async function load() {
     if (!userId) return;
+    setError(null);
     try {
       const data = await listMealPlans(userId);
       setSummaries(data);
       if (data.length > 0) await selectPlan(data[0].id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load shopping list");
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -44,14 +49,38 @@ export default function ShoppingScreen() {
   }
 
   async function selectPlan(planId: string) {
-    const plan = await getMealPlan(planId);
-    setActivePlan(plan);
+    setError(null);
+    try {
+      const plan = await getMealPlan(planId);
+      setActivePlan(plan);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load plan");
+    }
   }
 
   if (loading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator color="#16a34a" />
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View className="flex-1 items-center justify-center px-8">
+        <View className="w-14 h-14 rounded-2xl bg-red-50 items-center justify-center mb-4">
+          <Ionicons name="cloud-offline-outline" size={28} color="#ef4444" />
+        </View>
+        <Text className="text-base font-semibold text-gray-800 mb-1 text-center">Couldn't load</Text>
+        <Text className="text-sm text-gray-500 text-center mb-5">{error}</Text>
+        <Pressable
+          onPress={() => { setLoading(true); load(); }}
+          className="flex-row items-center gap-2 bg-primary-600 px-5 py-2.5 rounded-xl"
+        >
+          <Ionicons name="refresh" size={16} color="white" />
+          <Text className="text-white font-semibold text-sm">Try Again</Text>
+        </Pressable>
       </View>
     );
   }
@@ -75,9 +104,7 @@ export default function ShoppingScreen() {
   }
 
   return (
-    <View
-      className="flex-1 bg-white"
-    >
+    <View className="flex-1 bg-white">
       {/* Plan selector */}
       <ScrollView
         horizontal

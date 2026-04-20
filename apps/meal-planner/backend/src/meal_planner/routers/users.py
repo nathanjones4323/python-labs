@@ -1,7 +1,9 @@
+import json
 import uuid
 from fastapi import APIRouter, HTTPException
 from db import get_conn
-from meal_planner.models.user import UserCreate, UserProfile, UserProfileResponse, UserResponse
+from meal_planner.models.user import UserCreate, UserProfile, ProfilePatchRequest, UserProfileResponse, UserResponse
+from meal_planner.services.extraction import deep_merge_preferences
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -43,7 +45,6 @@ def upsert_profile(user_id: uuid.UUID, body: UserProfile):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        import json
         row = conn.execute(
             """
             INSERT INTO user_profiles
@@ -68,6 +69,78 @@ def upsert_profile(user_id: uuid.UUID, body: UserProfile):
                 body.calorie_target,
                 body.meals_per_day,
                 json.dumps(body.preferences),
+            ),
+        ).fetchone()
+        conn.commit()
+
+    return UserProfileResponse(
+        user_id=row[0],
+        dietary_restrictions=row[1] or [],
+        allergies=row[2] or [],
+        goals=row[3],
+        calorie_target=row[4],
+        meals_per_day=row[5] or 3,
+        preferences=row[6] or {},
+        onboarding_complete=row[7],
+    )
+
+
+@router.patch("/{user_id}/profile", response_model=UserProfileResponse)
+def patch_profile(user_id: uuid.UUID, body: ProfilePatchRequest):
+    with get_conn() as conn:
+        user = conn.execute(
+            "SELECT id FROM users WHERE id = %s", (str(user_id),)
+        ).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        existing = conn.execute(
+            """
+            SELECT dietary_restrictions, allergies, goals, calorie_target,
+                   meals_per_day, preferences, onboarding_complete
+            FROM user_profiles WHERE user_id = %s
+            """,
+            (str(user_id),),
+        ).fetchone()
+
+        cur_dietary = existing[0] if existing else []
+        cur_allergies = existing[1] if existing else []
+        cur_goals = existing[2] if existing else None
+        cur_calorie = existing[3] if existing else None
+        cur_meals = existing[4] if existing else 3
+        cur_prefs = existing[5] if existing else {}
+
+        new_prefs = (
+            deep_merge_preferences(cur_prefs or {}, body.preferences)
+            if body.preferences
+            else (cur_prefs or {})
+        )
+
+        row = conn.execute(
+            """
+            INSERT INTO user_profiles
+                (user_id, dietary_restrictions, allergies, goals, calorie_target,
+                 meals_per_day, preferences, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+                dietary_restrictions = EXCLUDED.dietary_restrictions,
+                allergies            = EXCLUDED.allergies,
+                goals                = EXCLUDED.goals,
+                calorie_target       = EXCLUDED.calorie_target,
+                meals_per_day        = EXCLUDED.meals_per_day,
+                preferences          = EXCLUDED.preferences,
+                updated_at           = NOW()
+            RETURNING user_id, dietary_restrictions, allergies, goals,
+                      calorie_target, meals_per_day, preferences, onboarding_complete
+            """,
+            (
+                str(user_id),
+                body.dietary_restrictions if body.dietary_restrictions is not None else cur_dietary,
+                body.allergies if body.allergies is not None else cur_allergies,
+                body.goals if body.goals is not None else cur_goals,
+                body.calorie_target if body.calorie_target is not None else cur_calorie,
+                body.meals_per_day if body.meals_per_day is not None else cur_meals,
+                json.dumps(new_prefs),
             ),
         ).fetchone()
         conn.commit()

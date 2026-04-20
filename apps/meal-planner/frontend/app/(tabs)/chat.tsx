@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -8,19 +8,27 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Animated,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { chatStream } from "../../lib/api";
-import { loadUserId, loadSessionId, saveSessionId, clearSessionId } from "../../lib/storage";
-import { useRouter } from "expo-router";
+import { chatStream, endChatSession } from "../../lib/api";
+import { loadUserId, loadSessionId, saveSessionId, clearSessionId, loadPendingPrompt, clearPendingPrompt } from "../../lib/storage";
+import { useRouter, useFocusEffect } from "expo-router";
 import MarkdownText from "../../components/MarkdownText";
 import ChatHistorySidebar from "../../components/ChatHistorySidebar";
+
+interface ToolStep {
+  name: string;
+  label: string;
+  status: "loading" | "done";
+}
 
 interface Message {
   role: "user" | "assistant";
   content: string;
   isThinking?: boolean;
-  thinkingLabel?: string;
+  toolSteps?: ToolStep[];
+  toolStepsExpanded?: boolean;
 }
 
 const SUGGESTIONS = [
@@ -29,6 +37,115 @@ const SUGGESTIONS = [
   "High-protein, 5 days",
   "Vegetarian week",
 ];
+
+function summarizeToolSteps(steps: ToolStep[]): string {
+  const searchCount = steps.filter((s) => s.name === "search_foods").length;
+  const nutritionCount = steps.filter((s) => s.name === "get_food_nutrition").length;
+  const hasPlan = steps.some((s) => s.name === "create_meal_plan");
+  const parts: string[] = [];
+  if (searchCount > 0) parts.push(`searched ${searchCount} food${searchCount !== 1 ? "s" : ""}`);
+  if (nutritionCount > 0) parts.push("looked up nutrition");
+  if (hasPlan) parts.push("saved meal plan");
+  return parts.length > 0 ? parts.join(", ") : "thinking";
+}
+
+function ShimmerText({ text }: { text: string }) {
+  const opacity = useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 1, duration: 650, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.3, duration: 650, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [opacity]);
+
+  return (
+    <Animated.Text style={{ opacity, fontSize: 12, color: "#6b7280" }}>
+      {text}
+    </Animated.Text>
+  );
+}
+
+function ToolStepIcon({ name }: { name: string }) {
+  const icons: Record<string, string> = {
+    search_foods: "search-outline",
+    get_food_nutrition: "analytics-outline",
+    create_meal_plan: "calendar-outline",
+  };
+  return (
+    <Ionicons
+      name={(icons[name] ?? "ellipse-outline") as any}
+      size={13}
+      color="#9ca3af"
+    />
+  );
+}
+
+function ToolStepsView({
+  steps,
+  expanded,
+  onToggle,
+}: {
+  steps: ToolStep[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const loadingStep = steps.find((s) => s.status === "loading");
+  const allDone = steps.length > 0 && steps.every((s) => s.status === "done");
+  const summary = summarizeToolSteps(steps);
+
+  return (
+    <View className="mb-2.5 rounded-xl border border-gray-100 overflow-hidden bg-gray-50">
+      {/* Header row */}
+      <Pressable
+        onPress={onToggle}
+        className="flex-row items-center gap-2 px-3 py-2 active:bg-gray-100"
+      >
+        <Text className="text-xs text-gray-500 flex-1" numberOfLines={1}>
+          {summary}
+        </Text>
+        {loadingStep && !expanded && (
+          <ShimmerText text={loadingStep.label} />
+        )}
+        <Ionicons
+          name={expanded ? "chevron-down" : "chevron-forward"}
+          size={12}
+          color="#9ca3af"
+        />
+      </Pressable>
+
+      {/* Expanded step list */}
+      {expanded && (
+        <View className="border-t border-gray-100 px-3 py-1.5">
+          {steps.map((step, i) => (
+            <View key={i} className="flex-row items-start gap-2 py-1">
+              <View className="w-4 mt-0.5 items-center">
+                <ToolStepIcon name={step.name} />
+              </View>
+              {step.status === "loading" ? (
+                <ShimmerText text={step.label} />
+              ) : (
+                <Text className="text-xs text-gray-500 flex-1">{step.label}</Text>
+              )}
+            </View>
+          ))}
+          {allDone && (
+            <View className="flex-row items-center gap-2 py-1">
+              <View className="w-4 items-center">
+                <Ionicons name="checkmark-circle-outline" size={13} color="#16a34a" />
+              </View>
+              <Text className="text-xs font-medium text-gray-600">Done</Text>
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
 
 export default function ChatScreen() {
   const router = useRouter();
@@ -47,7 +164,6 @@ export default function ChatScreen() {
       if (uid) {
         const sid = await loadSessionId();
         setSessionId(sid);
-        // Restore the last session's messages if we have one
         if (sid) {
           try {
             const { getChatSession } = await import("../../lib/api");
@@ -61,7 +177,6 @@ export default function ChatScreen() {
               );
             }
           } catch {
-            // Session may have been deleted; start fresh
             await clearSessionId();
             setSessionId(null);
           }
@@ -77,13 +192,32 @@ export default function ChatScreen() {
     }
   }, [messages]);
 
+  useFocusEffect(
+    useCallback(() => {
+      async function checkPendingPrompt() {
+        const pending = await loadPendingPrompt();
+        if (pending) {
+          await clearPendingPrompt();
+          setInput(pending);
+        }
+      }
+      checkPendingPrompt();
+    }, [])
+  );
+
   function startNewChat() {
+    if (userId && sessionId) {
+      endChatSession(userId, sessionId).catch(() => {});
+    }
     setMessages([]);
     setSessionId(null);
     clearSessionId();
   }
 
   function loadHistorySession(sid: string, msgs: Array<{ role: string; content: string }>) {
+    if (userId && sessionId && sessionId !== sid) {
+      endChatSession(userId, sessionId).catch(() => {});
+    }
     setSessionId(sid);
     saveSessionId(sid);
     setMessages(
@@ -91,6 +225,14 @@ export default function ChatScreen() {
         role: m.role as "user" | "assistant",
         content: m.content,
       }))
+    );
+  }
+
+  function toggleToolSteps(index: number) {
+    setMessages((prev) =>
+      prev.map((msg, i) =>
+        i === index ? { ...msg, toolStepsExpanded: !msg.toolStepsExpanded } : msg
+      )
     );
   }
 
@@ -107,44 +249,84 @@ export default function ChatScreen() {
 
     try {
       let assistantText = "";
+      let toolSteps: ToolStep[] = [];
+
+      const syncMessage = () => {
+        setMessages((prev) => [
+          ...prev.slice(0, -1),
+          {
+            role: "assistant" as const,
+            content: assistantText,
+            isThinking: false,
+            toolSteps: toolSteps.length > 0 ? [...toolSteps] : undefined,
+          },
+        ]);
+      };
+
       for await (const event of chatStream(userId, userMsg, sessionId)) {
         if (event.type === "session_created" && event.session_id) {
           setSessionId(event.session_id);
           saveSessionId(event.session_id);
         } else if (event.type === "text") {
+          // Mark any loading step done when text begins streaming
+          if (toolSteps.length > 0 && toolSteps[toolSteps.length - 1].status === "loading") {
+            toolSteps = toolSteps.map((s, i) =>
+              i === toolSteps.length - 1 ? { ...s, status: "done" as const } : s
+            );
+          }
           assistantText += event.content ?? "";
-          setMessages((prev) => [
-            ...prev.slice(0, -1),
-            { role: "assistant", content: assistantText },
-          ]);
+          syncMessage();
         } else if (event.type === "tool_use") {
-          setMessages((prev) => [
-            ...prev.slice(0, -1),
-            {
-              role: "assistant",
-              content: assistantText,
-              isThinking: true,
-              thinkingLabel: (event as { type: string; label?: string }).label,
-            },
-          ]);
+          // Mark previous step done before starting the next
+          if (toolSteps.length > 0 && toolSteps[toolSteps.length - 1].status === "loading") {
+            toolSteps = toolSteps.map((s, i) =>
+              i === toolSteps.length - 1 ? { ...s, status: "done" as const } : s
+            );
+          }
+          toolSteps = [
+            ...toolSteps,
+            { name: event.name, label: event.label ?? event.name, status: "loading" },
+          ];
+          syncMessage();
         } else if (event.type === "plan_saved" && event.plan_id) {
-          setMessages((prev) => [
-            ...prev.slice(0, -1),
-            ...(assistantText ? [{ role: "assistant" as const, content: assistantText }] : []),
-            {
-              role: "assistant" as const,
-              content: `__PLAN_SAVED__${event.plan_id}`,
-            },
-          ]);
+          // Finalize all tool steps
+          if (toolSteps.length > 0) {
+            toolSteps = toolSteps.map((s) => ({ ...s, status: "done" as const }));
+          }
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            const updatedLast: Message = {
+              ...last,
+              content: assistantText,
+              isThinking: false,
+              toolSteps: toolSteps.length > 0 ? [...toolSteps] : last.toolSteps,
+            };
+            return [
+              ...prev.slice(0, -1),
+              updatedLast,
+              { role: "assistant" as const, content: `__PLAN_SAVED__${event.plan_id}` },
+            ];
+          });
           assistantText = "";
         }
       }
+
+      // Finalize: mark all steps done, clear isThinking
+      if (toolSteps.length > 0) {
+        toolSteps = toolSteps.map((s) => ({ ...s, status: "done" as const }));
+      }
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (last?.isThinking) {
-          return [...prev.slice(0, -1), { role: "assistant", content: assistantText }];
-        }
-        return prev;
+        if (!last || last.content.startsWith("__PLAN_SAVED__")) return prev;
+        return [
+          ...prev.slice(0, -1),
+          {
+            ...last,
+            content: assistantText || last.content,
+            isThinking: false,
+            toolSteps: toolSteps.length > 0 ? [...toolSteps] : last.toolSteps,
+          },
+        ];
       });
     } catch (e: unknown) {
       setMessages((prev) => [
@@ -195,7 +377,6 @@ export default function ChatScreen() {
         {/* ── Empty / Welcome state ── */}
         {isEmpty && (
           <View className="flex-1 items-center justify-center px-6 pt-16 pb-8">
-            {/* Icon badge */}
             <View className="w-20 h-20 rounded-3xl bg-primary-600 items-center justify-center mb-6 shadow-lg"
               style={{ shadowColor: "#16a34a", shadowOpacity: 0.35, shadowRadius: 16, shadowOffset: { width: 0, height: 8 } }}
             >
@@ -209,7 +390,6 @@ export default function ChatScreen() {
               I'll build a personalized plan with real USDA nutrition data. Just tell me what you need.
             </Text>
 
-            {/* Suggestion chips */}
             <View className="w-full gap-2">
               {SUGGESTIONS.map((s) => (
                 <Pressable
@@ -234,17 +414,15 @@ export default function ChatScreen() {
           <View className="px-4 pt-4">
             {messages.map((msg, i) => {
               if (msg.content.startsWith("__PLAN_SAVED__")) {
-                const planId = msg.content.replace("__PLAN_SAVED__", "");
                 return (
-                  <View key={i} className="items-center my-3">
+                  <View key={i} className="items-start my-2">
                     <Pressable
                       onPress={() => router.push("/(tabs)/plans")}
-                      className="flex-row items-center bg-primary-600 rounded-2xl px-5 py-3 gap-2 shadow-md"
-                      style={{ shadowColor: "#16a34a", shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 } }}
+                      className="flex-row items-center bg-primary-50 border border-primary-200 rounded-xl px-3 py-2 gap-1.5 active:bg-primary-100"
                     >
-                      <Ionicons name="checkmark-circle" size={20} color="white" />
-                      <Text className="text-white font-semibold text-sm">Meal plan saved — View it</Text>
-                      <Ionicons name="arrow-forward" size={16} color="white" />
+                      <Ionicons name="checkmark-circle-outline" size={14} color="#16a34a" />
+                      <Text className="text-primary-700 font-medium text-xs">Meal plan saved — View it</Text>
+                      <Ionicons name="chevron-forward" size={12} color="#16a34a" />
                     </Pressable>
                   </View>
                 );
@@ -256,7 +434,7 @@ export default function ChatScreen() {
                   key={i}
                   className={`mb-3 flex-row items-start gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}
                 >
-                  {/* Avatar — assistant only, pinned to top */}
+                  {/* Avatar — assistant only */}
                   {!isUser && (
                     <View className="w-8 h-8 rounded-full bg-primary-100 items-center justify-center flex-shrink-0 mt-0.5">
                       <Text style={{ fontSize: 16 }}>🥗</Text>
@@ -264,36 +442,41 @@ export default function ChatScreen() {
                   )}
 
                   <View className={`max-w-[78%] ${isUser ? "items-end" : "items-start"}`}>
-                    <View
-                      className={`rounded-2xl px-4 py-3 ${
-                        isUser
-                          ? "bg-primary-600 rounded-tr-sm"
-                          : "bg-white border border-gray-100 rounded-tl-sm shadow-sm"
-                      }`}
-                      style={
-                        !isUser
-                          ? { shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } }
-                          : undefined
-                      }
-                    >
-                      {msg.isThinking && !msg.content ? (
-                        <View className="flex-row items-center gap-2">
-                          <ActivityIndicator size="small" color="#16a34a" />
-                          <Text className="text-gray-400 text-sm italic">
-                            {msg.thinkingLabel ?? "Thinking…"}
-                          </Text>
-                        </View>
-                      ) : (
-                        <>
+                    {/* Tool steps accordion — shown above the text bubble for assistant */}
+                    {!isUser && msg.toolSteps && msg.toolSteps.length > 0 && (
+                      <ToolStepsView
+                        steps={msg.toolSteps}
+                        expanded={!!msg.toolStepsExpanded}
+                        onToggle={() => toggleToolSteps(i)}
+                      />
+                    )}
+
+                    {/* Chat bubble */}
+                    {!!(msg.isThinking || msg.content) && (
+                      <View
+                        className={`rounded-2xl px-4 py-3 ${
+                          isUser
+                            ? "bg-primary-600 rounded-tr-sm"
+                            : "bg-white border border-gray-100 rounded-tl-sm shadow-sm"
+                        }`}
+                        style={
+                          !isUser
+                            ? { shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } }
+                            : undefined
+                        }
+                      >
+                        {msg.isThinking && !msg.content ? (
+                          // Initial spinner before first event
+                          <View className="py-0.5">
+                            <ActivityIndicator size="small" color="#16a34a" />
+                          </View>
+                        ) : (
                           <MarkdownText userMessage={isUser}>
                             {msg.content}
                           </MarkdownText>
-                          {msg.isThinking && msg.content ? (
-                            <Text className="text-primary-400 text-sm"> ●</Text>
-                          ) : null}
-                        </>
-                      )}
-                    </View>
+                        )}
+                      </View>
+                    )}
                   </View>
                 </View>
               );

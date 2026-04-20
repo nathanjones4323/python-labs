@@ -22,32 +22,55 @@ def list_meal_plans(user_id: uuid.UUID):
         rows = conn.execute(
             """
             SELECT mp.id, mp.name, mp.start_date, mp.end_date,
-                   COUNT(m.id) AS meal_count
+                   COUNT(m.id) AS meal_count,
+                   mp.created_at,
+                   mp.conversation_id,
+                   COALESCE(
+                       NULLIF(c.title, ''),
+                       LEFT((c.messages -> 0 ->> 'content'), 60)
+                   ) AS conversation_title
             FROM meal_plans mp
             LEFT JOIN meals m ON m.meal_plan_id = mp.id
+            LEFT JOIN conversations c ON c.id = mp.conversation_id
             WHERE mp.user_id = %s
-            GROUP BY mp.id, mp.name, mp.start_date, mp.end_date
-            ORDER BY mp.start_date DESC
+            GROUP BY mp.id, mp.name, mp.start_date, mp.end_date,
+                     mp.created_at, mp.conversation_id, c.title, c.messages
+            ORDER BY mp.created_at DESC NULLS LAST, mp.start_date DESC
             """,
             (str(user_id),),
         ).fetchall()
     return [
         MealPlanSummary(
-            id=r[0], name=r[1], start_date=r[2], end_date=r[3], meal_count=r[4]
+            id=r[0],
+            name=r[1],
+            start_date=r[2],
+            end_date=r[3],
+            meal_count=r[4],
+            created_at=r[5],
+            conversation_id=r[6],
+            conversation_title=r[7],
         )
         for r in rows
     ]
 
 
 @router.post("", response_model=MealPlanResponse, status_code=201)
-async def create_meal_plan(user_id: uuid.UUID, body: MealPlanCreate):
+async def create_meal_plan(
+    user_id: uuid.UUID,
+    body: MealPlanCreate,
+    conversation_id: uuid.UUID | None = None,
+):
     plan_id = uuid.uuid4()
     meal_responses: list[MealResponse] = []
 
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO meal_plans (id, user_id, name, start_date, end_date) VALUES (%s, %s, %s, %s, %s)",
-            (str(plan_id), str(user_id), body.name, body.start_date, body.end_date),
+            """
+            INSERT INTO meal_plans (id, user_id, name, start_date, end_date, conversation_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (str(plan_id), str(user_id), body.name, body.start_date, body.end_date,
+             str(conversation_id) if conversation_id else None),
         )
 
         for meal_in in body.meals:
@@ -92,6 +115,7 @@ async def create_meal_plan(user_id: uuid.UUID, body: MealPlanCreate):
                         id=mf_id,
                         fdc_id=food_in.fdc_id,
                         description=food["description"],
+                        food_category=food.get("food_category"),
                         quantity_g=food_in.quantity_g,
                         serving_description=food_in.serving_description,
                         nutrients=scaled,
@@ -156,7 +180,8 @@ async def get_meal_plan(plan_id: uuid.UUID):
             meal_id = mr[0]
             food_rows = conn.execute(
                 """
-                SELECT mf.id, mf.fdc_id, f.description, f.nutrients, mf.quantity_g, mf.serving_description
+                SELECT mf.id, mf.fdc_id, f.description, f.food_category,
+                       f.nutrients, mf.quantity_g, mf.serving_description
                 FROM meal_foods mf JOIN foods f ON f.fdc_id = mf.fdc_id
                 WHERE mf.meal_id = %s
                 """,
@@ -165,15 +190,16 @@ async def get_meal_plan(plan_id: uuid.UUID):
 
             food_responses: list[MealFoodResponse] = []
             for fr in food_rows:
-                nutrients_per_100g = NutrientSummary(**(fr[3] if fr[3] else {}))
-                scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[4]))
+                nutrients_per_100g = NutrientSummary(**(fr[4] if fr[4] else {}))
+                scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[5]))
                 food_responses.append(
                     MealFoodResponse(
                         id=fr[0],
                         fdc_id=fr[1],
                         description=fr[2],
-                        quantity_g=float(fr[4]),
-                        serving_description=fr[5],
+                        food_category=fr[3],
+                        quantity_g=float(fr[5]),
+                        serving_description=fr[6],
                         nutrients=scaled,
                     )
                 )
@@ -216,12 +242,13 @@ def delete_meal_plan(plan_id: uuid.UUID):
 async def _get_or_cache_food(conn, fdc_id: int) -> dict:
     """Return food from DB cache or fetch from USDA and cache it."""
     row = conn.execute(
-        "SELECT description, nutrients FROM foods WHERE fdc_id = %s", (fdc_id,)
+        "SELECT description, food_category, nutrients FROM foods WHERE fdc_id = %s", (fdc_id,)
     ).fetchone()
     if row:
         return {
             "description": row[0],
-            "nutrients": NutrientSummary(**(row[1] if row[1] else {})),
+            "food_category": row[1],
+            "nutrients": NutrientSummary(**(row[2] if row[2] else {})),
         }
 
     food = await usda_svc.get_food(fdc_id)

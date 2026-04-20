@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from meal_planner.routers import users, foods, meal_plans, chat, meals
+from meal_planner.routers import users, foods, meal_plans, chat, meals, auth
 
 app = FastAPI(title="Meal Planner API", version="0.1.0")
 
@@ -12,6 +12,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(foods.router)
 app.include_router(meal_plans.router)
