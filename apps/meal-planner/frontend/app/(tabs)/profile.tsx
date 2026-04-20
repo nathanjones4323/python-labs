@@ -9,8 +9,9 @@ import {
   Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { getUser, upsertProfile } from "../../lib/api";
-import { loadUserId } from "../../lib/storage";
+import { useRouter } from "expo-router";
+import { getUser, upsertProfile, patchProfile } from "../../lib/api";
+import { loadUserId, clearUserId, clearSessionId } from "../../lib/storage";
 import { UserProfile } from "../../lib/types";
 
 const DIETARY_OPTIONS = [
@@ -104,6 +105,7 @@ function SectionHeader({
 }
 
 export default function ProfileScreen() {
+  const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,7 +121,13 @@ export default function ProfileScreen() {
   const [editGoal, setEditGoal] = useState("");
   const [editCalories, setEditCalories] = useState("");
   const [editMealsPerDay, setEditMealsPerDay] = useState("3");
-  const [editPrefs, setEditPrefs] = useState("");
+  // Behavioral prefs
+  const [editCookingSkill, setEditCookingSkill] = useState("");
+  const [editWeekdayMins, setEditWeekdayMins] = useState("");
+  const [editWeekendMins, setEditWeekendMins] = useState("");
+  const [editMealPrep, setEditMealPrep] = useState(false);
+  const [editLeftovers, setEditLeftovers] = useState(true);
+  const [editBudget, setEditBudget] = useState("");
 
   useEffect(() => {
     async function load() {
@@ -148,8 +156,23 @@ export default function ProfileScreen() {
     setEditGoal(p.goals ?? "");
     setEditCalories(p.calorie_target ? String(p.calorie_target) : "");
     setEditMealsPerDay(String(p.meals_per_day ?? 3));
-    const notesVal = p.preferences?.notes;
-    setEditPrefs(typeof notesVal === "string" ? notesVal : "");
+    const b = (p.preferences as Record<string, any>)?.behavioral ?? {};
+    setEditCookingSkill(b.cooking_skill ?? "");
+    setEditWeekdayMins(b.time_available_weekday_mins != null ? String(b.time_available_weekday_mins) : "");
+    setEditWeekendMins(b.time_available_weekend_mins != null ? String(b.time_available_weekend_mins) : "");
+    setEditMealPrep(!!b.meal_prep_willing);
+    setEditLeftovers(b.leftovers_ok !== false);
+    setEditBudget(b.budget ?? "");
+  }
+
+  async function signOut() {
+    try {
+      await clearUserId();
+      await clearSessionId();
+      router.replace("/auth");
+    } catch (e) {
+      Alert.alert("Sign out failed", e instanceof Error ? e.message : "Please try again.");
+    }
   }
 
   function cancelSection() {
@@ -161,27 +184,40 @@ export default function ProfileScreen() {
     if (!userId || !profile) return;
     setSaving(true);
     try {
-      const updated = await upsertProfile(userId, {
-        dietary_restrictions:
-          section === "diet" ? editRestrictions : profile.dietary_restrictions,
-        allergies:
-          section === "diet"
-            ? editAllergies.split(",").map((s) => s.trim()).filter(Boolean)
-            : profile.allergies,
-        goals: section === "goal" ? (editGoal || null) : profile.goals,
-        calorie_target:
-          section === "targets"
-            ? (editCalories ? parseInt(editCalories) : null)
-            : profile.calorie_target,
-        meals_per_day:
-          section === "targets"
-            ? (parseInt(editMealsPerDay) || 3)
-            : profile.meals_per_day,
-        preferences:
-          section === "prefs"
-            ? (editPrefs ? { notes: editPrefs } : {})
-            : profile.preferences,
-      });
+      let updated: UserProfile;
+      if (section === "prefs") {
+        updated = await patchProfile(userId, {
+          preferences: {
+            behavioral: {
+              cooking_skill: editCookingSkill || undefined,
+              time_available_weekday_mins: editWeekdayMins ? parseInt(editWeekdayMins) : undefined,
+              time_available_weekend_mins: editWeekendMins ? parseInt(editWeekendMins) : undefined,
+              meal_prep_willing: editMealPrep,
+              leftovers_ok: editLeftovers,
+              budget: editBudget || undefined,
+            },
+          },
+        });
+      } else {
+        updated = await upsertProfile(userId, {
+          dietary_restrictions:
+            section === "diet" ? editRestrictions : profile.dietary_restrictions,
+          allergies:
+            section === "diet"
+              ? editAllergies.split(",").map((s) => s.trim()).filter(Boolean)
+              : profile.allergies,
+          goals: section === "goal" ? (editGoal || null) : profile.goals,
+          calorie_target:
+            section === "targets"
+              ? (editCalories ? parseInt(editCalories) : null)
+              : profile.calorie_target,
+          meals_per_day:
+            section === "targets"
+              ? (parseInt(editMealsPerDay) || 3)
+              : profile.meals_per_day,
+          preferences: profile.preferences,
+        });
+      }
       setProfile(updated);
       syncBuffers(updated);
       setEditingSection(null);
@@ -203,7 +239,14 @@ export default function ProfileScreen() {
   if (!profile) {
     return (
       <View className="flex-1 items-center justify-center bg-white px-8">
-        <Text className="text-gray-500 text-center">Profile not set up yet. Complete onboarding first.</Text>
+        <Text className="text-gray-500 text-center mb-8">Profile not set up yet. Complete onboarding first.</Text>
+        <Pressable
+          onPress={signOut}
+          className="flex-row items-center justify-center gap-2 px-6 py-3 rounded-2xl border border-red-100"
+        >
+          <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+          <Text className="text-red-500 font-semibold text-sm">Sign Out</Text>
+        </Pressable>
       </View>
     );
   }
@@ -212,6 +255,7 @@ export default function ProfileScreen() {
   const isGoalEditing = editingSection === "goal";
   const isTargetsEditing = editingSection === "targets";
   const isPrefsEditing = editingSection === "prefs";
+  const behavioral = (profile?.preferences as Record<string, any>)?.behavioral ?? {};
 
   return (
     <ScrollView className="flex-1 bg-gray-50">
@@ -384,10 +428,10 @@ export default function ProfileScreen() {
           )}
         </View>
 
-        {/* Other Preferences */}
+        {/* Cooking Preferences */}
         <View className="bg-white rounded-2xl p-4">
           <SectionHeader
-            title="Other Preferences"
+            title="Cooking Preferences"
             editing={isPrefsEditing}
             onEdit={() => setEditingSection("prefs")}
             onSave={() => saveSection("prefs")}
@@ -395,21 +439,141 @@ export default function ProfileScreen() {
             saving={saving && isPrefsEditing}
           />
           {isPrefsEditing ? (
-            <TextInput
-              className="border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 bg-gray-50 min-h-[80px]"
-              placeholder="e.g. I prefer Mediterranean flavors, dislike cilantro…"
-              multiline
-              value={editPrefs}
-              onChangeText={setEditPrefs}
-            />
+            <>
+              <Text className="text-xs text-gray-500 mb-2">Cooking skill</Text>
+              <View className="flex-row flex-wrap mb-3">
+                {["Beginner", "Intermediate", "Advanced"].map((opt) => (
+                  <ToggleChip
+                    key={opt}
+                    label={opt}
+                    selected={editCookingSkill === opt}
+                    onPress={() => setEditCookingSkill(opt)}
+                  />
+                ))}
+              </View>
+
+              <Text className="text-xs text-gray-500 mb-2">Budget</Text>
+              <View className="flex-row flex-wrap mb-3">
+                {["Low", "Medium", "High"].map((opt) => (
+                  <ToggleChip
+                    key={opt}
+                    label={opt}
+                    selected={editBudget === opt}
+                    onPress={() => setEditBudget(opt)}
+                  />
+                ))}
+              </View>
+
+              <View className="flex-row gap-3 mb-3">
+                <View className="flex-1">
+                  <Text className="text-xs text-gray-500 mb-1">Weekday cook time (min)</Text>
+                  <TextInput
+                    className="border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 bg-gray-50"
+                    placeholder="e.g. 30"
+                    keyboardType="numeric"
+                    value={editWeekdayMins}
+                    onChangeText={setEditWeekdayMins}
+                  />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-xs text-gray-500 mb-1">Weekend cook time (min)</Text>
+                  <TextInput
+                    className="border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-900 bg-gray-50"
+                    placeholder="e.g. 60"
+                    keyboardType="numeric"
+                    value={editWeekendMins}
+                    onChangeText={setEditWeekendMins}
+                  />
+                </View>
+              </View>
+
+              <View className="flex-row gap-3">
+                <Pressable
+                  onPress={() => setEditMealPrep((v) => !v)}
+                  className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-xl border ${
+                    editMealPrep ? "bg-primary-50 border-primary-200" : "bg-gray-50 border-gray-200"
+                  }`}
+                >
+                  <Text className={`text-sm font-medium ${editMealPrep ? "text-primary-700" : "text-gray-500"}`}>
+                    Meal prep
+                  </Text>
+                  <View className={`w-10 h-6 rounded-full ${editMealPrep ? "bg-primary-600" : "bg-gray-300"} items-center justify-center`}>
+                    <View className={`w-4 h-4 rounded-full bg-white ${editMealPrep ? "translate-x-2" : "-translate-x-2"}`} />
+                  </View>
+                </Pressable>
+                <Pressable
+                  onPress={() => setEditLeftovers((v) => !v)}
+                  className={`flex-1 flex-row items-center justify-between px-3 py-2.5 rounded-xl border ${
+                    editLeftovers ? "bg-primary-50 border-primary-200" : "bg-gray-50 border-gray-200"
+                  }`}
+                >
+                  <Text className={`text-sm font-medium ${editLeftovers ? "text-primary-700" : "text-gray-500"}`}>
+                    Leftovers OK
+                  </Text>
+                  <View className={`w-10 h-6 rounded-full ${editLeftovers ? "bg-primary-600" : "bg-gray-300"} items-center justify-center`}>
+                    <View className={`w-4 h-4 rounded-full bg-white ${editLeftovers ? "translate-x-2" : "-translate-x-2"}`} />
+                  </View>
+                </Pressable>
+              </View>
+            </>
           ) : (
-            <Text className="text-sm text-gray-700">
-              {typeof profile.preferences?.notes === "string" && profile.preferences.notes
-                ? profile.preferences.notes
-                : <Text className="text-gray-400">None specified</Text>}
-            </Text>
+            <View className="gap-2">
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Cooking skill</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.cooking_skill ?? <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Budget</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.budget ?? <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Weekday cook time</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.time_available_weekday_mins != null
+                    ? `${behavioral.time_available_weekday_mins} min`
+                    : <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Weekend cook time</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.time_available_weekend_mins != null
+                    ? `${behavioral.time_available_weekend_mins} min`
+                    : <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Meal prep</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.meal_prep_willing != null
+                    ? (behavioral.meal_prep_willing ? "Yes" : "No")
+                    : <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+              <View className="flex-row items-center justify-between">
+                <Text className="text-sm text-gray-500">Leftovers OK</Text>
+                <Text className="text-sm font-semibold text-gray-800">
+                  {behavioral.leftovers_ok !== undefined
+                    ? (behavioral.leftovers_ok ? "Yes" : "No")
+                    : <Text className="font-normal text-gray-400">Not set</Text>}
+                </Text>
+              </View>
+            </View>
           )}
         </View>
+
+        {/* Sign out */}
+        <Pressable
+          onPress={signOut}
+          className="flex-row items-center justify-center gap-2 bg-white rounded-2xl p-4 border border-red-100"
+        >
+          <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+          <Text className="text-red-500 font-semibold text-sm">Sign Out</Text>
+        </Pressable>
       </View>
     </ScrollView>
   );

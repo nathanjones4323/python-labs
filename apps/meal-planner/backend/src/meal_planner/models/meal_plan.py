@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from datetime import date
+from datetime import date, datetime
 import uuid
 from .food import NutrientSummary
 
@@ -30,6 +30,7 @@ class MealFoodResponse(BaseModel):
     id: uuid.UUID
     fdc_id: int
     description: str
+    food_category: str | None = None
     quantity_g: float
     serving_description: str | None
     nutrients: NutrientSummary
@@ -61,3 +62,6 @@ class MealPlanSummary(BaseModel):
     start_date: date
     end_date: date
     meal_count: int
+    created_at: datetime | None = None
+    conversation_id: uuid.UUID | None = None
+    conversation_title: str | None = None

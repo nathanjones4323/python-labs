@@ -63,11 +63,8 @@ export default function MarkdownText({ children, className = "", userMessage }: 
   while (i < lines.length) {
     const line = lines[i];
 
-    // Blank line → small spacer
+    // Blank line → skip (paragraph margin handles spacing)
     if (line.trim() === "") {
-      if (elements.length > 0) {
-        elements.push(<View key={`gap-${i}`} className="h-2" />);
-      }
       i++;
       continue;
     }
@@ -175,7 +172,11 @@ export default function MarkdownText({ children, className = "", userMessage }: 
     }
 
     // Regular paragraph
-    elements.push(<InlineText key={i} segments={parseInline(line)} base={base} />);
+    elements.push(
+      <View key={i} className="mb-1">
+        <InlineText segments={parseInline(line)} base={base} />
+      </View>
+    );
     i++;
   }
 

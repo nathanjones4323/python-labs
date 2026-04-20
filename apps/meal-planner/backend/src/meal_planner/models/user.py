@@ -16,6 +16,15 @@ class UserProfile(BaseModel):
     preferences: dict[str, Any] = {}
 
 
+class ProfilePatchRequest(BaseModel):
+    dietary_restrictions: list[str] | None = None
+    allergies: list[str] | None = None
+    goals: str | None = None
+    calorie_target: int | None = None
+    meals_per_day: int | None = None
+    preferences: dict[str, Any] | None = None  # deep-merged, not overwritten
+
+
 class UserProfileResponse(UserProfile):
     user_id: uuid.UUID
     onboarding_complete: bool

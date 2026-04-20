@@ -9,6 +9,7 @@ DATABASE_URL: str = os.environ.get(
 )
 
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
+GOOGLE_CLIENT_ID: str = os.environ.get("GOOGLE_CLIENT_ID", "")
 USDA_API_KEY: str = os.environ.get("USDA_API_KEY", "DEMO_KEY")
 
 USDA_BASE_URL = "https://api.nal.usda.gov/fdc/v1"

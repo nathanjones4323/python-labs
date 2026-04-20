@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -9,8 +9,8 @@ import {
   Alert,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { createUser, upsertProfile } from "../lib/api";
-import { saveUserId } from "../lib/storage";
+import { upsertProfile } from "../lib/api";
+import { loadUserId } from "../lib/storage";
 
 const DIETARY_OPTIONS = [
   "Vegetarian",
@@ -58,20 +58,24 @@ function ToggleChip({
   );
 }
 
-type Step = "email" | "restrictions" | "goals" | "details";
+type Step = "restrictions" | "goals" | "details";
 
 export default function OnboardingScreen() {
   const router = useRouter();
-  const [step, setStep] = useState<Step>("email");
+  const [step, setStep] = useState<Step>("restrictions");
   const [loading, setLoading] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  const [email, setEmail] = useState("");
   const [restrictions, setRestrictions] = useState<string[]>([]);
   const [allergies, setAllergies] = useState("");
   const [goal, setGoal] = useState("");
   const [calories, setCalories] = useState("");
   const [mealsPerDay, setMealsPerDay] = useState("3");
   const [otherPrefs, setOtherPrefs] = useState("");
+
+  useEffect(() => {
+    loadUserId().then(setUserId);
+  }, []);
 
   function toggleRestriction(opt: string) {
     setRestrictions((prev) =>
@@ -80,12 +84,10 @@ export default function OnboardingScreen() {
   }
 
   async function finish() {
-    if (!email.trim()) return;
+    if (!userId) return;
     setLoading(true);
     try {
-      const user = await createUser(email.trim().toLowerCase());
-      await saveUserId(user.id);
-      await upsertProfile(user.id, {
+      await upsertProfile(userId, {
         dietary_restrictions: restrictions,
         allergies: allergies
           .split(",")
@@ -107,33 +109,10 @@ export default function OnboardingScreen() {
   return (
     <ScrollView className="flex-1 bg-white">
       <View className="flex-1 px-6 py-12 max-w-lg mx-auto w-full">
-        <Text className="text-3xl font-bold text-gray-900 mb-2">Meal Planner</Text>
+        <Text className="text-3xl font-bold text-gray-900 mb-2">One last step</Text>
         <Text className="text-gray-500 mb-8">
-          Let's set up your personalized meal planning profile.
+          Tell us about your preferences so we can personalize your meal plans.
         </Text>
-
-        {/* Step: Email */}
-        {step === "email" && (
-          <View>
-            <Text className="text-xl font-semibold text-gray-800 mb-4">
-              What's your email?
-            </Text>
-            <TextInput
-              className="border border-gray-300 rounded-xl px-4 py-3 text-base text-gray-900 mb-4"
-              placeholder="you@example.com"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              value={email}
-              onChangeText={setEmail}
-            />
-            <Pressable
-              className="bg-primary-600 rounded-xl py-3 items-center"
-              onPress={() => email.includes("@") && setStep("restrictions")}
-            >
-              <Text className="text-white font-semibold text-base">Continue</Text>
-            </Pressable>
-          </View>
-        )}
 
         {/* Step: Dietary Restrictions */}
         {step === "restrictions" && (
@@ -248,9 +227,9 @@ export default function OnboardingScreen() {
           </View>
         )}
 
-        {/* Progress dots */}
+        {/* Progress dots — 3 steps */}
         <View className="flex-row justify-center gap-2 mt-8">
-          {(["email", "restrictions", "goals", "details"] as Step[]).map((s) => (
+          {(["restrictions", "goals", "details"] as Step[]).map((s) => (
             <View
               key={s}
               className={`w-2 h-2 rounded-full ${step === s ? "bg-primary-600" : "bg-gray-200"}`}
