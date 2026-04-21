@@ -3,7 +3,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db import get_conn
-from meal_planner.config import GOOGLE_CLIENT_ID
+from meal_planner.config import GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID
 from meal_planner.routers.users import _build_user_response
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -31,8 +31,10 @@ async def google_sign_in(body: GoogleAuthRequest):
 
         info = resp.json()
 
-        # Verify the token was issued for our app
-        if info.get("azp") != GOOGLE_CLIENT_ID and info.get("aud") != GOOGLE_CLIENT_ID:
+        # Verify the token was issued for our app (web or iOS client)
+        allowed_clients = {c for c in (GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID) if c}
+        token_clients = {info.get("azp"), info.get("aud")} - {None}
+        if not allowed_clients.intersection(token_clients):
             raise HTTPException(status_code=401, detail="Token was not issued for this app")
 
         if not info.get("email_verified", False):

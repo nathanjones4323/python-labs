@@ -1,40 +1,53 @@
 import { useState, useEffect } from "react";
-import { View, Text, Pressable, ActivityIndicator, Platform } from "react-native";
+import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
-import * as Google from "expo-auth-session/providers/google";
+import {
+  useAuthRequest,
+  makeRedirectUri,
+  exchangeCodeAsync,
+  ResponseType,
+  type DiscoveryDocument,
+} from "expo-auth-session";
 import * as WebBrowser from "expo-web-browser";
 import { signInWithGoogle } from "../lib/api";
 import { saveUserId } from "../lib/storage";
 
 WebBrowser.maybeCompleteAuthSession();
 
+const GOOGLE_DISCOVERY: DiscoveryDocument = {
+  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenEndpoint: "https://oauth2.googleapis.com/token",
+  revocationEndpoint: "https://oauth2.googleapis.com/revoke",
+};
+
+const redirectUri = makeRedirectUri({ scheme: "com.nathanjones.mealplanner" });
+
 export default function AuthScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Platform-specific IDs are required on native; keep backward compatibility
-  // with EXPO_PUBLIC_GOOGLE_CLIENT_ID as a generic fallback.
-  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-  const androidClientId =
-    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID ?? "";
-  const hasPlatformClientId =
-    Platform.OS === "ios" ? Boolean(iosClientId) : Platform.OS === "android" ? Boolean(androidClientId) : Boolean(webClientId);
+  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? "";
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? "";
 
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    webClientId,
-    iosClientId,
-    androidClientId,
-  });
+  const [request, response, promptAsync] = useAuthRequest(
+    {
+      clientId: iosClientId,
+      redirectUri,
+      responseType: ResponseType.Code,
+      scopes: ["openid", "profile", "email"],
+      usePKCE: true,
+    },
+    GOOGLE_DISCOVERY
+  );
 
   useEffect(() => {
     if (response?.type === "success") {
-      const accessToken = response.authentication?.accessToken;
-      if (accessToken) {
-        handleGoogleToken(accessToken);
+      const code = response.params.code;
+      if (code) {
+        exchangeCodeForToken(code);
       } else {
-        setError("Google sign-in did not return a token. Please try again.");
+        setError("Google sign-in did not return an authorization code. Please try again.");
         setLoading(false);
       }
     } else if (response?.type === "error") {
@@ -44,6 +57,24 @@ export default function AuthScreen() {
       setLoading(false);
     }
   }, [response]);
+
+  async function exchangeCodeForToken(code: string) {
+    try {
+      const tokenResponse = await exchangeCodeAsync(
+        {
+          clientId: iosClientId,
+          redirectUri,
+          code,
+          extraParams: { code_verifier: request!.codeVerifier ?? "" },
+        },
+        GOOGLE_DISCOVERY
+      );
+      await handleGoogleToken(tokenResponse.accessToken);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Token exchange failed. Please try again.");
+      setLoading(false);
+    }
+  }
 
   async function handleGoogleToken(accessToken: string) {
     try {
@@ -65,6 +96,8 @@ export default function AuthScreen() {
     setLoading(true);
     promptAsync();
   }
+
+  const hasPlatformClientId = Boolean(iosClientId);
 
   return (
     <View className="flex-1 bg-white items-center justify-center px-8">
@@ -89,7 +122,6 @@ export default function AuthScreen() {
           <ActivityIndicator color="#374151" />
         ) : (
           <>
-            {/* Google "G" logo SVG as text approximation */}
             <View className="w-6 h-6 items-center justify-center">
               <Text style={{ fontSize: 18, fontWeight: "700", color: "#4285F4" }}>G</Text>
             </View>
@@ -100,8 +132,7 @@ export default function AuthScreen() {
 
       {!hasPlatformClientId && (
         <Text className="text-orange-500 text-xs text-center mt-4 max-w-sm">
-          Missing Google client ID for this platform. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID / EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID /
-          EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID (or EXPO_PUBLIC_GOOGLE_CLIENT_ID fallback) and restart Metro.
+          Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID and restart Metro.
         </Text>
       )}
 
