@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nathan Jones — Senior Data Engineer</title>
+  <meta property="og:type"        content="website" />
+  <meta property="og:url"         content="https://nathanjones4323.github.io/" />
+  <meta property="og:title"       content="Nathan Jones — Senior Data Engineer" />
+  <meta property="og:description" content="Senior Data Engineer at Curri. I design production data systems, ship full-stack applications, and integrate AI into products people actually use." />
+  <meta property="og:image"       content="https://nathanjones4323.github.io/assets/photo.jpg" />
+  <meta name="twitter:card"       content="summary_large_image" />
+  <meta name="twitter:title"      content="Nathan Jones — Senior Data Engineer" />
+  <meta name="twitter:description" content="Senior Data Engineer at Curri. Production data systems, full-stack apps, AI integration." />
+  <meta name="twitter:image"      content="https://nathanjones4323.github.io/assets/photo.jpg" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%2300d4ff'/><stop offset='1' stop-color='%237c5cfc'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='%23060d1a'/><text x='16' y='22' font-family='Inter,sans-serif' font-size='14' font-weight='800' fill='url(%23g)' text-anchor='middle'>NJ</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -85,6 +95,7 @@
 
     .nav-links a:hover { color: var(--text); }
     .nav-links a:hover::after { transform: scaleX(1); }
+    .nav-links a.nav-active { color: var(--text); }
 
     .nav-cta {
       padding: 9px 22px; border-radius: 8px;
@@ -231,6 +242,14 @@
 
     /* ---- ABOUT ---- */
     #about { background: var(--bg2); }
+
+    .about-photo {
+      width: 100%; border-radius: 16px;
+      border: 1px solid var(--card-border);
+      margin-bottom: 20px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+      object-fit: cover; max-height: 340px;
+    }
 
     .about-grid {
       display: grid; grid-template-columns: 1fr 1fr;
@@ -628,6 +647,9 @@
       <a href="#contact" class="btn-secondary">
         <i class="fa-solid fa-paper-plane"></i> Get in Touch
       </a>
+      <a href="resume.pdf" class="btn-secondary" download>
+        <i class="fa-solid fa-file-arrow-down"></i> Resume
+      </a>
     </div>
   </div>
   <div class="hero-scroll">
@@ -676,6 +698,12 @@
         </div>
       </div>
       <div class="about-stats reveal reveal-delay-2">
+        <img
+          src="assets/photo.jpg"
+          alt="Hiking the hoodoos at Bryce Canyon"
+          class="about-photo"
+          style="grid-column: 1 / -1;"
+        />
         <div class="stat-card">
           <div class="stat-num">5+</div>
           <div class="stat-label">Years at Curri building data infrastructure</div>
@@ -1035,19 +1063,6 @@
 
   document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
 
-  // ---- NAV ACTIVE STATE ----
-  const sections = document.querySelectorAll('section[id]');
-  const navAnchors = document.querySelectorAll('.nav-links a[href^="#"]');
-  const navObserver = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        navAnchors.forEach(a => a.style.color = '');
-        const active = document.querySelector(`.nav-links a[href="#${e.target.id}"]`);
-        if (active && !active.classList.contains('nav-cta')) active.style.color = 'var(--text)';
-      }
-    });
-  }, { threshold: 0.4 });
-  sections.forEach(s => navObserver.observe(s));
 
   // ---- NAV SHADOW ON SCROLL ----
   window.addEventListener('scroll', () => {
