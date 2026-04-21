@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, Pressable, ActivityIndicator } from "react-native";
+import { Platform, View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import {
   useAuthRequest,
@@ -28,11 +28,17 @@ export default function AuthScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? "";
+  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? "";
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? "";
+
+  const platformClientId =
+    Platform.OS === "ios" ? iosClientId :
+    Platform.OS === "android" ? androidClientId :
+    webClientId;
 
   const [request, response, promptAsync] = useAuthRequest(
     {
-      clientId: iosClientId,
+      clientId: platformClientId,
       redirectUri,
       responseType: ResponseType.Code,
       scopes: ["openid", "profile", "email"],
@@ -59,13 +65,18 @@ export default function AuthScreen() {
   }, [response]);
 
   async function exchangeCodeForToken(code: string) {
+    if (!request?.codeVerifier) {
+      setError("PKCE code verifier missing. Please try again.");
+      setLoading(false);
+      return;
+    }
     try {
       const tokenResponse = await exchangeCodeAsync(
         {
-          clientId: iosClientId,
+          clientId: platformClientId,
           redirectUri,
           code,
-          extraParams: { code_verifier: request!.codeVerifier ?? "" },
+          extraParams: { code_verifier: request.codeVerifier },
         },
         GOOGLE_DISCOVERY
       );
@@ -97,7 +108,7 @@ export default function AuthScreen() {
     promptAsync();
   }
 
-  const hasPlatformClientId = Boolean(iosClientId);
+  const hasPlatformClientId = Boolean(platformClientId);
 
   return (
     <View className="flex-1 bg-white items-center justify-center px-8">
@@ -132,7 +143,7 @@ export default function AuthScreen() {
 
       {!hasPlatformClientId && (
         <Text className="text-orange-500 text-xs text-center mt-4 max-w-sm">
-          Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID and restart Metro.
+          Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID / EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID / EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and restart Metro.
         </Text>
       )}
 
