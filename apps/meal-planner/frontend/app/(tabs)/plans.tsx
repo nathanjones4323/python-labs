@@ -10,9 +10,9 @@ import {
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Calendar, DateData } from "react-native-calendars";
-import { listMealPlans, getMealPlan } from "../../lib/api";
+import { listMealPlans, getMealPlan, listFavoriteSummaries, favoriteMeal, unfavoriteMeal } from "../../lib/api";
 import { loadUserId, savePendingPrompt } from "../../lib/storage";
-import { MealPlan, MealPlanSummary, Meal } from "../../lib/types";
+import { MealPlan, MealPlanSummary, Meal, FavoriteMealSummary } from "../../lib/types";
 import MealCard from "../../components/MealCard";
 import MacroBar from "../../components/MacroBar";
 
@@ -74,6 +74,7 @@ export default function PlansScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [favSummaries, setFavSummaries] = useState<FavoriteMealSummary[]>([]);
   const dayOffsetsRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
@@ -82,9 +83,42 @@ export default function PlansScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (userId) loadSummaries();
+      if (userId) {
+        loadSummaries();
+        loadFavorites(userId);
+      }
     }, [userId])
   );
+
+  async function loadFavorites(uid: string) {
+    try {
+      const data = await listFavoriteSummaries(uid);
+      setFavSummaries(data);
+    } catch {
+      // silently fail
+    }
+  }
+
+  async function handleFavorite(meal: Meal) {
+    if (!userId) return;
+    try {
+      await favoriteMeal(userId, meal.id);
+      await loadFavorites(userId);
+    } catch {
+      // silently fail
+    }
+  }
+
+  async function handleUnfavorite(meal: Meal) {
+    const existing = favSummaries.find((f) => f.source_meal_id === meal.id);
+    if (!existing) return;
+    try {
+      await unfavoriteMeal(existing.id);
+      setFavSummaries((prev) => prev.filter((f) => f.id !== existing.id));
+    } catch {
+      // silently fail
+    }
+  }
 
   async function loadSummaries() {
     if (!userId) return;
@@ -428,7 +462,9 @@ export default function PlansScreen() {
                   </Pressable>
 
                   {/* Meals for this day */}
-                  {meals.map((meal) => (
+                  {meals.map((meal) => {
+                    const existingFav = favSummaries.find((f) => f.source_meal_id === meal.id);
+                    return (
                     <View key={meal.id}>
                       <MealCard
                         meal={meal}
@@ -438,6 +474,10 @@ export default function PlansScreen() {
                             params: { id: meal.id, planId: activePlan!.id },
                           })
                         }
+                        isFavorited={!!existingFav}
+                        favoriteId={existingFav?.id}
+                        onFavorite={() => handleFavorite(meal)}
+                        onUnfavorite={() => handleUnfavorite(meal)}
                       />
                       <Pressable
                         onPress={async () => {
@@ -450,7 +490,8 @@ export default function PlansScreen() {
                         <Text className="text-xs font-medium text-primary-700">Ask AI to swap</Text>
                       </Pressable>
                     </View>
-                  ))}
+                    );
+                  })}
                 </View>
               );
             })}

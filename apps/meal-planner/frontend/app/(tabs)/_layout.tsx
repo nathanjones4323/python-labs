@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { Tabs } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -12,7 +13,7 @@ export default function TabsLayout() {
           borderTopWidth: 1,
           backgroundColor: "#ffffff",
           height: 60,
-          paddingBottom: 8,
+          paddingBottom: Platform.select({ web: 8, default: 8 }),
           paddingTop: 6,
         },
         tabBarLabelStyle: {
@@ -47,6 +48,15 @@ export default function TabsLayout() {
           title: "Meal Plans",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="calendar-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="recipes"
+        options={{
+          title: "Recipes",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="heart-outline" size={size} color={color} />
           ),
         }}
       />
