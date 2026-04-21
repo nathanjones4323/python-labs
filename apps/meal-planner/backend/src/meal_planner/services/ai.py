@@ -117,7 +117,10 @@ _TOOL_LABELS = {
 }
 
 
-def _build_system_prompt(profile: UserProfileResponse | None) -> str:
+def _build_system_prompt(
+    profile: UserProfileResponse | None,
+    hearted_meals: list[dict] | None = None,
+) -> str:
     has_profile = profile and profile.onboarding_complete
 
     if has_profile:
@@ -166,6 +169,18 @@ def _build_system_prompt(profile: UserProfileResponse | None) -> str:
             "If you need more detail, suggest they update their profile in the Profile tab."
         )
 
+    if hearted_meals:
+        lines = [
+            f"- {m['name']} ({m['meal_type']}, ~{round(m['total_nutrition']['calories'])} kcal, {round(m['total_nutrition']['protein_g'], 1)}g protein)"
+            for m in hearted_meals[:20]
+        ]
+        hearted_section = (
+            "\n\n## Hearted Meals (the user has saved these — incorporate them when possible)\n"
+            + "\n".join(lines)
+        )
+    else:
+        hearted_section = ""
+
     return f"""You are a meal planning assistant with access to the USDA FoodData Central database.
 
 Your job is to help users create personalized meal plans with accurate nutritional information.
@@ -179,7 +194,7 @@ Guidelines:
 - When creating a meal plan, include every ingredient with its FDC ID and gram weight.
 - After creating the plan, summarize the daily nutritional totals for the user.
 - When naming a plan, be specific: include duration and key characteristic — e.g. "High-Protein 5-Day", "Mediterranean Week", "Quick 30-Min Weeknight Meals". Avoid generic names like "7-Day Meal Plan".
-- {preferences_instruction}{profile_section}"""
+- {preferences_instruction}{profile_section}{hearted_section}"""
 
 
 def _cache_food(food: "usda_svc.FoodResult") -> None:
@@ -339,6 +354,7 @@ async def _handle_tool_call(
 async def chat_stream(
     messages: list[dict],
     profile: UserProfileResponse | None,
+    hearted_meals: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     """
     Streaming agentic loop. Yields SSE-formatted chunks:
@@ -346,7 +362,7 @@ async def chat_stream(
       {"type": "tool_use",   "name": "...", "label": "..."}  tool starting
       {"type": "plan_created","plan": {...}}              plan ready to save
     """
-    system = _build_system_prompt(profile)
+    system = _build_system_prompt(profile, hearted_meals)
     pending_plan: dict | None = None
 
     while True:

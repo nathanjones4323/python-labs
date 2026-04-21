@@ -11,12 +11,13 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { getMealPlan, updateMeal, aiEditMeal } from "../../lib/api";
+import { getMealPlan, updateMeal, aiEditMeal, listFavoriteSummaries, getFavorite } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
-import { Meal, MealPlan, MealFood, FoodSearchResult } from "../../lib/types";
+import { Meal, MealPlan, MealFood, FoodSearchResult, FavoriteMealSummary } from "../../lib/types";
 import NutritionLabel from "../../components/NutritionLabel";
 import MacroBar from "../../components/MacroBar";
 import FoodSearchModal from "../../components/FoodSearchModal";
+import FavoritesPickerModal from "../../components/FavoritesPickerModal";
 
 export default function MealDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -43,8 +44,17 @@ export default function MealDetailScreen() {
   const [aiLoading, setAILoading] = useState(false);
   const [aiResult, setAiResult] = useState<Meal | null>(null); // pending diff
 
+  // Favorites quick-swap state
+  const [favSummaries, setFavSummaries] = useState<FavoriteMealSummary[]>([]);
+  const [showFavPicker, setShowFavPicker] = useState(false);
+
   useEffect(() => {
-    loadUserId().then(setUserId);
+    loadUserId().then((uid) => {
+      setUserId(uid);
+      if (uid) {
+        listFavoriteSummaries(uid).then(setFavSummaries).catch(() => {});
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -141,6 +151,21 @@ export default function MealDetailScreen() {
     }
   }
 
+  async function handleSwapWithFavorite(fav: FavoriteMealSummary) {
+    try {
+      const full = await getFavorite(fav.id);
+      setEditName(full.name);
+      setEditInstructions([...full.instructions]);
+      setEditFoods([...full.foods]);
+      const qtys: Record<string, string> = {};
+      for (const f of full.foods) qtys[f.id] = String(Math.round(f.quantity_g));
+      setEditQuantities(qtys);
+      setEditing(true);
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Could not load favorite");
+    }
+  }
+
   function applyAIResult() {
     if (!aiResult) return;
     setMeal(aiResult);
@@ -210,21 +235,30 @@ export default function MealDetailScreen() {
 
           {/* Action row — only shown when not editing */}
           {!editing && !aiResult && (
-            <View className="flex-row gap-2 mb-4">
+            <View className="flex-row flex-wrap gap-2 mb-4">
               <Pressable
                 onPress={() => setShowAIEdit(true)}
-                className="flex-row items-center gap-1.5 bg-primary-50 border border-primary-200 px-4 py-2 rounded-xl"
+                className="flex-row items-center gap-1.5 bg-primary-50 border border-primary-200 px-4 py-2 rounded-xl web:cursor-pointer"
               >
                 <Ionicons name="sparkles-outline" size={15} color="#16a34a" />
                 <Text className="text-sm font-semibold text-primary-700">Edit with AI</Text>
               </Pressable>
               <Pressable
                 onPress={enterEditMode}
-                className="flex-row items-center gap-1.5 bg-gray-100 px-4 py-2 rounded-xl"
+                className="flex-row items-center gap-1.5 bg-gray-100 px-4 py-2 rounded-xl web:cursor-pointer"
               >
                 <Ionicons name="pencil-outline" size={15} color="#6b7280" />
                 <Text className="text-sm font-semibold text-gray-600">Edit manually</Text>
               </Pressable>
+              {favSummaries.length > 0 && (
+                <Pressable
+                  onPress={() => setShowFavPicker(true)}
+                  className="flex-row items-center gap-1.5 bg-red-50 border border-red-200 px-4 py-2 rounded-xl web:cursor-pointer"
+                >
+                  <Ionicons name="heart-outline" size={15} color="#ef4444" />
+                  <Text className="text-sm font-semibold text-red-600">Use favorite</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -499,6 +533,16 @@ export default function MealDetailScreen() {
       </ScrollView>
 
       <FoodSearchModal visible={showFoodSearch} onClose={() => setShowFoodSearch(false)} onSelect={addEditFood} />
+
+      <FavoritesPickerModal
+        visible={showFavPicker}
+        onClose={() => setShowFavPicker(false)}
+        favorites={favSummaries}
+        multiSelect={false}
+        onSelect={handleSwapWithFavorite}
+        title="Use Favorite Meal"
+        subtitle="Replace this meal's contents with a saved favorite"
+      />
 
       {/* AI edit input modal */}
       <Modal visible={showAIEdit} transparent animationType="slide" onRequestClose={() => setShowAIEdit(false)}>

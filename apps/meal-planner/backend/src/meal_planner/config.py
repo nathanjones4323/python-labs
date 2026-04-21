@@ -18,4 +18,4 @@ USDA_BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 # Only use Foundation Foods and SR Legacy — whole foods, no branded products
 USDA_DATA_TYPES = ["Foundation", "SR Legacy"]
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
