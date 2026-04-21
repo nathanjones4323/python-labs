@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "meal-planner",
+    "scheme": "com.nathanjones.mealplanner",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -17,12 +17,31 @@
       "output": "static",
       "favicon": "./assets/favicon.png"
     },
+    "ios": {
+      "bundleIdentifier": "com.nathanjones.mealplanner"
+    },
+    "android": {
+      "package": "com.nathanjones.mealplanner"
+    },
     "plugins": [
       "expo-router",
       "expo-font"
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d1e0e575-fcf4-4345-8e39-6f4b242d0ba5"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d1e0e575-fcf4-4345-8e39-6f4b242d0ba5"
+      }
+    },
+    "owner": "dodger-kid"
   }
 }
