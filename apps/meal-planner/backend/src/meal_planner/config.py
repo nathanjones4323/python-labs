@@ -19,3 +19,5 @@ USDA_BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 USDA_DATA_TYPES = ["Foundation", "SR Legacy"]
 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+
+DEV_MODE: bool = os.environ.get("DEV_MODE", "").lower() in ("1", "true", "yes")

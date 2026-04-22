@@ -123,6 +123,52 @@ async def update_meal(meal_id: uuid.UUID, body: MealUpdateBody):
         return await _load_meal_response(conn, str(meal_id))
 
 
+@router.post("/{meal_id}/ai-preview", response_model=MealResponse)
+async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
+    """Run AI edit and return proposed MealResponse WITHOUT saving to DB."""
+    from meal_planner.services.meal_edit import edit_meal
+
+    with get_conn() as conn:
+        original = await _load_meal_response(conn, str(meal_id))
+
+    meal_dict = original.model_dump(mode="json")
+    result = await edit_meal(meal_dict, body.instruction)
+
+    if result is None:
+        raise HTTPException(status_code=422, detail="AI could not process the edit instruction")
+
+    # Build a preview response by looking up proposed foods from cache (no meal_foods insert)
+    with get_conn() as conn:
+        proposed_foods: list[MealFoodResponse] = []
+        for food_item in result.get("foods", []):
+            fdc_id = food_item["fdc_id"]
+            quantity_g = food_item["quantity_g"]
+            food_data = await _get_or_cache_food(conn, fdc_id)
+            conn.commit()
+            scaled = usda_svc.scale_nutrients(food_data["nutrients"], float(quantity_g))
+            proposed_foods.append(
+                MealFoodResponse(
+                    id=uuid.uuid4(),
+                    fdc_id=fdc_id,
+                    description=food_data["description"],
+                    quantity_g=float(quantity_g),
+                    serving_description=food_item.get("serving_description"),
+                    nutrients=scaled,
+                )
+            )
+
+    return MealResponse(
+        id=original.id,
+        name=result.get("name") or original.name,
+        meal_type=original.meal_type,
+        scheduled_date=original.scheduled_date,
+        instructions=result.get("instructions") or original.instructions,
+        notes=original.notes,
+        foods=proposed_foods,
+        total_nutrition=sum_nutrients([f.nutrients for f in proposed_foods]),
+    )
+
+
 @router.post("/{meal_id}/ai-edit", response_model=MealResponse)
 async def ai_edit_meal(meal_id: uuid.UUID, body: MealAIEditBody):
     from meal_planner.services.meal_edit import edit_meal

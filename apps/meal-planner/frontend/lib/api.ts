@@ -44,6 +44,16 @@ export async function signInWithGoogle(accessToken: string): Promise<{
   });
 }
 
+export async function devBypassAuth(): Promise<{
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  is_new_user: boolean;
+  profile: UserProfile | null;
+}> {
+  return request("/auth/dev-bypass", { method: "POST" });
+}
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 export async function createUser(email: string): Promise<User> {
@@ -106,6 +116,17 @@ export async function updateMeal(
   return request<Meal>(`/meals/${mealId}`, {
     method: "PUT",
     body: JSON.stringify(body),
+  });
+}
+
+export async function aiPreviewMeal(
+  mealId: string,
+  instruction: string,
+  userId: string
+): Promise<Meal> {
+  return request<Meal>(`/meals/${mealId}/ai-preview`, {
+    method: "POST",
+    body: JSON.stringify({ instruction, user_id: userId }),
   });
 }
 

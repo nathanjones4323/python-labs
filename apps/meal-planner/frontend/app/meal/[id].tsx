@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { getMealPlan, updateMeal, aiEditMeal, listFavoriteSummaries, getFavorite } from "../../lib/api";
+import { getMealPlan, updateMeal, aiPreviewMeal, listFavoriteSummaries, getFavorite } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
 import { Meal, MealPlan, MealFood, FoodSearchResult, FavoriteMealSummary } from "../../lib/types";
 import NutritionLabel from "../../components/NutritionLabel";
@@ -141,8 +141,8 @@ export default function MealDetailScreen() {
     if (!meal || !userId || !aiInstruction.trim()) return;
     setAILoading(true);
     try {
-      const updated = await aiEditMeal(meal.id, aiInstruction.trim(), userId);
-      setAiResult(updated);
+      const preview = await aiPreviewMeal(meal.id, aiInstruction.trim(), userId);
+      setAiResult(preview);
       setShowAIEdit(false);
     } catch (e) {
       Alert.alert("AI edit failed", e instanceof Error ? e.message : "Unknown error");
@@ -166,16 +166,33 @@ export default function MealDetailScreen() {
     }
   }
 
-  function applyAIResult() {
-    if (!aiResult) return;
-    setMeal(aiResult);
-    initEditState(aiResult);
-    setAiResult(null);
-    setAIInstruction("");
+  async function applyAIResult() {
+    if (!aiResult || !meal) return;
+    setSaving(true);
+    try {
+      const saved = await updateMeal(meal.id, {
+        name: aiResult.name,
+        instructions: aiResult.instructions,
+        foods: aiResult.foods.map((f) => ({
+          fdc_id: f.fdc_id,
+          quantity_g: f.quantity_g,
+          serving_description: f.serving_description ?? undefined,
+        })),
+      });
+      setMeal(saved);
+      initEditState(saved);
+      setAiResult(null);
+      setAIInstruction("");
+    } catch (e) {
+      Alert.alert("Save failed", e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setSaving(false);
+    }
   }
 
   function discardAIResult() {
     setAiResult(null);
+    setAIInstruction("");
   }
 
   if (loading) {
@@ -386,11 +403,14 @@ export default function MealDetailScreen() {
 
                 {/* Apply/Discard */}
                 <View className="flex-row gap-3 px-4 pb-4 pt-3 bg-white border-t border-gray-100">
-                  <Pressable onPress={discardAIResult} className="flex-1 border border-gray-300 rounded-xl py-3 items-center">
+                  <Pressable onPress={discardAIResult} disabled={saving} className="flex-1 border border-gray-300 rounded-xl py-3 items-center">
                     <Text className="text-sm font-semibold text-gray-600">Discard</Text>
                   </Pressable>
-                  <Pressable onPress={applyAIResult} className="flex-1 bg-primary-600 rounded-xl py-3 items-center">
-                    <Text className="text-sm font-semibold text-white">Apply Changes</Text>
+                  <Pressable onPress={applyAIResult} disabled={saving} className="flex-1 bg-primary-600 rounded-xl py-3 items-center">
+                    {saving
+                      ? <ActivityIndicator size="small" color="white" />
+                      : <Text className="text-sm font-semibold text-white">Apply Changes</Text>
+                    }
                   </Pressable>
                 </View>
               </View>
