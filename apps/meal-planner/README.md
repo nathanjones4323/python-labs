@@ -8,6 +8,38 @@ Expo (web) frontend and FastAPI backend for meal planning, with PostgreSQL/PostG
 - **Python 3.12+** and **[uv](https://docs.astral.sh/uv/)** (workspace installs dependencies from the repo root)
 - **Docker** (recommended) to run PostgreSQL
 
+## Quick start (dev machine)
+
+The fastest way to get everything running locally is a single script that starts the DB, runs migrations, and launches the backend and frontend in one shot.
+
+**1. Copy and fill in `.env`** at the repository root:
+
+```bash
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY (required for AI features)
+```
+
+**2. Run the dev script** from the repository root:
+
+```bash
+bash apps/meal-planner/dev.sh
+```
+
+This will:
+- Start the PostGIS container via Docker Compose
+- Wait until the DB is healthy
+- Run any pending Alembic migrations
+- Start the FastAPI backend on [http://localhost:8000](http://localhost:8000)
+- Install frontend dependencies and launch the Expo web dev server
+
+Press **Ctrl-C** in the terminal running the frontend to stop it; the backend process is cleaned up automatically.
+
+---
+
+## Manual setup (step by step)
+
+Follow these steps if you want more control over each piece.
+
 ## 1. Start the database
 
 From the **repository root** (`python-labs`):
