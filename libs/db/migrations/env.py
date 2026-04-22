@@ -9,9 +9,15 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-DATABASE_URL = os.environ.get(
+_raw_url = os.environ.get(
     "DATABASE_URL",
-    "postgresql+psycopg://postgres:postgres@localhost:5432/app",
+    "postgresql://postgres:postgres@localhost:5432/app",
+)
+# SQLAlchemy needs postgresql+psycopg:// but psycopg_pool uses postgresql://
+DATABASE_URL = (
+    _raw_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if not _raw_url.startswith("postgresql+")
+    else _raw_url
 )
 
 

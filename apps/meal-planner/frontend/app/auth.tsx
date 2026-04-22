@@ -1,59 +1,36 @@
 import { useState, useEffect } from "react";
-import { Platform, View, Text, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
-import {
-  useAuthRequest,
-  makeRedirectUri,
-  exchangeCodeAsync,
-  ResponseType,
-  type DiscoveryDocument,
-} from "expo-auth-session";
+import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
 import { signInWithGoogle } from "../lib/api";
 import { saveUserId } from "../lib/storage";
 
 WebBrowser.maybeCompleteAuthSession();
 
-const GOOGLE_DISCOVERY: DiscoveryDocument = {
-  authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-  tokenEndpoint: "https://oauth2.googleapis.com/token",
-  revocationEndpoint: "https://oauth2.googleapis.com/revoke",
-};
-
-const redirectUri = makeRedirectUri({ scheme: "com.nathanjones.mealplanner" });
-
 export default function AuthScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? "";
-  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ?? "";
+  // Google.useAuthRequest automatically picks the right flow per platform:
+  //   web  → implicit flow (access token directly, no secret needed, no loopback issue)
+  //   iOS  → PKCE with iosClientId + custom scheme redirect
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? "";
+  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ?? "";
 
-  const platformClientId =
-    Platform.OS === "ios" ? iosClientId :
-    Platform.OS === "android" ? androidClientId :
-    webClientId;
-
-  const [request, response, promptAsync] = useAuthRequest(
-    {
-      clientId: platformClientId,
-      redirectUri,
-      responseType: ResponseType.Code,
-      scopes: ["openid", "profile", "email"],
-      usePKCE: true,
-    },
-    GOOGLE_DISCOVERY
-  );
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    webClientId,
+    iosClientId,
+  });
 
   useEffect(() => {
     if (response?.type === "success") {
-      const code = response.params.code;
-      if (code) {
-        exchangeCodeForToken(code);
+      const accessToken = response.authentication?.accessToken;
+      if (accessToken) {
+        handleGoogleToken(accessToken);
       } else {
-        setError("Google sign-in did not return an authorization code. Please try again.");
+        setError("Google sign-in did not return a token. Please try again.");
         setLoading(false);
       }
     } else if (response?.type === "error") {
@@ -63,29 +40,6 @@ export default function AuthScreen() {
       setLoading(false);
     }
   }, [response]);
-
-  async function exchangeCodeForToken(code: string) {
-    if (!request?.codeVerifier) {
-      setError("PKCE code verifier missing. Please try again.");
-      setLoading(false);
-      return;
-    }
-    try {
-      const tokenResponse = await exchangeCodeAsync(
-        {
-          clientId: platformClientId,
-          redirectUri,
-          code,
-          extraParams: { code_verifier: request.codeVerifier },
-        },
-        GOOGLE_DISCOVERY
-      );
-      await handleGoogleToken(tokenResponse.accessToken);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Token exchange failed. Please try again.");
-      setLoading(false);
-    }
-  }
 
   async function handleGoogleToken(accessToken: string) {
     try {
@@ -108,7 +62,7 @@ export default function AuthScreen() {
     promptAsync();
   }
 
-  const hasPlatformClientId = Boolean(platformClientId);
+  const hasPlatformClientId = Boolean(webClientId);
 
   return (
     <View className="flex-1 bg-white items-center justify-center px-8">
@@ -143,7 +97,7 @@ export default function AuthScreen() {
 
       {!hasPlatformClientId && (
         <Text className="text-orange-500 text-xs text-center mt-4 max-w-sm">
-          Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID / EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID / EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and restart Metro.
+          Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and restart Metro.
         </Text>
       )}
 
