@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from db import get_conn
 from meal_planner.models.meal_plan import MealFoodIn, MealFoodResponse, MealResponse
 from meal_planner.models.food import NutrientSummary
+from meal_planner.models.user import UserProfileResponse
 from meal_planner.services import usda as usda_svc
 from meal_planner.services.nutrition import sum_nutrients
 from meal_planner.routers.meal_plans import _get_or_cache_food
@@ -123,6 +124,47 @@ async def update_meal(meal_id: uuid.UUID, body: MealUpdateBody):
         return await _load_meal_response(conn, str(meal_id))
 
 
+def _load_edit_context(conn, meal_id: str, user_id: str) -> tuple[UserProfileResponse | None, float | None]:
+    """Load user profile and other-meals calorie total for the same day."""
+    profile_row = conn.execute(
+        """
+        SELECT user_id, dietary_restrictions, allergies, goals,
+               calorie_target, meals_per_day, preferences, onboarding_complete
+        FROM user_profiles WHERE user_id = %s
+        """,
+        (user_id,),
+    ).fetchone()
+    profile: UserProfileResponse | None = (
+        UserProfileResponse(
+            user_id=profile_row[0],
+            dietary_restrictions=profile_row[1] or [],
+            allergies=profile_row[2] or [],
+            goals=profile_row[3],
+            calorie_target=profile_row[4],
+            meals_per_day=profile_row[5] or 3,
+            preferences=profile_row[6] or {},
+            onboarding_complete=profile_row[7],
+        )
+        if profile_row else None
+    )
+
+    other_kcal_row = conn.execute(
+        """
+        SELECT COALESCE(SUM((f.nutrients->>'calories')::numeric * mf.quantity_g / 100), 0)
+        FROM meals m
+        JOIN meal_foods mf ON mf.meal_id = m.id
+        JOIN foods f ON f.fdc_id = mf.fdc_id
+        WHERE m.meal_plan_id = (SELECT meal_plan_id FROM meals WHERE id = %s)
+          AND m.scheduled_date = (SELECT scheduled_date FROM meals WHERE id = %s)
+          AND m.id != %s
+        """,
+        (meal_id, meal_id, meal_id),
+    ).fetchone()
+    other_meals_kcal: float | None = float(other_kcal_row[0]) if other_kcal_row else None
+
+    return profile, other_meals_kcal
+
+
 @router.post("/{meal_id}/ai-preview", response_model=MealResponse)
 async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
     """Run AI edit and return proposed MealResponse WITHOUT saving to DB."""
@@ -130,9 +172,10 @@ async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
 
     with get_conn() as conn:
         original = await _load_meal_response(conn, str(meal_id))
+        profile, other_meals_kcal = _load_edit_context(conn, str(meal_id), str(body.user_id))
 
     meal_dict = original.model_dump(mode="json")
-    result = await edit_meal(meal_dict, body.instruction)
+    result = await edit_meal(meal_dict, body.instruction, profile=profile, other_meals_kcal=other_meals_kcal)
 
     if result is None:
         raise HTTPException(status_code=422, detail="AI could not process the edit instruction")
@@ -143,7 +186,18 @@ async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
         for food_item in result.get("foods", []):
             fdc_id = food_item["fdc_id"]
             quantity_g = food_item["quantity_g"]
-            food_data = await _get_or_cache_food(conn, fdc_id)
+            try:
+                food_data = await _get_or_cache_food(conn, fdc_id)
+            except HTTPException:
+                # AI hallucinated an FDC ID — fall back to searching by description
+                description = food_item.get("description", "")
+                if not description:
+                    continue
+                search_results = await usda_svc.search_foods(description, limit=1)
+                if not search_results:
+                    continue
+                fdc_id = search_results[0].fdc_id
+                food_data = await _get_or_cache_food(conn, fdc_id)
             conn.commit()
             scaled = usda_svc.scale_nutrients(food_data["nutrients"], float(quantity_g))
             proposed_foods.append(
@@ -175,9 +229,10 @@ async def ai_edit_meal(meal_id: uuid.UUID, body: MealAIEditBody):
 
     with get_conn() as conn:
         meal = await _load_meal_response(conn, str(meal_id))
+        profile, other_meals_kcal = _load_edit_context(conn, str(meal_id), str(body.user_id))
 
     meal_dict = meal.model_dump(mode="json")
-    result = await edit_meal(meal_dict, body.instruction)
+    result = await edit_meal(meal_dict, body.instruction, profile=profile, other_meals_kcal=other_meals_kcal)
 
     if result is None:
         raise HTTPException(status_code=422, detail="AI could not process the edit instruction")
