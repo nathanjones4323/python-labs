@@ -365,6 +365,7 @@ export default function PlansScreen() {
   }
 
   return (
+    <>
     <ScrollView
       ref={scrollRef}
       className="flex-1 bg-white"
@@ -710,5 +711,6 @@ export default function PlansScreen() {
           </View>
         </View>
       </Modal>
+      </>
   );
 }
