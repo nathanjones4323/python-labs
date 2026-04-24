@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { getMealPlan, updateMeal, aiPreviewMeal, listFavoriteSummaries, getFavorite } from "../../lib/api";
+import { getMealPlan, updateMeal, aiPreviewMeal, listFavoriteSummaries, getFavorite, favoriteMeal, unfavoriteMeal } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
 import { Meal, MealPlan, MealFood, FoodSearchResult, FavoriteMealSummary } from "../../lib/types";
 import NutritionLabel from "../../components/NutritionLabel";
@@ -48,6 +48,10 @@ export default function MealDetailScreen() {
   const [favSummaries, setFavSummaries] = useState<FavoriteMealSummary[]>([]);
   const [showFavPicker, setShowFavPicker] = useState(false);
 
+  // Heart / favorite state
+  const [favoriteId, setFavoriteId] = useState<string | null>(null);
+  const [favoriting, setFavoriting] = useState(false);
+
   useEffect(() => {
     loadUserId().then((uid) => {
       setUserId(uid);
@@ -56,6 +60,13 @@ export default function MealDetailScreen() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    if (meal && favSummaries.length > 0) {
+      const existing = favSummaries.find((f) => f.source_meal_id === meal.id);
+      setFavoriteId(existing?.id ?? null);
+    }
+  }, [meal, favSummaries]);
 
   useEffect(() => {
     if (!planId) { router.back(); return; }
@@ -163,6 +174,30 @@ export default function MealDetailScreen() {
       setEditing(true);
     } catch (e) {
       Alert.alert("Error", e instanceof Error ? e.message : "Could not load favorite");
+    }
+  }
+
+  async function toggleFavorite() {
+    if (!meal || !userId || favoriting) return;
+    setFavoriting(true);
+    try {
+      if (favoriteId) {
+        await unfavoriteMeal(favoriteId);
+        setFavoriteId(null);
+        setFavSummaries((prev) => prev.filter((f) => f.id !== favoriteId));
+      } else {
+        const fav = await favoriteMeal(userId, meal.id);
+        setFavoriteId(fav.id);
+        setFavSummaries((prev) => [...prev, {
+          id: fav.id, name: fav.name, meal_type: fav.meal_type,
+          created_at: fav.created_at, source_meal_id: meal.id,
+          total_nutrition: fav.total_nutrition,
+        }]);
+      }
+    } catch (e) {
+      Alert.alert("Error", e instanceof Error ? e.message : "Could not update favorites");
+    } finally {
+      setFavoriting(false);
     }
   }
 
@@ -276,6 +311,28 @@ export default function MealDetailScreen() {
                   <Text className="text-sm font-semibold text-red-600">Use favorite</Text>
                 </Pressable>
               )}
+              <Pressable
+                onPress={toggleFavorite}
+                disabled={favoriting}
+                className={`flex-row items-center gap-1.5 px-4 py-2 rounded-xl web:cursor-pointer ${
+                  favoriteId ? "bg-red-50 border border-red-200" : "bg-gray-100"
+                }`}
+              >
+                {favoriting ? (
+                  <ActivityIndicator size="small" color="#ef4444" />
+                ) : (
+                  <>
+                    <Ionicons
+                      name={favoriteId ? "heart" : "heart-outline"}
+                      size={15}
+                      color={favoriteId ? "#ef4444" : "#6b7280"}
+                    />
+                    <Text className={`text-sm font-semibold ${favoriteId ? "text-red-600" : "text-gray-600"}`}>
+                      {favoriteId ? "Saved" : "Save"}
+                    </Text>
+                  </>
+                )}
+              </Pressable>
             </View>
           )}
 

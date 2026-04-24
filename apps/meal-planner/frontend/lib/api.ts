@@ -191,12 +191,18 @@ interface ChatEvent {
 export async function* chatStream(
   userId: string,
   message: string,
-  sessionId?: string | null
+  sessionId?: string | null,
+  favoriteIds?: string[]
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${BASE_URL}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, message, session_id: sessionId ?? null }),
+    body: JSON.stringify({
+      user_id: userId,
+      message,
+      session_id: sessionId ?? null,
+      favorite_ids: favoriteIds ?? [],
+    }),
   });
 
   if (!res.ok) {
