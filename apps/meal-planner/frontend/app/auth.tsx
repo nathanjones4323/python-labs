@@ -3,7 +3,7 @@ import { View, Text, Pressable, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
-import { signInWithGoogle } from "../lib/api";
+import { signInWithGoogle, devBypassAuth } from "../lib/api";
 import { saveUserId } from "../lib/storage";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -63,6 +63,24 @@ export default function AuthScreen() {
   }
 
   const hasPlatformClientId = Boolean(webClientId);
+  const isDevBypassEnabled = process.env.EXPO_PUBLIC_DEV_BYPASS_AUTH === "true";
+
+  async function handleDevBypass() {
+    setError(null);
+    setLoading(true);
+    try {
+      const result = await devBypassAuth();
+      await saveUserId(result.user_id);
+      if (result.is_new_user) {
+        router.replace("/onboarding");
+      } else {
+        router.replace("/(tabs)/chat");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Dev bypass failed");
+      setLoading(false);
+    }
+  }
 
   return (
     <View className="flex-1 bg-white items-center justify-center px-8">
@@ -108,6 +126,17 @@ export default function AuthScreen() {
       <Text className="text-gray-400 text-xs text-center mt-8 max-w-xs leading-relaxed">
         By continuing, you agree to our Terms of Service and Privacy Policy.
       </Text>
+
+      {isDevBypassEnabled && (
+        <Pressable
+          onPress={handleDevBypass}
+          disabled={loading}
+          className="mt-6 px-5 py-2.5 rounded-xl border border-dashed border-orange-300 bg-orange-50"
+        >
+          <Text className="text-orange-600 text-xs font-semibold text-center">Dev Bypass Auth</Text>
+          <Text className="text-orange-400 text-xs text-center mt-0.5">Only visible when EXPO_PUBLIC_DEV_BYPASS_AUTH=true</Text>
+        </Pressable>
+      )}
     </View>
   );
 }

@@ -6,12 +6,15 @@ import {
   Pressable,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  TextInput,
+  Alert,
 } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { Calendar, DateData } from "react-native-calendars";
-import { listMealPlans, getMealPlan, listFavoriteSummaries, favoriteMeal, unfavoriteMeal } from "../../lib/api";
-import { loadUserId, savePendingPrompt } from "../../lib/storage";
+import { listMealPlans, getMealPlan, listFavoriteSummaries, favoriteMeal, unfavoriteMeal, aiPreviewMeal, updateMeal } from "../../lib/api";
+import { loadUserId } from "../../lib/storage";
 import { MealPlan, MealPlanSummary, Meal, FavoriteMealSummary } from "../../lib/types";
 import MealCard from "../../components/MealCard";
 import MacroBar from "../../components/MacroBar";
@@ -77,6 +80,13 @@ export default function PlansScreen() {
   const [favSummaries, setFavSummaries] = useState<FavoriteMealSummary[]>([]);
   const dayOffsetsRef = useRef<Record<string, number>>({});
 
+  // Inline AI edit state
+  const [aiEditTarget, setAiEditTarget] = useState<Meal | null>(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiPreview, setAiPreview] = useState<Meal | null>(null);
+  const [aiSaving, setAiSaving] = useState(false);
+
   useEffect(() => {
     loadUserId().then(setUserId);
   }, []);
@@ -117,6 +127,58 @@ export default function PlansScreen() {
       setFavSummaries((prev) => prev.filter((f) => f.id !== existing.id));
     } catch {
       // silently fail
+    }
+  }
+
+  function openAIEdit(meal: Meal) {
+    setAiEditTarget(meal);
+    setAiInstruction("");
+    setAiPreview(null);
+  }
+
+  function closeAIEdit() {
+    setAiEditTarget(null);
+    setAiInstruction("");
+    setAiPreview(null);
+  }
+
+  async function handleAIPreview() {
+    if (!aiEditTarget || !userId || !aiInstruction.trim()) return;
+    setAiLoading(true);
+    try {
+      const preview = await aiPreviewMeal(aiEditTarget.id, aiInstruction.trim(), userId);
+      setAiPreview(preview);
+    } catch (e) {
+      Alert.alert("AI edit failed", e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function handleAIApply() {
+    if (!aiPreview || !aiEditTarget) return;
+    setAiSaving(true);
+    try {
+      const saved = await updateMeal(aiEditTarget.id, {
+        name: aiPreview.name,
+        instructions: aiPreview.instructions,
+        foods: aiPreview.foods.map((f) => ({
+          fdc_id: f.fdc_id,
+          quantity_g: f.quantity_g,
+          serving_description: f.serving_description ?? undefined,
+        })),
+      });
+      // Update the meal in activePlan state
+      setActivePlan((prev) =>
+        prev
+          ? { ...prev, meals: prev.meals.map((m) => (m.id === saved.id ? saved : m)) }
+          : prev
+      );
+      closeAIEdit();
+    } catch (e) {
+      Alert.alert("Save failed", e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setAiSaving(false);
     }
   }
 
@@ -465,31 +527,28 @@ export default function PlansScreen() {
                   {meals.map((meal) => {
                     const existingFav = favSummaries.find((f) => f.source_meal_id === meal.id);
                     return (
-                    <View key={meal.id}>
-                      <MealCard
-                        meal={meal}
-                        onPress={() =>
-                          router.push({
-                            pathname: "/meal/[id]",
-                            params: { id: meal.id, planId: activePlan!.id },
-                          })
-                        }
-                        isFavorited={!!existingFav}
-                        favoriteId={existingFav?.id}
-                        onFavorite={() => handleFavorite(meal)}
-                        onUnfavorite={() => handleUnfavorite(meal)}
-                      />
-                      <Pressable
-                        onPress={async () => {
-                          await savePendingPrompt(`Swap out the ${meal.name} for something different`);
-                          router.push("/(tabs)/chat");
-                        }}
-                        className="flex-row items-center gap-1.5 self-start ml-1 mb-2 px-3 py-1.5 rounded-full bg-primary-50 border border-primary-100 active:bg-primary-100"
-                      >
-                        <Ionicons name="sparkles-outline" size={12} color="#16a34a" />
-                        <Text className="text-xs font-medium text-primary-700">Ask AI to swap</Text>
-                      </Pressable>
-                    </View>
+                      <View key={meal.id}>
+                        <MealCard
+                          meal={meal}
+                          onPress={() =>
+                            router.push({
+                              pathname: "/meal/[id]",
+                              params: { id: meal.id, planId: activePlan!.id },
+                            })
+                          }
+                          isFavorited={!!existingFav}
+                          favoriteId={existingFav?.id}
+                          onFavorite={() => handleFavorite(meal)}
+                          onUnfavorite={() => handleUnfavorite(meal)}
+                        />
+                        <Pressable
+                          onPress={() => openAIEdit(meal)}
+                          className="flex-row items-center gap-1.5 self-start ml-1 mb-2 px-3 py-1.5 rounded-full bg-primary-50 border border-primary-100 active:bg-primary-100"
+                        >
+                          <Ionicons name="sparkles-outline" size={12} color="#16a34a" />
+                          <Text className="text-xs font-medium text-primary-700">Edit with AI</Text>
+                        </Pressable>
+                      </View>
                     );
                   })}
                 </View>
@@ -499,5 +558,157 @@ export default function PlansScreen() {
         </>
       )}
     </ScrollView>
+
+      {/* Inline AI edit modal */}
+      <Modal
+        visible={!!aiEditTarget}
+        transparent
+        animationType="slide"
+        onRequestClose={closeAIEdit}
+      >
+        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.4)" }}>
+          <View style={{ backgroundColor: "white", borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 32 }}>
+            <View style={{ alignItems: "center", marginBottom: 12 }}>
+              <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: "#e5e7eb" }} />
+            </View>
+
+            {!aiPreview ? (
+              <>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <Ionicons name="sparkles-outline" size={18} color="#16a34a" />
+                  <Text style={{ fontSize: 15, fontWeight: "700", color: "#111827" }}>Edit with AI</Text>
+                </View>
+                {aiEditTarget && (
+                  <Text style={{ fontSize: 12, color: "#9ca3af", marginBottom: 10 }}>{aiEditTarget.name}</Text>
+                )}
+                <Text style={{ fontSize: 13, color: "#6b7280", marginBottom: 10 }}>
+                  Describe what to change — e.g. "replace chicken with salmon" or "double the protein"
+                </Text>
+                <TextInput
+                  style={{ borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, color: "#111827", backgroundColor: "#f9fafb", minHeight: 80, textAlignVertical: "top" }}
+                  placeholder="What would you like to change?"
+                  placeholderTextColor="#9ca3af"
+                  multiline
+                  value={aiInstruction}
+                  onChangeText={setAiInstruction}
+                  editable={!aiLoading}
+                />
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                  <Pressable onPress={closeAIEdit} disabled={aiLoading} style={{ flex: 1, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
+                    <Text style={{ fontSize: 14, fontWeight: "600", color: "#374151" }}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleAIPreview}
+                    disabled={aiLoading || !aiInstruction.trim()}
+                    style={{ flex: 1, borderRadius: 12, paddingVertical: 12, alignItems: "center", backgroundColor: aiLoading || !aiInstruction.trim() ? "#e5e7eb" : "#16a34a" }}
+                  >
+                    {aiLoading ? (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <ActivityIndicator size="small" color="#16a34a" />
+                        <Text style={{ fontSize: 14, fontWeight: "600", color: "#6b7280" }}>Editing…</Text>
+                      </View>
+                    ) : (
+                      <Text style={{ fontSize: 14, fontWeight: "600", color: aiInstruction.trim() ? "white" : "#9ca3af" }}>Preview Edit</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              /* Diff preview */
+              <>
+                {(() => {
+                  if (!aiEditTarget || !aiPreview) return null;
+                  const oldN = aiEditTarget.total_nutrition;
+                  const newN = aiPreview.total_nutrition;
+                  const calDiff = Math.round(newN.calories - oldN.calories);
+                  const protDiff = parseFloat((newN.protein_g - oldN.protein_g).toFixed(1));
+                  const carbDiff = parseFloat((newN.carbs_g - oldN.carbs_g).toFixed(1));
+                  const fatDiff  = parseFloat((newN.fat_g  - oldN.fat_g).toFixed(1));
+                  const fmtD = (d: number, u: string) => d === 0 ? `0${u}` : d > 0 ? `+${d}${u}` : `${d}${u}`;
+                  const dStyle = (d: number) => ({ color: d > 0 ? "#dc2626" : d < 0 ? "#15803d" : "#9ca3af" });
+
+                  const oldById = new Map(aiEditTarget.foods.map((f) => [f.fdc_id, f]));
+                  const newById = new Map(aiPreview.foods.map((f) => [f.fdc_id, f]));
+                  const diffFoods: { fdc_id: number; desc: string; status: "added"|"removed"|"changed"|"same"; qty: number; oldQty?: number }[] = [];
+                  for (const f of aiEditTarget.foods) {
+                    const nf = newById.get(f.fdc_id);
+                    if (!nf) diffFoods.push({ fdc_id: f.fdc_id, desc: f.description, status: "removed", qty: f.quantity_g });
+                    else if (Math.round(nf.quantity_g) !== Math.round(f.quantity_g))
+                      diffFoods.push({ fdc_id: f.fdc_id, desc: nf.description, status: "changed", qty: nf.quantity_g, oldQty: f.quantity_g });
+                    else diffFoods.push({ fdc_id: f.fdc_id, desc: nf.description, status: "same", qty: nf.quantity_g });
+                  }
+                  for (const f of aiPreview.foods) {
+                    if (!oldById.has(f.fdc_id)) diffFoods.push({ fdc_id: f.fdc_id, desc: f.description, status: "added", qty: f.quantity_g });
+                  }
+
+                  return (
+                    <ScrollView style={{ maxHeight: 480 }} showsVerticalScrollIndicator={false}>
+                      {/* Header */}
+                      <View style={{ backgroundColor: "#111827", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                        <Ionicons name="sparkles" size={14} color="#a3e635" />
+                        <Text style={{ fontSize: 13, fontWeight: "700", color: "white", flex: 1 }}>AI Edit Preview</Text>
+                        <Text style={{ fontSize: 11, color: "#9ca3af" }} numberOfLines={1}>{aiPreview.name}</Text>
+                      </View>
+
+                      {/* Nutrition delta */}
+                      <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+                        {[
+                          { label: "Calories", val: `${Math.round(newN.calories)}`, delta: fmtD(calDiff, " kcal"), ds: dStyle(calDiff), vc: "#111827" },
+                          { label: "Protein",  val: `${newN.protein_g.toFixed(1)}g`, delta: fmtD(protDiff, "g"), ds: dStyle(protDiff), vc: "#1d4ed8" },
+                          { label: "Carbs",    val: `${newN.carbs_g.toFixed(1)}g`, delta: fmtD(carbDiff, "g"), ds: dStyle(carbDiff), vc: "#ea580c" },
+                          { label: "Fat",      val: `${newN.fat_g.toFixed(1)}g`, delta: fmtD(fatDiff, "g"), ds: dStyle(fatDiff), vc: "#ca8a04" },
+                        ].map((m) => (
+                          <View key={m.label} style={{ flex: 1, backgroundColor: "#f9fafb", borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 10, padding: 8, alignItems: "center" }}>
+                            <Text style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2 }}>{m.label}</Text>
+                            <Text style={{ fontSize: 14, fontWeight: "800", color: m.vc }}>{m.val}</Text>
+                            <Text style={[{ fontSize: 11, fontWeight: "700" }, m.ds]}>{m.delta}</Text>
+                          </View>
+                        ))}
+                      </View>
+
+                      {/* Ingredient diff */}
+                      <Text style={{ fontSize: 10, fontWeight: "700", color: "#6b7280", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6 }}>Ingredients</Text>
+                      {diffFoods.map((item, i) => {
+                        const bg = item.status === "removed" ? "#fef2f2" : item.status === "added" ? "#f0fdf4" : item.status === "changed" ? "#fffbeb" : "transparent";
+                        const border = item.status === "removed" ? "#ef4444" : item.status === "added" ? "#22c55e" : item.status === "changed" ? "#f59e0b" : "transparent";
+                        const textColor = item.status === "removed" ? "#b91c1c" : item.status === "added" ? "#15803d" : item.status === "changed" ? "#92400e" : "#9ca3af";
+                        const badge = item.status === "removed" ? "−" : item.status === "added" ? "+" : item.status === "changed" ? "~" : null;
+                        const badgeBg = item.status === "removed" ? "#ef4444" : item.status === "added" ? "#22c55e" : "#f59e0b";
+                        return (
+                          <View key={i} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4, borderRadius: 8, backgroundColor: bg, borderLeftWidth: item.status !== "same" ? 4 : 0, borderLeftColor: border, paddingHorizontal: 10, paddingVertical: 8 }}>
+                            <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1 }}>
+                              {badge && (
+                                <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: badgeBg, alignItems: "center", justifyContent: "center" }}>
+                                  <Text style={{ color: "white", fontSize: 12, fontWeight: "800", lineHeight: 18 }}>{badge}</Text>
+                                </View>
+                              )}
+                              <Text style={{ fontSize: 13, fontWeight: item.status !== "same" ? "600" : "400", color: textColor, textDecorationLine: item.status === "removed" ? "line-through" : "none", flex: 1 }}>{item.desc}</Text>
+                            </View>
+                            <Text style={{ fontSize: 12, color: textColor, marginLeft: 8 }}>
+                              {item.status === "changed" && item.oldQty !== undefined ? `${Math.round(item.oldQty)}g → ` : ""}{Math.round(item.qty)}g
+                            </Text>
+                          </View>
+                        );
+                      })}
+
+                      <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
+                        <Pressable onPress={() => setAiPreview(null)} disabled={aiSaving} style={{ flex: 1, borderWidth: 1, borderColor: "#d1d5db", borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
+                          <Text style={{ fontSize: 14, fontWeight: "600", color: "#374151" }}>← Back</Text>
+                        </Pressable>
+                        <Pressable onPress={handleAIApply} disabled={aiSaving} style={{ flex: 1, backgroundColor: "#16a34a", borderRadius: 12, paddingVertical: 12, alignItems: "center" }}>
+                          {aiSaving
+                            ? <ActivityIndicator size="small" color="white" />
+                            : <Text style={{ fontSize: 14, fontWeight: "600", color: "white" }}>Apply Changes</Text>
+                          }
+                        </Pressable>
+                      </View>
+                    </ScrollView>
+                  );
+                })()}
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
   );
 }

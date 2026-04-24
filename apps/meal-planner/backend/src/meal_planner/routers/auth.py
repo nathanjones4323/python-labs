@@ -3,7 +3,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from db import get_conn
-from meal_planner.config import GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID
+from meal_planner.config import GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, DEV_MODE
 from meal_planner.routers.users import _build_user_response
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -91,4 +91,36 @@ async def google_sign_in(body: GoogleAuthRequest):
         "display_name": display_name,
         "is_new_user": is_new_user,
         "profile": user_response.profile,
+    }
+
+
+@router.post("/dev-bypass")
+async def dev_bypass_sign_in():
+    """Dev-only endpoint to skip OAuth. Only active when DEV_MODE=true."""
+    if not DEV_MODE:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    dev_email = "dev@localhost"
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email FROM users WHERE email = %s", (dev_email,)
+        ).fetchone()
+        if row:
+            user_id = str(row[0])
+            is_new = False
+        else:
+            user_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
+                (user_id, dev_email, "Dev User"),
+            )
+            conn.commit()
+            is_new = True
+
+    return {
+        "user_id": user_id,
+        "email": dev_email,
+        "display_name": "Dev User",
+        "is_new_user": is_new,
+        "profile": None,
     }

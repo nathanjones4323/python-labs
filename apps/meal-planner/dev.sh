@@ -19,18 +19,22 @@ fi
 
 # ── 1. Start DB ──────────────────────────────────────────────────────────────
 echo "==> Starting database..."
-docker compose up -d db
-
-echo "==> Waiting for database to be healthy..."
-until docker compose exec -T db pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-app}" >/dev/null 2>&1; do
-  sleep 1
-done
+# --wait blocks until the Docker healthcheck passes, not just pg_isready via
+# Unix socket. On a fresh PostGIS volume the container briefly restarts
+# postgres during extension init, so TCP connections from the host fail with
+# "server closed the connection unexpectedly" even after pg_isready returns OK.
+# The healthcheck has start_period + retries so it won't flip healthy until
+# the DB is genuinely stable from the outside.
+docker compose up -d db --wait
 
 # ── 2. Run migrations ────────────────────────────────────────────────────────
 echo "==> Running migrations..."
 (cd libs/db && uv run --package db alembic -c alembic.ini upgrade head)
 
 # ── 3. Start backend ─────────────────────────────────────────────────────────
+BACKEND_PID=""
+trap '[[ -n "$BACKEND_PID" ]] && kill "$BACKEND_PID" 2>/dev/null || true' EXIT
+
 echo "==> Starting backend on http://localhost:8000 ..."
 uv run --package meal-planner-backend uvicorn meal_planner.main:app \
   --reload --host 0.0.0.0 --port 8000 &
@@ -41,6 +45,3 @@ echo "==> Starting frontend..."
 cd apps/meal-planner/frontend
 npm install --silent
 npm start
-
-# Cleanup backend when the frontend exits (Ctrl-C)
-kill "$BACKEND_PID" 2>/dev/null || true

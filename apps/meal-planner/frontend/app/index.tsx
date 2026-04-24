@@ -1,7 +1,7 @@
 import { Redirect } from "expo-router";
 import { useEffect, useState } from "react";
 import { View, ActivityIndicator } from "react-native";
-import { loadUserId } from "../lib/storage";
+import { loadUserId, clearUserId } from "../lib/storage";
 import { getUser } from "../lib/api";
 
 export default function Index() {
@@ -17,7 +17,11 @@ export default function Index() {
         } else {
           setDestination("/auth");
         }
-      } catch {
+      } catch (e: unknown) {
+        // 404 = stored user ID no longer exists in the DB (DB was reset).
+        // Clear the stale ID so the user can sign in fresh instead of looping.
+        const is404 = e instanceof Error && e.message.includes("404");
+        if (is404) await clearUserId();
         setDestination("/auth");
       }
     })();

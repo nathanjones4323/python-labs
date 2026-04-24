@@ -1,8 +1,35 @@
-import { Platform } from "react-native";
-import { Tabs } from "expo-router";
+import { useEffect, useState } from "react";
+import { Platform, View, ActivityIndicator } from "react-native";
+import { Tabs, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { loadUserId } from "../../lib/storage";
 
 export default function TabsLayout() {
+  const router = useRouter();
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    loadUserId().then((id) => {
+      if (!id) {
+        router.replace("/auth");
+      } else {
+        setAuthed(true);
+      }
+      setAuthChecked(true);
+    });
+  }, []);
+
+  if (!authChecked) {
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "white" }}>
+        <ActivityIndicator color="#16a34a" />
+      </View>
+    );
+  }
+
+  if (!authed) return null;
+
   return (
     <Tabs
       screenOptions={{

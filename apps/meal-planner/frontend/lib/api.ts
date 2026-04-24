@@ -44,6 +44,16 @@ export async function signInWithGoogle(accessToken: string): Promise<{
   });
 }
 
+export async function devBypassAuth(): Promise<{
+  user_id: string;
+  email: string;
+  display_name: string | null;
+  is_new_user: boolean;
+  profile: UserProfile | null;
+}> {
+  return request("/auth/dev-bypass", { method: "POST" });
+}
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 
 export async function createUser(email: string): Promise<User> {
@@ -109,6 +119,17 @@ export async function updateMeal(
   });
 }
 
+export async function aiPreviewMeal(
+  mealId: string,
+  instruction: string,
+  userId: string
+): Promise<Meal> {
+  return request<Meal>(`/meals/${mealId}/ai-preview`, {
+    method: "POST",
+    body: JSON.stringify({ instruction, user_id: userId }),
+  });
+}
+
 export async function aiEditMeal(
   mealId: string,
   instruction: string,
@@ -170,12 +191,18 @@ interface ChatEvent {
 export async function* chatStream(
   userId: string,
   message: string,
-  sessionId?: string | null
+  sessionId?: string | null,
+  favoriteIds?: string[]
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${BASE_URL}/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId, message, session_id: sessionId ?? null }),
+    body: JSON.stringify({
+      user_id: userId,
+      message,
+      session_id: sessionId ?? null,
+      favorite_ids: favoriteIds ?? [],
+    }),
   });
 
   if (!res.ok) {
