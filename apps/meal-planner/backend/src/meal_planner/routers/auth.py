@@ -105,22 +105,26 @@ async def dev_bypass_sign_in():
         row = conn.execute(
             "SELECT id, email FROM users WHERE email = %s", (dev_email,)
         ).fetchone()
-        if row:
-            user_id = str(row[0])
-            is_new = False
-        else:
+        if not row:
             user_id = str(uuid.uuid4())
             conn.execute(
                 "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
                 (user_id, dev_email, "Dev User"),
             )
             conn.commit()
-            is_new = True
+            row = (user_id, dev_email)
+
+        profile_row = conn.execute(
+            "SELECT * FROM user_profiles WHERE user_id = %s", (str(row[0]),)
+        ).fetchone()
+
+    user_response = _build_user_response(row, profile_row)
+    is_new_user = user_response.profile is None or not user_response.profile.onboarding_complete
 
     return {
-        "user_id": user_id,
-        "email": dev_email,
+        "user_id": str(user_response.id),
+        "email": user_response.email,
         "display_name": "Dev User",
-        "is_new_user": is_new,
-        "profile": None,
+        "is_new_user": is_new_user,
+        "profile": user_response.profile,
     }
