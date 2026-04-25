@@ -146,7 +146,6 @@ celerybeat.pid
 .env.local
 *.env.local
 .envrc
-# .env.enc is intentionally committed (SOPS-encrypted)
 .venv
 env/
 venv/

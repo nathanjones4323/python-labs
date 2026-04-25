@@ -26,7 +26,7 @@ export default function HTML({ children }: PropsWithChildren) {
         <link rel="manifest" href="/manifest.json" />
 
         {/* Apple touch icon */}
-        <link rel="apple-touch-icon" href="/assets/icon.png" />
+        <link rel="apple-touch-icon" href="/icon.png" />
 
         <title>Meal Planner</title>
         <ScrollViewStyleReset />
