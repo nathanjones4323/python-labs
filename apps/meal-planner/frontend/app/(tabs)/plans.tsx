@@ -168,12 +168,48 @@ export default function PlansScreen() {
           serving_description: f.serving_description ?? undefined,
         })),
       });
-      // Update the meal in activePlan state
-      setActivePlan((prev) =>
-        prev
-          ? { ...prev, meals: prev.meals.map((m) => (m.id === saved.id ? saved : m)) }
-          : prev
-      );
+      setActivePlan((prev) => {
+        if (!prev) return prev;
+        const updatedMeals = prev.meals.map((m) => (m.id === saved.id ? saved : m));
+        const totalNutrition = updatedMeals.reduce(
+          (acc, meal) => ({
+            calories: acc.calories + meal.total_nutrition.calories,
+            protein_g: acc.protein_g + meal.total_nutrition.protein_g,
+            carbs_g: acc.carbs_g + meal.total_nutrition.carbs_g,
+            fat_g: acc.fat_g + meal.total_nutrition.fat_g,
+            fiber_g: acc.fiber_g + meal.total_nutrition.fiber_g,
+            sugar_g: acc.sugar_g + meal.total_nutrition.sugar_g,
+            saturated_fat_g: acc.saturated_fat_g + meal.total_nutrition.saturated_fat_g,
+            cholesterol_mg: acc.cholesterol_mg + meal.total_nutrition.cholesterol_mg,
+            sodium_mg: acc.sodium_mg + meal.total_nutrition.sodium_mg,
+            calcium_mg: acc.calcium_mg + meal.total_nutrition.calcium_mg,
+            iron_mg: acc.iron_mg + meal.total_nutrition.iron_mg,
+            magnesium_mg: acc.magnesium_mg + meal.total_nutrition.magnesium_mg,
+            phosphorus_mg: acc.phosphorus_mg + meal.total_nutrition.phosphorus_mg,
+            potassium_mg: acc.potassium_mg + meal.total_nutrition.potassium_mg,
+            zinc_mg: acc.zinc_mg + meal.total_nutrition.zinc_mg,
+            vitamin_a_ug: acc.vitamin_a_ug + meal.total_nutrition.vitamin_a_ug,
+            vitamin_c_mg: acc.vitamin_c_mg + meal.total_nutrition.vitamin_c_mg,
+            vitamin_d_ug: acc.vitamin_d_ug + meal.total_nutrition.vitamin_d_ug,
+            vitamin_e_mg: acc.vitamin_e_mg + meal.total_nutrition.vitamin_e_mg,
+            vitamin_k_ug: acc.vitamin_k_ug + meal.total_nutrition.vitamin_k_ug,
+            vitamin_b6_mg: acc.vitamin_b6_mg + meal.total_nutrition.vitamin_b6_mg,
+            vitamin_b12_ug: acc.vitamin_b12_ug + meal.total_nutrition.vitamin_b12_ug,
+            folate_ug: acc.folate_ug + meal.total_nutrition.folate_ug,
+            thiamin_mg: acc.thiamin_mg + meal.total_nutrition.thiamin_mg,
+            riboflavin_mg: acc.riboflavin_mg + meal.total_nutrition.riboflavin_mg,
+            niacin_mg: acc.niacin_mg + meal.total_nutrition.niacin_mg,
+          }),
+          {
+            calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0,
+            saturated_fat_g: 0, cholesterol_mg: 0, sodium_mg: 0, calcium_mg: 0, iron_mg: 0,
+            magnesium_mg: 0, phosphorus_mg: 0, potassium_mg: 0, zinc_mg: 0, vitamin_a_ug: 0,
+            vitamin_c_mg: 0, vitamin_d_ug: 0, vitamin_e_mg: 0, vitamin_k_ug: 0, vitamin_b6_mg: 0,
+            vitamin_b12_ug: 0, folate_ug: 0, thiamin_mg: 0, riboflavin_mg: 0, niacin_mg: 0,
+          }
+        );
+        return { ...prev, meals: updatedMeals, total_nutrition: totalNutrition };
+      });
       closeAIEdit();
     } catch (e) {
       Alert.alert("Save failed", e instanceof Error ? e.message : "Unknown error");

@@ -6,7 +6,8 @@ from .food import NutrientSummary
 
 class MealFoodIn(BaseModel):
     fdc_id: int
-    quantity_g: float
+    role: str = "other"  # protein | carb | vegetable | fat | other
+    quantity_g: float | None = None  # None = solver will assign
     serving_description: str | None = None
 
 

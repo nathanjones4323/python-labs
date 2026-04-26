@@ -12,6 +12,8 @@ from meal_planner.models.meal_plan import (
 from meal_planner.models.food import NutrientSummary
 from meal_planner.services import usda as usda_svc
 from meal_planner.services.nutrition import sum_nutrients
+from meal_planner.services.portions import assign_default_portions
+from meal_planner.services.solver import derive_macro_targets, solve_day
 
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
@@ -64,6 +66,48 @@ async def create_meal_plan(
     meal_responses: list[MealResponse] = []
 
     with get_conn() as conn:
+        # Fetch user's calorie target and goals for the solver
+        profile_row = conn.execute(
+            "SELECT calorie_target, goals FROM user_profiles WHERE user_id = %s",
+            (str(user_id),),
+        ).fetchone()
+        calorie_target = (profile_row[0] if profile_row else None) or 2000
+        goals = profile_row[1] if profile_row else None
+        daily_targets = derive_macro_targets(float(calorie_target), goals)
+
+        # Group meals by date so the solver balances each day independently
+        meals_by_date: dict = {}
+        for meal_in in body.meals:
+            meals_by_date.setdefault(meal_in.scheduled_date, []).append(meal_in)
+
+        # Run the solver for each day to assign optimised quantity_g values
+        for date_meals in meals_by_date.values():
+            solver_meals = []
+            for meal_in in date_meals:
+                foods_with_defaults = assign_default_portions([
+                    {
+                        "fdc_id": f.fdc_id,
+                        "role": f.role,
+                        "quantity_g": f.quantity_g,
+                        "serving_description": f.serving_description,
+                    }
+                    for f in meal_in.foods
+                ])
+                solver_foods = []
+                for f in foods_with_defaults:
+                    cached = await _get_or_cache_food(conn, f["fdc_id"])
+                    solver_foods.append({**f, "nutrients_per_100g": cached["nutrients"]})
+                solver_meals.append({"meal_type": meal_in.meal_type, "foods": solver_foods})
+
+            solved = solve_day(solver_meals, daily_targets)
+
+            # Write solved quantity_g back onto meal_in.foods
+            for meal_in, solved_meal in zip(date_meals, solved):
+                for food_in, solved_food in zip(meal_in.foods, solved_meal["foods"]):
+                    food_in.quantity_g = solved_food["quantity_g"]
+                    if not food_in.serving_description:
+                        food_in.serving_description = f"{round(solved_food['quantity_g'])}g"
+
         conn.execute(
             """
             INSERT INTO meal_plans (id, user_id, name, start_date, end_date, conversation_id)
@@ -94,7 +138,8 @@ async def create_meal_plan(
             food_responses: list[MealFoodResponse] = []
             for food_in in meal_in.foods:
                 food = await _get_or_cache_food(conn, food_in.fdc_id)
-                scaled = usda_svc.scale_nutrients(food["nutrients"], food_in.quantity_g)
+                quantity_g = food_in.quantity_g or 100.0
+                scaled = usda_svc.scale_nutrients(food["nutrients"], quantity_g)
 
                 mf_id = uuid.uuid4()
                 conn.execute(
@@ -106,7 +151,7 @@ async def create_meal_plan(
                         str(mf_id),
                         str(meal_id),
                         food_in.fdc_id,
-                        food_in.quantity_g,
+                        quantity_g,
                         food_in.serving_description,
                     ),
                 )
@@ -116,7 +161,7 @@ async def create_meal_plan(
                         fdc_id=food_in.fdc_id,
                         description=food["description"],
                         food_category=food.get("food_category"),
-                        quantity_g=food_in.quantity_g,
+                        quantity_g=quantity_g,
                         serving_description=food_in.serving_description,
                         nutrients=scaled,
                     )
