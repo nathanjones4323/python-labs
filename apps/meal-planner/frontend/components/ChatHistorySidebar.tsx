@@ -149,35 +149,33 @@ export default function ChatHistorySidebar({
                 return (
                   <View
                     key={session.id}
-                    className={`mx-2 mb-1 rounded-xl overflow-hidden ${isActive ? "bg-primary-50" : ""}`}
+                    className={`mx-2 mb-1 rounded-xl overflow-hidden flex-row items-center ${isActive ? "bg-primary-50" : ""}`}
                   >
                     <Pressable
                       onPress={() => handleSelect(session)}
-                      className="px-3 py-3 flex-row items-start"
+                      className="flex-1 px-3 py-3"
                     >
-                      <View className="flex-1 mr-2">
-                        <Text
-                          className={`text-sm font-medium leading-snug ${isActive ? "text-primary-700" : "text-gray-800"}`}
-                          numberOfLines={2}
-                        >
-                          {session.title}
-                        </Text>
-                        <Text className="text-xs text-gray-400 mt-0.5">
-                          {relativeTime(session.updated_at)} · {session.message_count} messages
-                        </Text>
-                      </View>
-                      {isLoadingThis ? (
-                        <ActivityIndicator size="small" color="#16a34a" />
-                      ) : (
-                        <Pressable
-                          onPress={(e) => { e.stopPropagation?.(); handleDelete(session); }}
-                          hitSlop={8}
-                          className="p-1 mt-0.5"
-                        >
-                          <Ionicons name="trash-outline" size={15} color="#d1d5db" />
-                        </Pressable>
-                      )}
+                      <Text
+                        className={`text-sm font-medium leading-snug ${isActive ? "text-primary-700" : "text-gray-800"}`}
+                        numberOfLines={2}
+                      >
+                        {session.title}
+                      </Text>
+                      <Text className="text-xs text-gray-400 mt-0.5">
+                        {relativeTime(session.updated_at)} · {session.message_count} messages
+                      </Text>
                     </Pressable>
+                    {isLoadingThis ? (
+                      <ActivityIndicator size="small" color="#16a34a" className="mr-3" />
+                    ) : (
+                      <Pressable
+                        onPress={() => handleDelete(session)}
+                        hitSlop={8}
+                        className="p-2 mr-2"
+                      >
+                        <Ionicons name="trash-outline" size={15} color="#d1d5db" />
+                      </Pressable>
+                    )}
                   </View>
                 );
               })}

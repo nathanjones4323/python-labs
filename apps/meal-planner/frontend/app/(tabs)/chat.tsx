@@ -31,6 +31,7 @@ interface Message {
   isThinking?: boolean;
   toolSteps?: ToolStep[];
   toolStepsExpanded?: boolean;
+  planId?: string;
 }
 
 const SUGGESTIONS = [
@@ -321,16 +322,15 @@ export default function ChatScreen() {
           }
           setMessages((prev) => {
             const last = prev[prev.length - 1];
-            const updatedLast: Message = {
-              ...last,
-              content: assistantText,
-              isThinking: false,
-              toolSteps: toolSteps.length > 0 ? [...toolSteps] : last.toolSteps,
-            };
             return [
               ...prev.slice(0, -1),
-              updatedLast,
-              { role: "assistant" as const, content: `__PLAN_SAVED__${event.plan_id}` },
+              {
+                ...last,
+                content: assistantText,
+                isThinking: false,
+                toolSteps: toolSteps.length > 0 ? [...toolSteps] : last.toolSteps,
+                planId: event.plan_id,
+              },
             ];
           });
           assistantText = "";
@@ -342,7 +342,7 @@ export default function ChatScreen() {
       }
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (!last || last.content.startsWith("__PLAN_SAVED__")) return prev;
+        if (!last || last.planId) return prev;
         return [
           ...prev.slice(0, -1),
           {
@@ -439,21 +439,6 @@ export default function ChatScreen() {
         {!isEmpty && (
           <View className="px-4 pt-4">
             {messages.map((msg, i) => {
-              if (msg.content.startsWith("__PLAN_SAVED__")) {
-                return (
-                  <View key={i} className="items-start my-2">
-                    <Pressable
-                      onPress={() => router.push("/(tabs)/plans")}
-                      className="flex-row items-center bg-primary-50 border border-primary-200 rounded-xl px-3 py-2 gap-1.5 active:bg-primary-100 web:cursor-pointer"
-                    >
-                      <Ionicons name="checkmark-circle-outline" size={14} color="#16a34a" />
-                      <Text className="text-primary-700 font-medium text-xs">Meal plan saved — View it</Text>
-                      <Ionicons name="chevron-forward" size={12} color="#16a34a" />
-                    </Pressable>
-                  </View>
-                );
-              }
-
               const isUser = msg.role === "user";
               return (
                 <View
@@ -498,6 +483,17 @@ export default function ChatScreen() {
                           </MarkdownText>
                         )}
                       </View>
+                    )}
+
+                    {!isUser && msg.planId && (
+                      <Pressable
+                        onPress={() => router.push("/(tabs)/plans")}
+                        className="flex-row items-center bg-primary-50 border border-primary-200 rounded-xl px-3 py-2 gap-1.5 mt-2 active:bg-primary-100 web:cursor-pointer"
+                      >
+                        <Ionicons name="checkmark-circle-outline" size={14} color="#16a34a" />
+                        <Text className="text-primary-700 font-medium text-xs">Meal plan saved — View it</Text>
+                        <Ionicons name="chevron-forward" size={12} color="#16a34a" />
+                      </Pressable>
                     )}
                   </View>
                 </View>

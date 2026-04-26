@@ -12,6 +12,7 @@ from meal_planner.services import ai as ai_svc
 from meal_planner.services.extraction import run_extraction
 from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 import anthropic
+from anthropic.types import TextBlock
 from datetime import date, datetime
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -128,8 +129,8 @@ def _save_conversation(conn, convo_id: uuid.UUID, messages: list[dict], title: s
             serializable.append({"role": msg["role"], "content": msg["content"]})
         elif isinstance(msg["content"], list):
             text_parts = [
-                b["text"] for b in msg["content"]
-                if isinstance(b, dict) and b.get("type") == "text"
+                b.text for b in msg["content"]
+                if isinstance(b, TextBlock)
             ]
             if text_parts:
                 serializable.append({"role": msg["role"], "content": " ".join(text_parts)})
@@ -205,17 +206,20 @@ async def chat_stream(body: ChatRequest):
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-        # Persist the updated conversation
+        # Persist the updated conversation — build clean messages from history
+        # rather than the mutated `messages` list (which contains intermediate
+        # tool-use turns with SDK objects that must not be saved verbatim).
         assistant_text_str = "".join(full_assistant_text)
-        updated_messages = messages + [
-            {"role": "assistant", "content": assistant_text_str}
+        clean_messages = history + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": assistant_text_str},
         ]
         ai_title = (
             await _generate_title(body.message, assistant_text_str)
             if generate_title else None
         )
         with get_conn() as conn:
-            _save_conversation(conn, convo_id, updated_messages, ai_title)
+            _save_conversation(conn, convo_id, clean_messages, ai_title)
 
             # If the AI created a plan, persist it to the DB
             if plan_data:
@@ -234,7 +238,8 @@ async def chat_stream(body: ChatRequest):
                                 foods=[
                                     MealFoodIn(
                                         fdc_id=f["fdc_id"],
-                                        quantity_g=f["quantity_g"],
+                                        role=f.get("role", "other"),
+                                        quantity_g=f.get("quantity_g"),
                                         serving_description=f.get("serving_description"),
                                     )
                                     for f in m.get("foods", [])

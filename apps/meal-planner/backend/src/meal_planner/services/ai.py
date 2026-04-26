@@ -10,13 +10,17 @@ Uses the streaming API so text appears word-by-word in the UI.
 """
 
 import json
+import logging
 from typing import AsyncIterator
 
 import anthropic
+from anthropic.types import TextBlock, ToolUseBlock
 from db import get_conn
 from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
 from meal_planner.models.user import UserProfileResponse
 from meal_planner.services import usda as usda_svc
+
+logger = logging.getLogger("uvicorn.error")
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -38,25 +42,11 @@ TOOLS: list[anthropic.types.ToolParam] = [
         },
     },
     {
-        "name": "get_food_nutrition",
-        "description": "Get full nutrient detail for a specific food by USDA FDC ID.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "fdc_id": {"type": "integer"},
-                "quantity_g": {
-                    "type": "number",
-                    "description": "Quantity in grams to calculate nutrition for",
-                },
-            },
-            "required": ["fdc_id", "quantity_g"],
-        },
-    },
-    {
         "name": "create_meal_plan",
         "description": (
             "Save a complete meal plan to the database. Call this once you have "
-            "looked up all ingredient FDC IDs and confirmed their nutritional fit. "
+            "looked up all ingredient FDC IDs. Do NOT specify quantities — the system "
+            "will compute optimal gram weights automatically. "
             "Always include step-by-step cooking instructions."
         ),
         "input_schema": {
@@ -88,10 +78,14 @@ TOOLS: list[anthropic.types.ToolParam] = [
                                     "type": "object",
                                     "properties": {
                                         "fdc_id": {"type": "integer"},
-                                        "quantity_g": {"type": "number"},
+                                        "role": {
+                                            "type": "string",
+                                            "enum": ["protein", "carb", "vegetable", "fat", "other"],
+                                            "description": "Nutritional role of this ingredient",
+                                        },
                                         "serving_description": {"type": "string"},
                                     },
-                                    "required": ["fdc_id", "quantity_g"],
+                                    "required": ["fdc_id", "role"],
                                 },
                             },
                         },
@@ -112,7 +106,6 @@ TOOLS: list[anthropic.types.ToolParam] = [
 
 _TOOL_LABELS = {
     "search_foods": "Searching USDA database…",
-    "get_food_nutrition": "Looking up nutrition…",
     "create_meal_plan": "Saving meal plan…",
 }
 
@@ -183,16 +176,16 @@ def _build_system_prompt(
 
     return f"""You are a meal planning assistant with access to the USDA FoodData Central database.
 
-Your job is to help users create personalized meal plans with accurate nutritional information.
+Your job is to help users create personalized meal plans. The system will automatically compute
+optimal gram portions — your role is to select the right foods and assign each one a nutritional role.
 
 Guidelines:
 - Use ONLY whole food ingredients from USDA Foundation Foods or SR Legacy data. Never suggest branded products.
 - Always search for ingredient FDC IDs before creating a meal plan — do not invent FDC IDs.
 - Provide detailed step-by-step cooking instructions for every meal.
-- Quantities should be realistic (grams). Include a human-readable serving_description like "1 cup (240g)".
-- Focus on nutritional accuracy — verify macros align with the user's goals.
-- When creating a meal plan, include every ingredient with its FDC ID and gram weight.
-- After creating the plan, summarize the daily nutritional totals for the user.
+- Do NOT specify quantity_g values. Instead, assign each ingredient a role: protein, carb, vegetable, fat, or other.
+- The system will compute portion sizes automatically to hit the user's calorie and macro targets.
+- After creating the plan, briefly describe the meals and their nutritional focus for the user.
 - When naming a plan, be specific: include duration and key characteristic — e.g. "High-Protein 5-Day", "Mediterranean Week", "Quick 30-Min Weeknight Meals". Avoid generic names like "7-Day Meal Plan".
 - {preferences_instruction}{profile_section}{hearted_section}"""
 
@@ -323,28 +316,6 @@ async def _handle_tool_call(
 
         return json.dumps([r.model_dump() for r in results]), pending_plan
 
-    elif tool_name == "get_food_nutrition":
-        fdc_id = tool_input["fdc_id"]
-        food = _get_cached_food(fdc_id)
-        if food is None:
-            food = await usda_svc.get_food(fdc_id)
-            if not food:
-                return json.dumps({"error": "Food not found"}), pending_plan
-            try:
-                _cache_food(food)
-            except Exception:
-                pass
-        scaled = usda_svc.scale_nutrients(food.nutrients_per_100g, tool_input["quantity_g"])
-        return (
-            json.dumps({
-                "fdc_id": food.fdc_id,
-                "description": food.description,
-                "quantity_g": tool_input["quantity_g"],
-                "nutrients": scaled.model_dump(),
-            }),
-            pending_plan,
-        )
-
     elif tool_name == "create_meal_plan":
         return json.dumps({"status": "plan_ready", "data": tool_input}), tool_input
 
@@ -358,14 +329,22 @@ async def chat_stream(
 ) -> AsyncIterator[str]:
     """
     Streaming agentic loop. Yields SSE-formatted chunks:
-      {"type": "text",       "content": "..."}          incremental text
+      {"type": "text",       "content": "..."}          incremental text (final turn only)
       {"type": "tool_use",   "name": "...", "label": "..."}  tool starting
       {"type": "plan_created","plan": {...}}              plan ready to save
+
+    Text from intermediate tool-using turns is suppressed to avoid leaking
+    Claude's internal planning monologue into the chat UI.
     """
     system = _build_system_prompt(profile, hearted_meals)
     pending_plan: dict | None = None
 
+    turn = 0
     while True:
+        turn += 1
+        buffered_text: list[str] = []
+        tool_sse: list[str] = []
+
         async with client.messages.stream(
             model=CLAUDE_MODEL,
             max_tokens=8096,
@@ -375,23 +354,47 @@ async def chat_stream(
         ) as stream:
             async for event in stream:
                 if isinstance(event, anthropic.types.RawContentBlockStartEvent):
-                    if isinstance(event.content_block, anthropic.types.ToolUseBlock):
+                    if isinstance(event.content_block, ToolUseBlock):
                         label = _TOOL_LABELS.get(event.content_block.name, "Working…")
-                        yield f"data: {json.dumps({'type': 'tool_use', 'name': event.content_block.name, 'label': label})}\n\n"
-
+                        tool_sse.append(
+                            f"data: {json.dumps({'type': 'tool_use', 'name': event.content_block.name, 'label': label})}\n\n"
+                        )
                 elif isinstance(event, anthropic.types.RawContentBlockDeltaEvent):
                     if isinstance(event.delta, anthropic.types.TextDelta) and event.delta.text:
-                        yield f"data: {json.dumps({'type': 'text', 'content': event.delta.text})}\n\n"
+                        buffered_text.append(event.delta.text)
 
             final = await stream.get_final_message()
 
-        # Append assistant turn to history
+        # Log every turn so we can see exactly which turn produces which text
+        tool_use_blocks = [b for b in final.content if isinstance(b, ToolUseBlock)]
+        text_blocks = [b for b in final.content if isinstance(b, TextBlock)]
+        logger.warning(
+            "[chat_stream] turn=%d stop_reason=%s tool_blocks=%d text_blocks=%d "
+            "streamed_chars=%d content_block_types=%s | text_preview=%.300s",
+            turn,
+            final.stop_reason,
+            len(tool_use_blocks),
+            len(text_blocks),
+            sum(len(c) for c in buffered_text),
+            [type(b).__name__ for b in final.content],
+            "".join(buffered_text)[:300],
+        )
+
         messages.append({"role": "assistant", "content": final.content})
 
-        # Check if we're done
-        tool_use_blocks = [b for b in final.content if isinstance(b, anthropic.types.ToolUseBlock)]
         if final.stop_reason == "end_turn" or not tool_use_blocks:
+            # Final turn — extract text only from TextBlock content (not ThinkingBlock etc.)
+            # Using final.content is the source of truth; buffered_text is equivalent but
+            # listed here for clarity on which SDK type we're filtering.
+            logger.warning("[chat_stream] → FINAL turn, yielding text")
+            for chunk in buffered_text:
+                yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
             break
+
+        # Intermediate turn — emit tool events only; discard planning text
+        logger.warning("[chat_stream] → INTERMEDIATE turn, discarding text")
+        for sse in tool_sse:
+            yield sse
 
         # Run tool calls, collect results
         tool_results: list[dict] = []
