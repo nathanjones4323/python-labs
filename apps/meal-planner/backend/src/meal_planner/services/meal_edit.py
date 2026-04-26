@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import anthropic
-from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL_EDITING
 from meal_planner.models.user import UserProfileResponse
 from meal_planner.services import usda as usda_svc
 
@@ -199,7 +199,7 @@ async def edit_meal(
 
     while True:
         response = await client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_MODEL_EDITING,
             max_tokens=4096,
             system=system,
             tools=TOOLS,
@@ -249,7 +249,7 @@ async def edit_meal(
             ),
         })
         r1 = await client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_MODEL_EDITING,
             max_tokens=4096,
             system=system,
             tools=TOOLS,
@@ -277,7 +277,7 @@ async def edit_meal(
                 messages.append({"role": "user", "content": tool_results})
 
             r2 = await client.messages.create(
-                model=CLAUDE_MODEL,
+                model=CLAUDE_MODEL_EDITING,
                 max_tokens=4096,
                 system=system,
                 tools=TOOLS,

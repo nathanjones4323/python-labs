@@ -16,7 +16,7 @@ from typing import AsyncIterator
 import anthropic
 from anthropic.types import TextBlock, ToolUseBlock
 from db import get_conn
-from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL_PLANNING
 from meal_planner.models.user import UserProfileResponse
 from meal_planner.services import usda as usda_svc
 
@@ -346,7 +346,7 @@ async def chat_stream(
         tool_sse: list[str] = []
 
         async with client.messages.stream(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_MODEL_PLANNING,
             max_tokens=8096,
             system=system,
             tools=TOOLS,

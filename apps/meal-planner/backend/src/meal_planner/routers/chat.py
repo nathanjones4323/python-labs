@@ -10,7 +10,7 @@ from meal_planner.models.meal_plan import MealPlanCreate, MealIn, MealFoodIn
 from meal_planner.routers.meal_plans import create_meal_plan
 from meal_planner.services import ai as ai_svc
 from meal_planner.services.extraction import run_extraction
-from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL_TITLE
 import anthropic
 from anthropic.types import TextBlock
 from datetime import date, datetime
@@ -104,7 +104,7 @@ async def _generate_title(user_message: str, assistant_response: str) -> str:
     try:
         ac = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         resp = await ac.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_MODEL_TITLE,
             max_tokens=20,
             messages=[{
                 "role": "user",
