@@ -40,13 +40,21 @@ def _parse_nutrients(food_nutrients: list[dict]) -> dict:
     for n in food_nutrients:
         nutrient = n.get("nutrient", n)
         nid = nutrient.get("id") or nutrient.get("nutrientId")
-        amount = n.get("amount") or n.get("value") or 0.0
+        # Prefer "amount" (detail API) over "value" (search API); use explicit None
+        # check so a genuine 0.0 amount is not skipped by Python's truthiness rules.
+        raw = n.get("amount")
+        if raw is None:
+            raw = n.get("value")
+        amount = raw if raw is not None else 0.0
         if nid in NUTRIENT_MAP:
             field = NUTRIENT_MAP[nid]
             val = round(float(amount), 4)
             if field == "calories":
-                if val > 0 or "calories" not in data:
-                    data["calories"] = val
+                # Two IDs map to calories: 1008 (kcal) and 2048 (kcal, Atwater
+                # Specific). ID 1062 is excluded from NUTRIENT_MAP because SR Legacy
+                # stores it in kJ, causing ~4x inflation. Both remaining IDs are kcal
+                # so taking the max is safe and order-independent.
+                data["calories"] = max(data.get("calories", 0.0), val)
             else:
                 data[field] = val
     if not data.get("calories") and (data.get("protein_g") or data.get("carbs_g") or data.get("fat_g")):
@@ -164,6 +172,26 @@ def main() -> None:
             print(f"  {inserted}/{len(all_rows)} ({inserted/len(all_rows)*100:.0f}%)\r", end="", flush=True)
 
     print(f"\nDone. {inserted} foods upserted.")
+
+    print("\nPost-ingest data quality check:")
+    with psycopg.connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM foods WHERE (nutrients->>'calories')::numeric = 0")
+            zero_cal = cur.fetchone()[0]
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM foods
+                WHERE (nutrients->>'calories')::numeric = 0
+                  AND ((nutrients->>'fat_g')::numeric     > 0
+                    OR (nutrients->>'protein_g')::numeric > 0
+                    OR (nutrients->>'carbs_g')::numeric   > 0)
+                """
+            )
+            fixable = cur.fetchone()[0]
+    print(f"  Zero-calorie records: {zero_cal}")
+    if fixable:
+        print(f"  WARNING: {fixable} records have 0 calories but non-zero macros.")
+        print("  Run: uv run python scripts/repair_zero_calories.py")
 
 
 if __name__ == "__main__":
