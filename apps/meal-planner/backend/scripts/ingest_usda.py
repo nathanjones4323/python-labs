@@ -2,17 +2,21 @@
 """
 One-shot USDA FoodData Central ingestion script.
 
-Fetches all Foundation Foods and SR Legacy items via the USDA search API
-(paginated) and bulk-inserts them into the local `foods` table.
+Two-phase approach:
+  Phase 1 — search API (paginated) to collect all fdc_ids for Foundation and
+             SR Legacy foods. Fast: ~42 requests total.
+  Phase 2 — bulk detail API (/foods POST, format=full) in batches of 20 to
+             fetch complete nutrient profiles. This is what fills vitamin D,
+             fiber, sugar, and all micronutrients that the search API omits.
 
 Safe to re-run — uses ON CONFLICT DO UPDATE.
 
 Usage:
     uv run python scripts/ingest_usda.py
 
-Fetches ~8,200 foods in ~42 API requests. Takes 2–5 minutes.
-Set USDA_API_KEY in your .env for higher rate limits (1,000 req/hr vs 30/hr
-for DEMO_KEY). Sign up free at https://fdc.nal.usda.gov/api-key-signup.html
+With a registered USDA_API_KEY (1,000 req/hr): ~30 minutes total.
+With DEMO_KEY (30 req/hr): phase 2 alone takes ~14 hours — get a free key.
+Sign up at https://fdc.nal.usda.gov/api-key-signup.html
 
 USDA releases quarterly updates. Re-run this script to keep data current.
 """
@@ -30,8 +34,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from meal_planner.config import DATABASE_URL, USDA_API_KEY, USDA_BASE_URL
 from meal_planner.services.usda import NUTRIENT_MAP
 
-PAGE_SIZE = 200  # max allowed by USDA API
-BATCH_SIZE = 200
+PAGE_SIZE = 200  # max allowed by USDA search API
+DETAIL_BATCH = 20  # max fdc_ids per /foods bulk request
+DB_BATCH = 200  # rows per Postgres executemany
 DATA_TYPES = ["Foundation", "SR Legacy"]
 
 
@@ -57,7 +62,9 @@ def _parse_nutrients(food_nutrients: list[dict]) -> dict:
                 data["calories"] = max(data.get("calories", 0.0), val)
             else:
                 data[field] = val
-    if not data.get("calories") and (data.get("protein_g") or data.get("carbs_g") or data.get("fat_g")):
+    if not data.get("calories") and (
+        data.get("protein_g") or data.get("carbs_g") or data.get("fat_g")
+    ):
         data["calories"] = round(
             data.get("protein_g", 0) * 4
             + data.get("carbs_g", 0) * 4
@@ -67,61 +74,97 @@ def _parse_nutrients(food_nutrients: list[dict]) -> dict:
     return data
 
 
-def fetch_all_foods(data_type: str) -> list[tuple]:
-    """Paginate through USDA API for a given data type. Returns list of row tuples."""
-    rows: list[tuple] = []
+def _sleep_if_demo(secs: float = 120.0) -> None:
+    if USDA_API_KEY == "DEMO_KEY":
+        time.sleep(secs)
+
+
+def collect_search_data(
+    data_type: str, client: httpx.Client
+) -> tuple[list[int], dict[int, tuple]]:
+    """Phase 1: paginate search to collect fdc_ids and search-derived row tuples.
+
+    Returns (ordered_ids, fallback) where fallback maps fdc_id → row tuple built
+    from search results. The fallback is used in Phase 2 for any ID the detail
+    API silently drops — a known USDA behaviour for certain Foundation foods.
+    """
+    ids: list[int] = []
+    fallback: dict[int, tuple] = {}
     page = 1
 
-    with httpx.Client(timeout=30.0) as client:
-        # Get total count first
+    resp = client.post(
+        f"{USDA_BASE_URL}/foods/search",
+        params={"api_key": USDA_API_KEY},
+        json={"query": "", "dataType": [data_type], "pageSize": 1, "pageNumber": 1},
+    )
+    resp.raise_for_status()
+    total = resp.json().get("totalHits", 0)
+    total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+    print(f"  {data_type}: {total} foods, {total_pages} pages")
+    _sleep_if_demo()
+
+    while page <= total_pages:
         resp = client.post(
             f"{USDA_BASE_URL}/foods/search",
             params={"api_key": USDA_API_KEY},
-            json={"query": "", "dataType": [data_type], "pageSize": 1, "pageNumber": 1},
+            json={
+                "query": "",
+                "dataType": [data_type],
+                "pageSize": PAGE_SIZE,
+                "pageNumber": page,
+            },
         )
+        if resp.status_code == 429:
+            print(f"\n  Rate limited — waiting 60s (page {page}/{total_pages})...")
+            time.sleep(60)
+            continue
         resp.raise_for_status()
-        total = resp.json().get("totalHits", 0)
-        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-        print(f"  {data_type}: {total} foods, {total_pages} pages")
-
-        while page <= total_pages:
-            resp = client.post(
-                f"{USDA_BASE_URL}/foods/search",
-                params={"api_key": USDA_API_KEY},
-                json={
-                    "query": "",
-                    "dataType": [data_type],
-                    "pageSize": PAGE_SIZE,
-                    "pageNumber": page,
-                },
-            )
-            if resp.status_code == 429:
-                print(f"\n  Rate limited — waiting 60s (page {page}/{total_pages})...")
-                time.sleep(60)
+        for item in resp.json().get("foods", []):
+            fdc_id = item.get("fdcId")
+            if not fdc_id:
                 continue
-            resp.raise_for_status()
+            ids.append(fdc_id)
+            if row := parse_row(item):
+                fallback[fdc_id] = row
+        print(
+            f"  {data_type}: page {page}/{total_pages} ({len(ids)} ids)\r",
+            end="",
+            flush=True,
+        )
+        page += 1
+        _sleep_if_demo()
 
-            foods = resp.json().get("foods", [])
-            for item in foods:
-                fdc_id = item.get("fdcId")
-                desc = item.get("description", "").strip()
-                if not fdc_id or not desc:
-                    continue
-                raw_cat = item.get("foodCategory") or item.get("foodCategoryLabel")
-                if isinstance(raw_cat, dict):
-                    raw_cat = raw_cat.get("description")
-                nutrients = _parse_nutrients(item.get("foodNutrients", []))
-                rows.append((fdc_id, desc, raw_cat, data_type, json.dumps(nutrients)))
+    print(f"  {data_type}: {len(ids)} food IDs collected          ")
+    return ids, fallback
 
-            print(f"  {data_type}: page {page}/{total_pages} ({len(rows)} so far)\r", end="", flush=True)
-            page += 1
 
-            # Brief pause to stay under DEMO_KEY rate limit (30 req/hr = 1 req/120s)
-            if USDA_API_KEY == "DEMO_KEY":
-                time.sleep(120)
+def fetch_detail_batch(fdc_ids: list[int], client: httpx.Client) -> list[dict]:
+    """Phase 2: fetch full nutrient profiles for up to DETAIL_BATCH fdc_ids."""
+    while True:
+        resp = client.post(
+            f"{USDA_BASE_URL}/foods",
+            params={"api_key": USDA_API_KEY, "format": "full"},
+            json={"fdcIds": fdc_ids},
+        )
+        if resp.status_code == 429:
+            print("\n  Rate limited — waiting 60s...")
+            time.sleep(60)
+            continue
+        resp.raise_for_status()
+        return resp.json()
 
-    print(f"  {data_type}: {len(rows)} foods fetched          ")
-    return rows
+
+def parse_row(item: dict) -> tuple | None:
+    fdc_id = item.get("fdcId")
+    desc = (item.get("description") or "").strip()
+    if not fdc_id or not desc:
+        return None
+    raw_cat = item.get("foodCategory") or item.get("foodCategoryLabel")
+    if isinstance(raw_cat, dict):
+        raw_cat = raw_cat.get("description")
+    data_type = item.get("dataType")
+    nutrients = _parse_nutrients(item.get("foodNutrients", []))
+    return (fdc_id, desc, raw_cat, data_type, json.dumps(nutrients))
 
 
 def upsert_batch(conn, rows: list[tuple]) -> None:
@@ -144,39 +187,86 @@ def upsert_batch(conn, rows: list[tuple]) -> None:
 def main() -> None:
     if USDA_API_KEY == "DEMO_KEY":
         print(
-            "Using DEMO_KEY (30 req/hr). SR Legacy has ~40 pages so this will take ~70 min.\n"
-            "Set USDA_API_KEY in your .env for a free registered key (1,000 req/hr → ~5 min).\n"
+            "Using DEMO_KEY (30 req/hr). Phase 2 (detail fetch) will take ~14 hours.\n"
+            "Get a free registered key for 1,000 req/hr (~30 min total).\n"
             "Sign up at https://fdc.nal.usda.gov/api-key-signup.html\n"
         )
 
-    all_rows: list[tuple] = []
-    for data_type in DATA_TYPES:
-        try:
-            rows = fetch_all_foods(data_type)
-            all_rows.extend(rows)
-        except Exception as e:
-            print(f"\n  ERROR fetching {data_type}: {e}", file=sys.stderr)
+    # Phase 1 — collect all fdc_ids and search-derived fallback rows
+    print("Phase 1: collecting food IDs via search API...")
+    all_ids: list[int] = []
+    search_fallback: dict[int, tuple] = {}
+    with httpx.Client(timeout=120.0) as client:
+        for data_type in DATA_TYPES:
+            try:
+                ids, fallback = collect_search_data(data_type, client)
+                all_ids.extend(ids)
+                search_fallback.update(fallback)
+            except Exception as e:
+                print(f"\n  ERROR collecting IDs for {data_type}: {e}", file=sys.stderr)
 
-    if not all_rows:
-        print("No data fetched — aborting.", file=sys.stderr)
+    if not all_ids:
+        print("No food IDs collected — aborting.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nInserting {len(all_rows)} foods into Postgres...")
-    db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
-    with psycopg.connect(db_url) as conn:
-        inserted = 0
-        for i in range(0, len(all_rows), BATCH_SIZE):
-            batch = all_rows[i : i + BATCH_SIZE]
-            upsert_batch(conn, batch)
-            inserted += len(batch)
-            print(f"  {inserted}/{len(all_rows)} ({inserted/len(all_rows)*100:.0f}%)\r", end="", flush=True)
+    print(
+        f"\nPhase 2: fetching full nutrient detail for {len(all_ids)} foods "
+        f"({len(all_ids) // DETAIL_BATCH + 1} batches of {DETAIL_BATCH})..."
+    )
 
-    print(f"\nDone. {inserted} foods upserted.")
+    # Phase 2 — fetch full detail in batches, parse, upsert as we go.
+    # If the detail API silently drops IDs from a batch (a known USDA behaviour
+    # for certain Foundation foods that cause server-side timeouts), fall back to
+    # the search-derived row captured in Phase 1.
+    db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
+    processed = 0
+    errors = 0
+    fallback_used = 0
+    total_batches = (len(all_ids) + DETAIL_BATCH - 1) // DETAIL_BATCH
+
+    with httpx.Client(timeout=120.0) as client, psycopg.connect(db_url) as conn:
+        for batch_num, i in enumerate(range(0, len(all_ids), DETAIL_BATCH), 1):
+            batch_ids = all_ids[i : i + DETAIL_BATCH]
+            try:
+                items = fetch_detail_batch(batch_ids, client)
+            except Exception as e:
+                print(f"\n  ERROR on batch {batch_num}: {e}", file=sys.stderr)
+                errors += len(batch_ids)
+                _sleep_if_demo()
+                continue
+
+            returned_ids = {item["fdcId"] for item in items}
+            rows = [r for item in items if (r := parse_row(item))]
+
+            # Fall back to search data for any ID the detail API dropped
+            for fdc_id in batch_ids:
+                if fdc_id not in returned_ids and fdc_id in search_fallback:
+                    rows.append(search_fallback[fdc_id])
+                    fallback_used += 1
+
+            if rows:
+                upsert_batch(conn, rows)
+            processed += len(batch_ids)
+
+            pct = processed / len(all_ids) * 100
+            print(
+                f"  batch {batch_num}/{total_batches} — {processed}/{len(all_ids)} ({pct:.0f}%)\r",
+                end="",
+                flush=True,
+            )
+            _sleep_if_demo()
+
+    summary = f"{processed - errors} foods upserted ({errors} errors)"
+    if fallback_used:
+        summary += f", {fallback_used} used search-API fallback (detail API dropped them)"
+    print(f"\nDone. {summary}.")
 
     print("\nPost-ingest data quality check:")
     with psycopg.connect(db_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM foods WHERE (nutrients->>'calories')::numeric = 0")
+            cur.execute(
+                "SELECT COUNT(*) FROM foods WHERE (nutrients->>'calories')::numeric = 0"
+            )
             zero_cal = cur.fetchone()[0]
             cur.execute(
                 """
