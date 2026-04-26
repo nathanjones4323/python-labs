@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 import anthropic
 from db import get_conn
-from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from meal_planner.config import ANTHROPIC_API_KEY, CLAUDE_MODEL_EXTRACTION
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def run_extraction(conversation_id: uuid.UUID) -> None:
 
         try:
             response = _sync_client.messages.create(
-                model=CLAUDE_MODEL,
+                model=CLAUDE_MODEL_EXTRACTION,
                 max_tokens=1000,
                 system=EXTRACTION_SYSTEM_PROMPT,
                 messages=[{
