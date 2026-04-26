@@ -6,7 +6,6 @@ import {
   ScrollView,
   Modal,
   ActivityIndicator,
-  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { ChatSession } from "../lib/types";
@@ -45,10 +44,13 @@ export default function ChatHistorySidebar({
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingSession, setLoadingSession] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
       fetchSessions();
+    } else {
+      setPendingDeleteId(null);
     }
   }, [visible]);
 
@@ -65,6 +67,10 @@ export default function ChatHistorySidebar({
   }
 
   async function handleSelect(session: ChatSession) {
+    if (pendingDeleteId) {
+      setPendingDeleteId(null);
+      return;
+    }
     if (session.id === currentSessionId) {
       onClose();
       return;
@@ -81,26 +87,14 @@ export default function ChatHistorySidebar({
     }
   }
 
-  function handleDelete(session: ChatSession) {
-    Alert.alert(
-      "Delete conversation",
-      `Delete "${session.title}"?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteChatSession(userId, session.id);
-              setSessions((prev) => prev.filter((s) => s.id !== session.id));
-            } catch {
-              // silently fail
-            }
-          },
-        },
-      ]
-    );
+  async function confirmDelete(session: ChatSession) {
+    try {
+      await deleteChatSession(userId, session.id);
+      setSessions((prev) => prev.filter((s) => s.id !== session.id));
+      setPendingDeleteId(null);
+    } catch {
+      setPendingDeleteId(null);
+    }
   }
 
   return (
@@ -146,35 +140,61 @@ export default function ChatHistorySidebar({
               {sessions.map((session) => {
                 const isActive = session.id === currentSessionId;
                 const isLoadingThis = loadingSession === session.id;
+                const isPendingDelete = pendingDeleteId === session.id;
+
                 return (
                   <View
                     key={session.id}
-                    className={`mx-2 mb-1 rounded-xl overflow-hidden flex-row items-center ${isActive ? "bg-primary-50" : ""}`}
+                    className={`mx-2 mb-1 rounded-xl overflow-hidden ${isPendingDelete ? "bg-red-50" : isActive ? "bg-primary-50" : ""}`}
                   >
-                    <Pressable
-                      onPress={() => handleSelect(session)}
-                      className="flex-1 px-3 py-3"
-                    >
-                      <Text
-                        className={`text-sm font-medium leading-snug ${isActive ? "text-primary-700" : "text-gray-800"}`}
-                        numberOfLines={2}
-                      >
-                        {session.title}
-                      </Text>
-                      <Text className="text-xs text-gray-400 mt-0.5">
-                        {relativeTime(session.updated_at)} · {session.message_count} messages
-                      </Text>
-                    </Pressable>
-                    {isLoadingThis ? (
-                      <ActivityIndicator size="small" color="#16a34a" className="mr-3" />
+                    {isPendingDelete ? (
+                      <View className="px-3 py-3">
+                        <Text className="text-sm font-medium text-red-700 leading-snug mb-2" numberOfLines={1}>
+                          Delete this conversation?
+                        </Text>
+                        <View className="flex-row gap-2">
+                          <Pressable
+                            onPress={() => setPendingDeleteId(null)}
+                            className="flex-1 items-center py-1.5 rounded-lg border border-gray-200 bg-white"
+                          >
+                            <Text className="text-sm font-medium text-gray-600">Cancel</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => confirmDelete(session)}
+                            className="flex-1 items-center py-1.5 rounded-lg bg-red-500"
+                          >
+                            <Text className="text-sm font-semibold text-white">Delete</Text>
+                          </Pressable>
+                        </View>
+                      </View>
                     ) : (
-                      <Pressable
-                        onPress={() => handleDelete(session)}
-                        hitSlop={8}
-                        className="p-2 mr-2"
-                      >
-                        <Ionicons name="trash-outline" size={15} color="#d1d5db" />
-                      </Pressable>
+                      <View className="flex-row items-center">
+                        <Pressable
+                          onPress={() => handleSelect(session)}
+                          className="flex-1 px-3 py-3"
+                        >
+                          <Text
+                            className={`text-sm font-medium leading-snug ${isActive ? "text-primary-700" : "text-gray-800"}`}
+                            numberOfLines={2}
+                          >
+                            {session.title}
+                          </Text>
+                          <Text className="text-xs text-gray-400 mt-0.5">
+                            {relativeTime(session.updated_at)} · {session.message_count} messages
+                          </Text>
+                        </Pressable>
+                        {isLoadingThis ? (
+                          <ActivityIndicator size="small" color="#16a34a" className="mr-3" />
+                        ) : (
+                          <Pressable
+                            onPress={() => setPendingDeleteId(session.id)}
+                            hitSlop={8}
+                            className="p-2 mr-2"
+                          >
+                            <Ionicons name="trash-outline" size={15} color="#d1d5db" />
+                          </Pressable>
+                        )}
+                      </View>
                     )}
                   </View>
                 );
