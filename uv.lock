@@ -491,6 +491,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "ortools" },
+    { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -518,6 +519,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27.0" },
     { name = "ortools", specifier = ">=9.10" },
+    { name = "pydantic", specifier = ">=2.13.1" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
