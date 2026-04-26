@@ -42,8 +42,9 @@ from meal_planner.models.food import FoodResult, NutrientSummary
 
 NUTRIENT_MAP = {
     1008: "calories",
-    1062: "calories",   # Energy (Atwater General Factors)
-    2048: "calories",   # Energy (Atwater Specific Factors)
+    # 1062 intentionally omitted: SR Legacy stores it in kJ, not kcal — including
+    # it causes ~4x calorie inflation for oils and fats.
+    2048: "calories",   # Energy (Atwater Specific Factors, kcal) — Foundation foods
     1003: "protein_g",
     1004: "fat_g",
     1005: "carbs_g",
@@ -77,15 +78,21 @@ def _parse_nutrients(food_nutrients: list[dict]) -> NutrientSummary:
     for n in food_nutrients:
         nutrient = n.get("nutrient", n)
         nid = nutrient.get("id") or nutrient.get("nutrientId")
-        # USDA detail API uses "amount"; search API uses "value"
-        amount = n.get("amount") or n.get("value") or 0.0
+        # Prefer "amount" (detail API) over "value" (search API); use explicit None
+        # check so a genuine 0.0 amount is not skipped by Python's truthiness rules.
+        raw = n.get("amount")
+        if raw is None:
+            raw = n.get("value")
+        amount = raw if raw is not None else 0.0
         if nid in NUTRIENT_MAP:
             field = NUTRIENT_MAP[nid]
             val = round(float(amount), 4)
-            # For calories, take the first non-zero value seen
+            # Two IDs map to calories: 1008 (kcal) and 2048 (kcal, Atwater
+            # Specific). ID 1062 is excluded from NUTRIENT_MAP because SR Legacy
+            # stores it in kJ, causing ~4x inflation. Both remaining IDs are kcal
+            # so taking the max is safe and order-independent.
             if field == "calories":
-                if val > 0 or "calories" not in data:
-                    data["calories"] = val
+                data["calories"] = max(data.get("calories", 0.0), val)
             else:
                 data[field] = val
     result = NutrientSummary(**data)
