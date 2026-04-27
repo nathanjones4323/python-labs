@@ -12,7 +12,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 def create_user(body: UserCreate):
     with get_conn() as conn:
         row = conn.execute(
-            "INSERT INTO users (email) VALUES (%s) ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id, email",
+            "INSERT INTO users (email) VALUES (%s) ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id, external_id, email",
             (body.email,),
         ).fetchone()
         profile_row = conn.execute(
@@ -26,7 +26,7 @@ def create_user(body: UserCreate):
 def get_user(user_id: uuid.UUID):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email FROM users WHERE id = %s", (str(user_id),)
+            "SELECT id, external_id, email FROM users WHERE id = %s", (str(user_id),)
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="User not found")
@@ -170,4 +170,4 @@ def _build_user_response(user_row, profile_row) -> UserResponse:
             preferences=profile_row[6] or {},
             onboarding_complete=profile_row[7],
         )
-    return UserResponse(id=user_row[0], email=user_row[1], profile=profile)
+    return UserResponse(id=user_row[0], external_id=user_row[1], email=user_row[2], profile=profile)

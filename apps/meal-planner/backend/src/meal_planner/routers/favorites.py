@@ -18,7 +18,7 @@ class FavoriteMealBody(BaseModel):
 def _load_favorite_response(conn, fav_id: str) -> FavoriteMealResponse:
     row = conn.execute(
         """
-        SELECT id, user_id, name, meal_type, instructions, notes, source_meal_id, created_at
+        SELECT id, external_id, user_id, name, meal_type, instructions, notes, source_meal_id, created_at
         FROM favorite_meals WHERE id = %s
         """,
         (fav_id,),
@@ -28,7 +28,7 @@ def _load_favorite_response(conn, fav_id: str) -> FavoriteMealResponse:
 
     food_rows = conn.execute(
         """
-        SELECT fmf.id, fmf.fdc_id, f.description, f.food_category, f.nutrients,
+        SELECT fmf.id, fmf.external_id, fmf.fdc_id, f.description, f.food_category, f.nutrients,
                fmf.quantity_g, fmf.serving_description
         FROM favorite_meal_foods fmf
         JOIN foods f ON f.fdc_id = fmf.fdc_id
@@ -39,29 +39,31 @@ def _load_favorite_response(conn, fav_id: str) -> FavoriteMealResponse:
 
     food_responses: list[MealFoodResponse] = []
     for fr in food_rows:
-        nutrients_per_100g = NutrientSummary(**(fr[4] if fr[4] else {}))
-        scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[5]))
+        nutrients_per_100g = NutrientSummary(**(fr[5] if fr[5] else {}))
+        scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[6]))
         food_responses.append(
             MealFoodResponse(
                 id=fr[0],
-                fdc_id=fr[1],
-                description=fr[2],
-                food_category=fr[3],
-                quantity_g=float(fr[5]),
-                serving_description=fr[6],
+                external_id=fr[1],
+                fdc_id=fr[2],
+                description=fr[3],
+                food_category=fr[4],
+                quantity_g=float(fr[6]),
+                serving_description=fr[7],
                 nutrients=scaled,
             )
         )
 
     return FavoriteMealResponse(
         id=row[0],
-        user_id=row[1],
-        name=row[2],
-        meal_type=row[3],
-        instructions=row[4] or [],
-        notes=row[5],
-        source_meal_id=row[6],
-        created_at=row[7],
+        external_id=row[1],
+        user_id=row[2],
+        name=row[3],
+        meal_type=row[4],
+        instructions=row[5] or [],
+        notes=row[6],
+        source_meal_id=row[7],
+        created_at=row[8],
         foods=food_responses,
         total_nutrition=sum_nutrients([f.nutrients for f in food_responses]),
     )
@@ -75,7 +77,7 @@ def list_favorite_summaries(user_id: uuid.UUID):
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT fm.id, fm.name, fm.meal_type, fm.created_at, fm.source_meal_id,
+            SELECT fm.id, fm.external_id, fm.name, fm.meal_type, fm.created_at, fm.source_meal_id,
                    COALESCE(SUM((f.nutrients->>'calories')::numeric * fmf.quantity_g / 100), 0) AS calories,
                    COALESCE(SUM((f.nutrients->>'protein_g')::numeric * fmf.quantity_g / 100), 0) AS protein_g,
                    COALESCE(SUM((f.nutrients->>'fat_g')::numeric * fmf.quantity_g / 100), 0) AS fat_g,
@@ -106,7 +108,7 @@ def list_favorite_summaries(user_id: uuid.UUID):
             LEFT JOIN favorite_meal_foods fmf ON fmf.favorite_meal_id = fm.id
             LEFT JOIN foods f ON f.fdc_id = fmf.fdc_id
             WHERE fm.user_id = %s
-            GROUP BY fm.id, fm.name, fm.meal_type, fm.created_at, fm.source_meal_id
+            GROUP BY fm.id, fm.external_id, fm.name, fm.meal_type, fm.created_at, fm.source_meal_id
             ORDER BY fm.created_at DESC
             """,
             (str(user_id),),
@@ -115,39 +117,40 @@ def list_favorite_summaries(user_id: uuid.UUID):
     result = []
     for r in rows:
         nutrition = NutrientSummary(
-            calories=float(r[5]),
-            protein_g=float(r[6]),
-            fat_g=float(r[7]),
-            carbs_g=float(r[8]),
-            fiber_g=float(r[9]),
-            sugar_g=float(r[10]),
-            saturated_fat_g=float(r[11]),
-            cholesterol_mg=float(r[12]),
-            sodium_mg=float(r[13]),
-            calcium_mg=float(r[14]),
-            iron_mg=float(r[15]),
-            magnesium_mg=float(r[16]),
-            phosphorus_mg=float(r[17]),
-            potassium_mg=float(r[18]),
-            zinc_mg=float(r[19]),
-            vitamin_a_ug=float(r[20]),
-            vitamin_c_mg=float(r[21]),
-            vitamin_d_ug=float(r[22]),
-            vitamin_e_mg=float(r[23]),
-            vitamin_k_ug=float(r[24]),
-            vitamin_b6_mg=float(r[25]),
-            vitamin_b12_ug=float(r[26]),
-            folate_ug=float(r[27]),
-            thiamin_mg=float(r[28]),
-            riboflavin_mg=float(r[29]),
-            niacin_mg=float(r[30]),
+            calories=float(r[6]),
+            protein_g=float(r[7]),
+            fat_g=float(r[8]),
+            carbs_g=float(r[9]),
+            fiber_g=float(r[10]),
+            sugar_g=float(r[11]),
+            saturated_fat_g=float(r[12]),
+            cholesterol_mg=float(r[13]),
+            sodium_mg=float(r[14]),
+            calcium_mg=float(r[15]),
+            iron_mg=float(r[16]),
+            magnesium_mg=float(r[17]),
+            phosphorus_mg=float(r[18]),
+            potassium_mg=float(r[19]),
+            zinc_mg=float(r[20]),
+            vitamin_a_ug=float(r[21]),
+            vitamin_c_mg=float(r[22]),
+            vitamin_d_ug=float(r[23]),
+            vitamin_e_mg=float(r[24]),
+            vitamin_k_ug=float(r[25]),
+            vitamin_b6_mg=float(r[26]),
+            vitamin_b12_ug=float(r[27]),
+            folate_ug=float(r[28]),
+            thiamin_mg=float(r[29]),
+            riboflavin_mg=float(r[30]),
+            niacin_mg=float(r[31]),
         )
         result.append(FavoriteMealSummary(
             id=r[0],
-            name=r[1],
-            meal_type=r[2],
-            created_at=r[3],
-            source_meal_id=r[4],
+            external_id=r[1],
+            name=r[2],
+            meal_type=r[3],
+            created_at=r[4],
+            source_meal_id=r[5],
             total_nutrition=nutrition,
         ))
     return result
