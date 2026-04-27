@@ -119,3 +119,18 @@ export interface FoodSearchResult {
   data_type: string | null;
   nutrients_per_100g: NutrientSummary;
 }
+
+export interface RecipeAIFood {
+  fdc_id: number;
+  description: string;
+  quantity_g: number;
+  serving_description?: string;
+}
+
+export interface RecipeAIResult {
+  name: string;
+  meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+  instructions: string[];
+  notes?: string | null;
+  foods: RecipeAIFood[];
+}

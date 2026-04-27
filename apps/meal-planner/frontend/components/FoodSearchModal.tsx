@@ -45,7 +45,7 @@ export default function FoodSearchModal({ visible, onClose, onSelect }: Props) {
       setLoading(true);
       try {
         const data = await searchFoods(query.trim(), 10);
-        setResults(data);
+        setResults(data.results);
       } catch {
         setResults([]);
       } finally {
