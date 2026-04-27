@@ -18,6 +18,7 @@ import NutritionLabel from "../../components/NutritionLabel";
 import MacroBar from "../../components/MacroBar";
 import FoodSearchModal from "../../components/FoodSearchModal";
 import FavoritesPickerModal from "../../components/FavoritesPickerModal";
+import { gramsToConsumer } from "../../lib/formatIngredient";
 
 export default function MealDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -398,7 +399,7 @@ export default function MealDetailScreen() {
                             </View>
                             <Text style={{ fontSize: 13, fontWeight: "600", color: "#b91c1c", textDecorationLine: "line-through", flex: 1 }}>{item.food.description}</Text>
                           </View>
-                          <Text style={{ fontSize: 13, color: "#ef4444", marginLeft: 8 }}>{Math.round(item.food.quantity_g)}g</Text>
+                          <Text style={{ fontSize: 13, color: "#ef4444", marginLeft: 8 }}>{gramsToConsumer(item.food.quantity_g, item.food.description).label}</Text>
                         </View>
                       );
                     }
@@ -411,7 +412,7 @@ export default function MealDetailScreen() {
                             </View>
                             <Text style={{ fontSize: 13, fontWeight: "700", color: "#15803d", flex: 1 }}>{item.food.description}</Text>
                           </View>
-                          <Text style={{ fontSize: 13, fontWeight: "600", color: "#16a34a", marginLeft: 8 }}>{Math.round(item.food.quantity_g)}g</Text>
+                          <Text style={{ fontSize: 13, fontWeight: "600", color: "#16a34a", marginLeft: 8 }}>{gramsToConsumer(item.food.quantity_g, item.food.description).label}</Text>
                         </View>
                       );
                     }
@@ -425,7 +426,7 @@ export default function MealDetailScreen() {
                             <Text style={{ fontSize: 13, fontWeight: "600", color: "#92400e", flex: 1 }}>{item.food.description}</Text>
                           </View>
                           <Text style={{ fontSize: 13, fontWeight: "700", color: "#b45309", marginLeft: 8 }}>
-                            {item.oldQty !== undefined ? `${Math.round(item.oldQty)}g → ` : ""}{Math.round(item.food.quantity_g)}g
+                            {item.oldQty !== undefined ? `${gramsToConsumer(item.oldQty, item.food.description).label} → ` : ""}{gramsToConsumer(item.food.quantity_g, item.food.description).label}
                           </Text>
                         </View>
                       );
@@ -433,7 +434,7 @@ export default function MealDetailScreen() {
                     return (
                       <View key={i} style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginHorizontal: 12, paddingHorizontal: 10, paddingVertical: 7 }}>
                         <Text style={{ fontSize: 13, color: "#9ca3af", flex: 1 }}>{item.food.description}</Text>
-                        <Text style={{ fontSize: 13, color: "#d1d5db", marginLeft: 8 }}>{Math.round(item.food.quantity_g)}g</Text>
+                        <Text style={{ fontSize: 13, color: "#d1d5db", marginLeft: 8 }}>{gramsToConsumer(item.food.quantity_g, item.food.description).label}</Text>
                       </View>
                     );
                   })}
@@ -515,7 +516,7 @@ export default function MealDetailScreen() {
                       </>
                     ) : (
                       <View className="items-end">
-                        <Text className="text-sm text-gray-600">{Math.round(food.quantity_g)}g</Text>
+                        <Text className="text-sm text-gray-600">{gramsToConsumer(food.quantity_g, food.description).label}</Text>
                         <Text className="text-xs text-gray-400">{Math.round(food.nutrients.calories)} kcal</Text>
                       </View>
                     )}
