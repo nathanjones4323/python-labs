@@ -7,6 +7,7 @@ from .meal_plan import MealFoodResponse
 
 class FavoriteMealSummary(BaseModel):
     id: uuid.UUID
+    external_id: str
     name: str
     meal_type: str
     created_at: datetime

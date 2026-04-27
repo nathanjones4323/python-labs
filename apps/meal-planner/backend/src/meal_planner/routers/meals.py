@@ -30,7 +30,7 @@ class MealAIEditBody(BaseModel):
 async def _load_meal_response(conn, meal_id: str) -> MealResponse:
     """Read a meal and its foods from DB and return a MealResponse."""
     mr = conn.execute(
-        "SELECT id, name, meal_type, scheduled_date, instructions, notes FROM meals WHERE id = %s",
+        "SELECT id, external_id, name, meal_type, scheduled_date, instructions, notes FROM meals WHERE id = %s",
         (meal_id,),
     ).fetchone()
     if not mr:
@@ -38,7 +38,7 @@ async def _load_meal_response(conn, meal_id: str) -> MealResponse:
 
     food_rows = conn.execute(
         """
-        SELECT mf.id, mf.fdc_id, f.description, f.nutrients, mf.quantity_g, mf.serving_description
+        SELECT mf.id, mf.external_id, mf.fdc_id, f.description, f.nutrients, mf.quantity_g, mf.serving_description
         FROM meal_foods mf JOIN foods f ON f.fdc_id = mf.fdc_id
         WHERE mf.meal_id = %s
         """,
@@ -47,26 +47,28 @@ async def _load_meal_response(conn, meal_id: str) -> MealResponse:
 
     food_responses: list[MealFoodResponse] = []
     for fr in food_rows:
-        nutrients_per_100g = NutrientSummary(**(fr[3] if fr[3] else {}))
-        scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[4]))
+        nutrients_per_100g = NutrientSummary(**(fr[4] if fr[4] else {}))
+        scaled = usda_svc.scale_nutrients(nutrients_per_100g, float(fr[5]))
         food_responses.append(
             MealFoodResponse(
                 id=fr[0],
-                fdc_id=fr[1],
-                description=fr[2],
-                quantity_g=float(fr[4]),
-                serving_description=fr[5],
+                external_id=fr[1],
+                fdc_id=fr[2],
+                description=fr[3],
+                quantity_g=float(fr[5]),
+                serving_description=fr[6],
                 nutrients=scaled,
             )
         )
 
     return MealResponse(
         id=mr[0],
-        name=mr[1],
-        meal_type=mr[2],
-        scheduled_date=mr[3],
-        instructions=mr[4] or [],
-        notes=mr[5],
+        external_id=mr[1],
+        name=mr[2],
+        meal_type=mr[3],
+        scheduled_date=mr[4],
+        instructions=mr[5] or [],
+        notes=mr[6],
         foods=food_responses,
         total_nutrition=sum_nutrients([f.nutrients for f in food_responses]),
     )
@@ -203,6 +205,7 @@ async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
             proposed_foods.append(
                 MealFoodResponse(
                     id=uuid.uuid4(),
+                    external_id=f"mfood_{uuid.uuid4().hex[:12]}",
                     fdc_id=fdc_id,
                     description=food_data["description"],
                     quantity_g=float(quantity_g),
@@ -213,6 +216,7 @@ async def ai_preview_meal(meal_id: uuid.UUID, body: MealAIEditBody):
 
     return MealResponse(
         id=original.id,
+        external_id=original.external_id,
         name=result.get("name") or original.name,
         meal_type=original.meal_type,
         scheduled_date=original.scheduled_date,

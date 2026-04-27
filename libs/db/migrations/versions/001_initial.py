@@ -17,6 +17,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id  TEXT UNIQUE NOT NULL DEFAULT 'user_' || encode(gen_random_bytes(6), 'hex'),
             email        TEXT UNIQUE NOT NULL,
             google_id    TEXT UNIQUE,
             display_name TEXT,
@@ -36,8 +37,9 @@ def upgrade() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS conversations (
-            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id TEXT UNIQUE NOT NULL DEFAULT 'conv_' || encode(gen_random_bytes(6), 'hex'),
+            user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             messages   JSONB NOT NULL DEFAULT '[]',
             title      TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -60,6 +62,7 @@ def upgrade() -> None:
 
         CREATE TABLE IF NOT EXISTS meal_plans (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id     TEXT UNIQUE NOT NULL DEFAULT 'mplan_' || encode(gen_random_bytes(6), 'hex'),
             user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             name            TEXT NOT NULL,
             start_date      DATE NOT NULL,
@@ -70,6 +73,7 @@ def upgrade() -> None:
 
         CREATE TABLE IF NOT EXISTS meals (
             id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id    TEXT UNIQUE NOT NULL DEFAULT 'meal_' || encode(gen_random_bytes(6), 'hex'),
             meal_plan_id   UUID NOT NULL REFERENCES meal_plans(id) ON DELETE CASCADE,
             name           TEXT NOT NULL,
             meal_type      TEXT NOT NULL CHECK (meal_type IN ('breakfast','lunch','dinner','snack')),
@@ -81,6 +85,7 @@ def upgrade() -> None:
 
         CREATE TABLE IF NOT EXISTS meal_foods (
             id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id         TEXT UNIQUE NOT NULL DEFAULT 'mfood_' || encode(gen_random_bytes(6), 'hex'),
             meal_id             UUID NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
             fdc_id              INT NOT NULL REFERENCES foods(fdc_id),
             quantity_g          DECIMAL(10,2) NOT NULL,
@@ -90,6 +95,7 @@ def upgrade() -> None:
 
         CREATE TABLE IF NOT EXISTS favorite_meals (
             id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id    TEXT UNIQUE NOT NULL DEFAULT 'fav_' || encode(gen_random_bytes(6), 'hex'),
             user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             name           TEXT NOT NULL,
             meal_type      TEXT NOT NULL CHECK (meal_type IN ('breakfast','lunch','dinner','snack')),
@@ -101,6 +107,7 @@ def upgrade() -> None:
 
         CREATE TABLE IF NOT EXISTS favorite_meal_foods (
             id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            external_id         TEXT UNIQUE NOT NULL DEFAULT 'fmfood_' || encode(gen_random_bytes(6), 'hex'),
             favorite_meal_id    UUID NOT NULL REFERENCES favorite_meals(id) ON DELETE CASCADE,
             fdc_id              INT NOT NULL REFERENCES foods(fdc_id),
             quantity_g          DECIMAL(10,2) NOT NULL,

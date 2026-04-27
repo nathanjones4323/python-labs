@@ -32,5 +32,6 @@ class UserProfileResponse(UserProfile):
 
 class UserResponse(BaseModel):
     id: uuid.UUID
+    external_id: str
     email: str
     profile: UserProfileResponse | None = None

@@ -29,6 +29,7 @@ class MealPlanCreate(BaseModel):
 
 class MealFoodResponse(BaseModel):
     id: uuid.UUID
+    external_id: str
     fdc_id: int
     description: str
     food_category: str | None = None
@@ -39,6 +40,7 @@ class MealFoodResponse(BaseModel):
 
 class MealResponse(BaseModel):
     id: uuid.UUID
+    external_id: str
     name: str
     meal_type: str
     scheduled_date: date
@@ -50,6 +52,7 @@ class MealResponse(BaseModel):
 
 class MealPlanResponse(BaseModel):
     id: uuid.UUID
+    external_id: str
     name: str
     start_date: date
     end_date: date
@@ -59,10 +62,12 @@ class MealPlanResponse(BaseModel):
 
 class MealPlanSummary(BaseModel):
     id: uuid.UUID
+    external_id: str
     name: str
     start_date: date
     end_date: date
     meal_count: int
     created_at: datetime | None = None
     conversation_id: uuid.UUID | None = None
+    conversation_external_id: str | None = None
     conversation_title: str | None = None
