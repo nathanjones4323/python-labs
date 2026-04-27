@@ -56,7 +56,8 @@ async def google_sign_in(body: GoogleAuthRequest):
     with get_conn() as conn:
         # Try lookup by google_id first
         row = conn.execute(
-            "SELECT id, email FROM users WHERE google_id = %s", (google_id,)
+            "SELECT id, external_id, email FROM users WHERE google_id = %s",
+            (google_id,),
         ).fetchone()
 
         if row:
@@ -75,7 +76,7 @@ async def google_sign_in(body: GoogleAuthRequest):
             else:
                 # New user
                 row = conn.execute(
-                    "INSERT INTO users (email, google_id, display_name) VALUES (%s, %s, %s) RETURNING id, email",
+                    "INSERT INTO users (email, google_id, display_name) VALUES (%s, %s, %s) RETURNING id, external_id, email",
                     (email, google_id, display_name),
                 ).fetchone()
                 user_id = row[0]
@@ -85,7 +86,7 @@ async def google_sign_in(body: GoogleAuthRequest):
             "SELECT * FROM user_profiles WHERE user_id = %s", (str(user_id),)
         ).fetchone()
 
-    user_response = _build_user_response((user_id, email), profile_row)
+    user_response = _build_user_response(row, profile_row)
     is_new_user = (
         user_response.profile is None or not user_response.profile.onboarding_complete
     )
