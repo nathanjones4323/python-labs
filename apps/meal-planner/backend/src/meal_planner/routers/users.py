@@ -169,8 +169,6 @@ def patch_profile(user_id: uuid.UUID, body: ProfilePatchRequest):
 
 
 def _build_user_response(user_row, profile_row) -> UserResponse:
-    print(f"User row:", user_row)
-    print(f"Profile row:", profile_row)
     profile = None
     if profile_row:
         profile = UserProfileResponse(
