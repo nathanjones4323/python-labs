@@ -54,6 +54,14 @@ _FINALIZE_TOOL: anthropic.types.ToolParam = {
                 "description": "Step-by-step cooking instructions",
             },
             "notes": {"type": "string"},
+            "servings": {
+                "type": "integer",
+                "description": (
+                    "Number of servings the original recipe yields. "
+                    "All quantity_g values must already be divided by this number "
+                    "so they represent one serving. Use 1 if the recipe is already single-serving."
+                ),
+            },
             "foods": {
                 "type": "array",
                 "items": {
@@ -74,7 +82,7 @@ _FINALIZE_TOOL: anthropic.types.ToolParam = {
                 },
             },
         },
-        "required": ["name", "meal_type", "instructions", "foods"],
+        "required": ["name", "meal_type", "instructions", "servings", "foods"],
     },
 }
 
@@ -92,6 +100,8 @@ Rules:
 - Use whole foods from USDA Foundation Foods / SR Legacy only.
 - Gram quantities should reflect one typical serving (e.g. 150g chicken breast, 80g dry oats).
 - Instructions must be detailed enough to actually cook the meal.
+- SERVING SIZE: Determine how many servings the recipe yields and set the `servings` field
+  accordingly. All quantity_g values must reflect one serving, not the whole batch.
 """
 
 _IMAGE_SYSTEM = """\
@@ -106,6 +116,11 @@ Rules:
 - Use whole foods from USDA Foundation Foods / SR Legacy only.
 - If an image quantity is given (e.g. "1 cup"), convert it to a reasonable gram weight.
 - Instructions must be detailed enough to actually cook the meal.
+- SERVING SIZE: First determine how many servings the recipe yields (look for "serves X",
+  "makes X portions", number of proteins, etc.). Set the `servings` field accordingly.
+  All quantity_g values must be divided by the number of servings — output single-serving
+  weights only. For example, if a recipe uses 4 chicken thighs (~680g total) and serves 4,
+  output quantity_g = 170.
 """
 
 
@@ -162,7 +177,12 @@ def _run_agent(messages: list[dict], source: str = "unknown") -> dict:
                     "content": result_text,
                 })
             elif block.name == "finalize_recipe":
-                recipe_output = block.input
+                recipe_output = dict(block.input)
+                servings = int(recipe_output.get("servings") or 1)
+                if servings > 1:
+                    scaling_note = f"Scaled from a {servings}-serving recipe."
+                    existing_notes = recipe_output.get("notes") or ""
+                    recipe_output["notes"] = (existing_notes + "\n" + scaling_note).strip()
                 food_summary = [
                     f"{f.get('description','?')[:30]} {f.get('quantity_g','?')}g (fdc={f.get('fdc_id','?')})"
                     for f in recipe_output.get("foods", [])
