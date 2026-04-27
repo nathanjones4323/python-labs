@@ -8,6 +8,7 @@ import {
   MealPlan,
   MealPlanSummary,
   NutrientSummary,
+  RecipeAIResult,
   User,
   UserProfile,
 } from "./types";
@@ -263,4 +264,43 @@ export async function deleteChatSession(userId: string, sessionId: string): Prom
 
 export async function clearChatHistory(userId: string): Promise<void> {
   await request<void>(`/chat/${userId}/history`, { method: "DELETE" });
+}
+
+// ─── Recipes (user-created) ────────────────────────────────────────────────────
+
+export async function createRecipe(
+  userId: string,
+  body: {
+    name: string;
+    meal_type: string;
+    instructions: string[];
+    notes?: string;
+    foods: Array<{ fdc_id: number; quantity_g: number; serving_description?: string }>;
+  }
+): Promise<FavoriteMeal> {
+  return request<FavoriteMeal>(`/recipes?user_id=${userId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function describeRecipe(
+  userId: string,
+  description: string
+): Promise<RecipeAIResult> {
+  return request<RecipeAIResult>("/recipes/from-description", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, description }),
+  });
+}
+
+export async function imageRecipe(
+  userId: string,
+  imageBase64: string,
+  mediaType: string
+): Promise<RecipeAIResult> {
+  return request<RecipeAIResult>("/recipes/from-image", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId, image_base64: imageBase64, media_type: mediaType }),
+  });
 }

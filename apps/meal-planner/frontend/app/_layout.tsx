@@ -9,6 +9,7 @@ export default function RootLayout() {
       <Stack.Screen name="onboarding" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="meal/[id]" options={{ headerShown: true, title: "Meal Detail" }} />
+      <Stack.Screen name="create-recipe" options={{ headerShown: true, title: "New Recipe" }} />
     </Stack>
   );
 }

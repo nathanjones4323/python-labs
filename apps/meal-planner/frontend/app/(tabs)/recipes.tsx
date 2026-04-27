@@ -88,13 +88,19 @@ export default function RecipesScreen() {
         </View>
         <Text className="text-xl font-bold text-gray-800 mb-2">No saved recipes yet</Text>
         <Text className="text-gray-500 text-center mb-6 leading-5">
-          Heart any meal from your plans to save it here as a recipe you can reuse.
+          Heart any meal from your plans to save it here, or create your own recipe.
         </Text>
         <Pressable
-          onPress={() => router.push("/(tabs)/plans")}
-          className="bg-primary-600 px-6 py-3 rounded-xl web:cursor-pointer web:hover:opacity-90"
+          onPress={() => router.push("/create-recipe")}
+          className="bg-primary-600 px-6 py-3 rounded-xl mb-3 web:cursor-pointer web:hover:opacity-90"
         >
-          <Text className="text-white font-semibold">Go to Meal Plans</Text>
+          <Text className="text-white font-semibold">Create a Recipe</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => router.push("/(tabs)/plans")}
+          className="px-6 py-3 rounded-xl web:cursor-pointer web:hover:opacity-90"
+        >
+          <Text className="text-gray-500 font-semibold">Go to Meal Plans</Text>
         </Pressable>
       </View>
     );
@@ -113,34 +119,43 @@ export default function RecipesScreen() {
         />
       }
     >
-      {/* Filter chips */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        className="border-b border-gray-100"
-        contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10, gap: 8 }}
-      >
-        {FILTER_OPTIONS.map((opt) => {
-          const active = filter === opt;
-          return (
-            <Pressable
-              key={opt}
-              onPress={() => setFilter(opt)}
-              className={`px-4 py-1.5 rounded-full border web:cursor-pointer ${
-                active
-                  ? "bg-primary-600 border-primary-600"
-                  : "bg-white border-gray-200 web:hover:border-primary-300"
-              }`}
-            >
-              <Text
-                className={`text-xs font-semibold ${active ? "text-white" : "text-gray-600"}`}
+      {/* Filter chips + create button */}
+      <View className="flex-row items-center border-b border-gray-100">
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          className="flex-1"
+          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10, gap: 8 }}
+        >
+          {FILTER_OPTIONS.map((opt) => {
+            const active = filter === opt;
+            return (
+              <Pressable
+                key={opt}
+                onPress={() => setFilter(opt)}
+                className={`px-4 py-1.5 rounded-full border web:cursor-pointer ${
+                  active
+                    ? "bg-primary-600 border-primary-600"
+                    : "bg-white border-gray-200 web:hover:border-primary-300"
+                }`}
               >
-                {opt.charAt(0).toUpperCase() + opt.slice(1)}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+                <Text
+                  className={`text-xs font-semibold ${active ? "text-white" : "text-gray-600"}`}
+                >
+                  {opt.charAt(0).toUpperCase() + opt.slice(1)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <Pressable
+          onPress={() => router.push("/create-recipe")}
+          className="flex-row items-center gap-1 px-3 py-2 mr-2 rounded-full bg-primary-50 web:cursor-pointer web:hover:bg-primary-100"
+        >
+          <Ionicons name="add" size={16} color="#16a34a" />
+          <Text className="text-xs font-semibold text-primary-700">New</Text>
+        </Pressable>
+      </View>
 
       {/* Recipe count */}
       <View className="px-4 pt-3 pb-1">
