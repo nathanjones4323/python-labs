@@ -1,8 +1,15 @@
 import json
 import uuid
-from fastapi import APIRouter, HTTPException
+
 from db import get_conn
-from meal_planner.models.user import UserCreate, UserProfile, ProfilePatchRequest, UserProfileResponse, UserResponse
+from fastapi import APIRouter, HTTPException
+from meal_planner.models.user import (
+    ProfilePatchRequest,
+    UserCreate,
+    UserProfile,
+    UserProfileResponse,
+    UserResponse,
+)
 from meal_planner.services.extraction import deep_merge_preferences
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -135,7 +142,11 @@ def patch_profile(user_id: uuid.UUID, body: ProfilePatchRequest):
             """,
             (
                 str(user_id),
-                body.dietary_restrictions if body.dietary_restrictions is not None else cur_dietary,
+                (
+                    body.dietary_restrictions
+                    if body.dietary_restrictions is not None
+                    else cur_dietary
+                ),
                 body.allergies if body.allergies is not None else cur_allergies,
                 body.goals if body.goals is not None else cur_goals,
                 body.calorie_target if body.calorie_target is not None else cur_calorie,
@@ -170,4 +181,6 @@ def _build_user_response(user_row, profile_row) -> UserResponse:
             preferences=profile_row[6] or {},
             onboarding_complete=profile_row[7],
         )
-    return UserResponse(id=user_row[0], external_id=user_row[1], email=user_row[2], profile=profile)
+    return UserResponse(
+        id=user_row[0], external_id=user_row[1], email=user_row[2], profile=profile
+    )

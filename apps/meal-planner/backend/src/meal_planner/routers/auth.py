@@ -1,10 +1,9 @@
-import uuid
 import httpx
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from db import get_conn
-from meal_planner.config import GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID, DEV_MODE
+from fastapi import APIRouter, HTTPException
+from meal_planner.config import DEV_MODE, GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID
 from meal_planner.routers.users import _build_user_response
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,7 +34,9 @@ async def google_sign_in(body: GoogleAuthRequest):
         allowed_clients = {c for c in (GOOGLE_CLIENT_ID, GOOGLE_IOS_CLIENT_ID) if c}
         token_clients = {info.get("azp"), info.get("aud")} - {None}
         if not allowed_clients.intersection(token_clients):
-            raise HTTPException(status_code=401, detail="Token was not issued for this app")
+            raise HTTPException(
+                status_code=401, detail="Token was not issued for this app"
+            )
 
         if not info.get("email_verified", False):
             raise HTTPException(status_code=401, detail="Google email not verified")
@@ -48,7 +49,9 @@ async def google_sign_in(body: GoogleAuthRequest):
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {body.access_token}"},
         )
-    display_name: str | None = ui_resp.json().get("name") if ui_resp.status_code == 200 else None
+    display_name: str | None = (
+        ui_resp.json().get("name") if ui_resp.status_code == 200 else None
+    )
 
     with get_conn() as conn:
         # Try lookup by google_id first
@@ -61,7 +64,7 @@ async def google_sign_in(body: GoogleAuthRequest):
         else:
             # Fall back to email match (merges legacy email-only accounts)
             row = conn.execute(
-                "SELECT id, email FROM users WHERE email = %s", (email,)
+                "SELECT id, external_id, email FROM users WHERE email = %s", (email,)
             ).fetchone()
             if row:
                 user_id = row[0]
@@ -83,7 +86,9 @@ async def google_sign_in(body: GoogleAuthRequest):
         ).fetchone()
 
     user_response = _build_user_response((user_id, email), profile_row)
-    is_new_user = user_response.profile is None or not user_response.profile.onboarding_complete
+    is_new_user = (
+        user_response.profile is None or not user_response.profile.onboarding_complete
+    )
 
     return {
         "user_id": str(user_response.id),
@@ -103,23 +108,24 @@ async def dev_bypass_sign_in():
     dev_email = "dev@localhost"
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email FROM users WHERE email = %s", (dev_email,)
+            "SELECT id, external_id, email FROM users WHERE email = %s", (dev_email,)
         ).fetchone()
         if not row:
-            user_id = str(uuid.uuid4())
-            conn.execute(
-                "INSERT INTO users (id, email, display_name) VALUES (%s, %s, %s)",
-                (user_id, dev_email, "Dev User"),
-            )
+            row = conn.execute(
+                "SELECT id, external_id, email FROM users WHERE email = %s",
+                (dev_email,),
+            ).fetchone()
+
             conn.commit()
-            row = (user_id, dev_email)
 
         profile_row = conn.execute(
             "SELECT * FROM user_profiles WHERE user_id = %s", (str(row[0]),)
         ).fetchone()
 
     user_response = _build_user_response(row, profile_row)
-    is_new_user = user_response.profile is None or not user_response.profile.onboarding_complete
+    is_new_user = (
+        user_response.profile is None or not user_response.profile.onboarding_complete
+    )
 
     return {
         "user_id": str(user_response.id),

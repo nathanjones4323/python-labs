@@ -14,7 +14,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("""
+    # Extension needed to use `gen_random_bytes` for external_ids
+    op.execute(
+        """
+        CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    """
+    )
+
+    op.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             external_id  TEXT UNIQUE NOT NULL DEFAULT 'user_' || encode(gen_random_bytes(6), 'hex'),
@@ -137,11 +145,13 @@ def upgrade() -> None:
             ON favorite_meals(user_id);
         CREATE INDEX IF NOT EXISTS idx_favorite_meal_foods_fav_id
             ON favorite_meal_foods(favorite_meal_id);
-    """)
+    """
+    )
 
 
 def downgrade() -> None:
-    op.execute("""
+    op.execute(
+        """
         DROP INDEX IF EXISTS idx_favorite_meal_foods_fav_id;
         DROP INDEX IF EXISTS idx_favorite_meals_user_id;
         DROP INDEX IF EXISTS idx_foods_description_lower;
@@ -163,4 +173,5 @@ def downgrade() -> None:
         DROP TABLE IF EXISTS conversations;
         DROP TABLE IF EXISTS user_profiles;
         DROP TABLE IF EXISTS users;
-    """)
+    """
+    )
