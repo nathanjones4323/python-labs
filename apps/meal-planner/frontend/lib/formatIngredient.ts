@@ -1,20 +1,59 @@
+// ── Internal helpers ─────────────────────────────────────────────────────────
+
 export function formatCups(cups: number): string {
   if (cups <= 0.15) return "1 tbsp";
   if (cups <= 0.3)  return "¼ cup";
   if (cups <= 0.6)  return "½ cup";
   if (cups <= 0.9)  return "¾ cup";
+  if (cups <= 1.1)  return "1 cup";
+  if (cups <= 1.4)  return "1¼ cups";
+  if (cups <= 1.6)  return "1½ cups";
+  if (cups <= 1.9)  return "1¾ cups";
   const whole = Math.round(cups);
-  return `${whole} cup${whole !== 1 ? "s" : ""}`;
+  return `${whole} cups`;
 }
 
 export function formatTbsp(tbsp: number): string {
   const rounded = Math.round(tbsp * 2) / 2;
-  if (rounded < 1) return "1 tbsp";
   if (rounded === 0.5) return "½ tbsp";
+  if (rounded < 1) return "1 tbsp";
   const whole = Math.floor(rounded);
   const half = rounded % 1 > 0;
   return half ? `${whole}½ tbsp` : `${whole} tbsp`;
 }
+
+// ── Countable produce — module-level constant so it's not re-allocated each call
+
+type ProduceSpec = { terms: string[]; gEach: number; singular: string; plural?: string };
+
+const COUNTABLE_PRODUCE: ProduceSpec[] = [
+  { terms: ["banana"], gEach: 118, singular: "banana" },
+  { terms: ["apple"], gEach: 182, singular: "apple" },
+  { terms: ["orange"], gEach: 131, singular: "orange" },
+  { terms: ["lemon"], gEach: 58, singular: "lemon" },
+  { terms: ["lime"], gEach: 67, singular: "lime" },
+  { terms: ["avocado"], gEach: 150, singular: "avocado" },
+  { terms: ["tomato"], gEach: 123, singular: "tomato" },
+  { terms: ["bell pepper", "sweet pepper"], gEach: 119, singular: "bell pepper" },
+  { terms: ["jalapeño", "jalapeno"], gEach: 14, singular: "jalapeño" },
+  { terms: ["onion"], gEach: 110, singular: "onion" },
+  { terms: ["shallot"], gEach: 40, singular: "shallot" },
+  { terms: ["sweet potato"], gEach: 130, singular: "sweet potato" },
+  { terms: ["potato"], gEach: 150, singular: "potato" },
+  { terms: ["zucchini", "courgette"], gEach: 196, singular: "zucchini" },
+  { terms: ["cucumber"], gEach: 200, singular: "cucumber" },
+  { terms: ["carrot"], gEach: 61, singular: "carrot" },
+  { terms: ["celery stalk", "celery rib"], gEach: 40, singular: "celery stalk" },
+  { terms: ["garlic clove", "garlic, raw"], gEach: 3, singular: "clove garlic" },
+  { terms: ["garlic"], gEach: 60, singular: "head garlic" },
+  { terms: ["mango"], gEach: 200, singular: "mango" },
+  { terms: ["peach"], gEach: 150, singular: "peach" },
+  { terms: ["pear"], gEach: 178, singular: "pear" },
+  { terms: ["kiwi"], gEach: 69, singular: "kiwi" },
+  { terms: ["grapefruit"], gEach: 246, singular: "grapefruit" },
+];
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export function gramsToConsumer(g: number, description: string): { label: string; hint: string } {
   const d = description.toLowerCase();
@@ -30,7 +69,8 @@ export function gramsToConsumer(g: number, description: string): { label: string
     if (g <= 5) return { label: "1 tsp", hint: gStr };
     return { label: formatTbsp(g / 21), hint: gStr };
   }
-  if ((d.includes("milk") || d.includes("cream") || d.includes("kefir")) && !d.includes("powder")) {
+  if ((d.includes("milk") || d.includes("cream") || d.includes("kefir")) && !d.includes("powder") &&
+      !d.includes("sour cream") && !d.includes("cream cheese")) {
     return { label: formatCups(g / 240), hint: gStr };
   }
   if (d.includes("yogurt") || d.includes("sour cream") || d.includes("cottage")) {
@@ -66,11 +106,13 @@ export function gramsToConsumer(g: number, description: string): { label: string
   if (d.includes("flour") || d.includes("cornmeal") || d.includes("semolina")) {
     return { label: formatCups(g / 125), hint: gStr };
   }
-  if (d.includes("lentil") || d.includes("chickpea") || d.includes("bean") || d.includes("pea") || d.includes("soybean")) {
+  // Use word-boundary regex so "pear" and "peach" don't false-match "pea"
+  if (d.includes("lentil") || d.includes("chickpea") || d.includes("bean") ||
+      /\bpeas?\b/.test(d) || d.includes("soybean")) {
     return { label: formatCups(g / 200), hint: gStr };
   }
   if (d.includes("cheese") || d.includes("parmesan") || d.includes("mozzarella") ||
-      d.includes("cheddar") || d.includes("feta")) {
+      d.includes("cheddar") || d.includes("feta") || d.includes("cream cheese")) {
     if (g <= 15) return { label: formatTbsp(g / 5), hint: gStr };
     return { label: `${Math.round(g / 28.35)} oz`, hint: gStr };
   }
@@ -79,34 +121,7 @@ export function gramsToConsumer(g: number, description: string): { label: string
     return { label: `${Math.round(g / 3)} tsp`, hint: gStr };
   }
 
-  type ProduceSpec = { terms: string[]; gEach: number; singular: string; plural?: string };
-  const countableProduce: ProduceSpec[] = [
-    { terms: ["banana"], gEach: 118, singular: "banana" },
-    { terms: ["apple"], gEach: 182, singular: "apple" },
-    { terms: ["orange"], gEach: 131, singular: "orange" },
-    { terms: ["lemon"], gEach: 58, singular: "lemon" },
-    { terms: ["lime"], gEach: 67, singular: "lime" },
-    { terms: ["avocado"], gEach: 150, singular: "avocado" },
-    { terms: ["tomato"], gEach: 123, singular: "tomato" },
-    { terms: ["bell pepper", "sweet pepper"], gEach: 119, singular: "bell pepper" },
-    { terms: ["jalapeño", "jalapeno"], gEach: 14, singular: "jalapeño" },
-    { terms: ["onion"], gEach: 110, singular: "onion" },
-    { terms: ["shallot"], gEach: 40, singular: "shallot" },
-    { terms: ["sweet potato"], gEach: 130, singular: "sweet potato" },
-    { terms: ["potato"], gEach: 150, singular: "potato" },
-    { terms: ["zucchini", "courgette"], gEach: 196, singular: "zucchini" },
-    { terms: ["cucumber"], gEach: 200, singular: "cucumber" },
-    { terms: ["carrot"], gEach: 61, singular: "carrot" },
-    { terms: ["celery stalk", "celery rib"], gEach: 40, singular: "celery stalk" },
-    { terms: ["garlic clove", "garlic, raw"], gEach: 3, singular: "clove garlic" },
-    { terms: ["garlic"], gEach: 60, singular: "head garlic" },
-    { terms: ["mango"], gEach: 200, singular: "mango" },
-    { terms: ["peach"], gEach: 150, singular: "peach" },
-    { terms: ["pear"], gEach: 178, singular: "pear" },
-    { terms: ["kiwi"], gEach: 69, singular: "kiwi" },
-    { terms: ["grapefruit"], gEach: 246, singular: "grapefruit" },
-  ];
-  for (const spec of countableProduce) {
+  for (const spec of COUNTABLE_PRODUCE) {
     if (spec.terms.some((t) => d.includes(t))) {
       const count = Math.max(1, Math.round(g / spec.gEach));
       const name = count === 1 ? spec.singular : (spec.plural ?? `${spec.singular}s`);
