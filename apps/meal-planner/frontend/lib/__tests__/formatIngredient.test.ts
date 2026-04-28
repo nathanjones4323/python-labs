@@ -48,9 +48,29 @@ describe("formatCups", () => {
     expect(formatCups(1.9)).toBe("1¾ cups");
   });
 
-  it("returns whole cups for large amounts", () => {
+  it("returns 2 cups", () => {
     expect(formatCups(2.0)).toBe("2 cups");
+    expect(formatCups(2.1)).toBe("2 cups");
+  });
+
+  it("returns 2¼ cups", () => {
+    expect(formatCups(2.25)).toBe("2¼ cups");
+    expect(formatCups(2.4)).toBe("2¼ cups");
+  });
+
+  it("returns 2½ cups", () => {
+    expect(formatCups(2.5)).toBe("2½ cups");
+    expect(formatCups(2.6)).toBe("2½ cups");
+  });
+
+  it("returns 2¾ cups", () => {
+    expect(formatCups(2.75)).toBe("2¾ cups");
+    expect(formatCups(2.9)).toBe("2¾ cups");
+  });
+
+  it("returns whole cups for large amounts", () => {
     expect(formatCups(3.0)).toBe("3 cups");
+    expect(formatCups(4.0)).toBe("4 cups");
   });
 });
 
@@ -93,7 +113,7 @@ describe("gramsToConsumer", () => {
 
     it("peach is counted by unit, not treated as a legume", () => {
       expect(gramsToConsumer(150, "peach").label).toBe("1 peach");
-      expect(gramsToConsumer(300, "peach, fresh").label).toBe("2 peachs");
+      expect(gramsToConsumer(300, "peach, fresh").label).toBe("2 peaches");
     });
 
     it("peas and pea are treated as legumes", () => {
@@ -146,9 +166,10 @@ describe("gramsToConsumer", () => {
       expect(gramsToConsumer(245, "sour cream").label).toBe("1 cup");
     });
 
-    it("cream cheese goes through the cheese path", () => {
+    it("cream cheese goes through the cheese path, not the milk/cream path", () => {
       const label = gramsToConsumer(226, "cream cheese").label;
       expect(label).toBe("8 oz");
+      expect(label).not.toMatch(/cup/);
     });
 
     it("yogurt returns cups", () => {
@@ -171,6 +192,10 @@ describe("gramsToConsumer", () => {
   describe("meat and fish", () => {
     it("returns oz for small portions", () => {
       expect(gramsToConsumer(113, "chicken breast").label).toBe("4 oz");
+    });
+
+    it("returns at least 1 oz for very small portions (no '0 oz')", () => {
+      expect(gramsToConsumer(14, "salmon fillet").label).toBe("1 oz");
     });
 
     it("returns 1 lb for 16 oz", () => {
@@ -217,7 +242,9 @@ describe("gramsToConsumer", () => {
 
     it("garlic (whole head vs cloves)", () => {
       expect(gramsToConsumer(60, "garlic").label).toBe("1 head garlic");
+      expect(gramsToConsumer(120, "garlic").label).toBe("2 heads garlic");
       expect(gramsToConsumer(3, "garlic, raw").label).toBe("1 clove garlic");
+      expect(gramsToConsumer(9, "garlic, raw").label).toBe("3 cloves garlic");
     });
 
     it("sweet potato before plain potato", () => {

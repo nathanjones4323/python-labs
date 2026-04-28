@@ -9,6 +9,10 @@ export function formatCups(cups: number): string {
   if (cups <= 1.4)  return "1¼ cups";
   if (cups <= 1.6)  return "1½ cups";
   if (cups <= 1.9)  return "1¾ cups";
+  if (cups <= 2.1)  return "2 cups";
+  if (cups <= 2.4)  return "2¼ cups";
+  if (cups <= 2.6)  return "2½ cups";
+  if (cups <= 2.9)  return "2¾ cups";
   const whole = Math.round(cups);
   return `${whole} cups`;
 }
@@ -33,21 +37,21 @@ const COUNTABLE_PRODUCE: ProduceSpec[] = [
   { terms: ["lemon"], gEach: 58, singular: "lemon" },
   { terms: ["lime"], gEach: 67, singular: "lime" },
   { terms: ["avocado"], gEach: 150, singular: "avocado" },
-  { terms: ["tomato"], gEach: 123, singular: "tomato" },
+  { terms: ["tomato"], gEach: 123, singular: "tomato", plural: "tomatoes" },
   { terms: ["bell pepper", "sweet pepper"], gEach: 119, singular: "bell pepper" },
   { terms: ["jalapeño", "jalapeno"], gEach: 14, singular: "jalapeño" },
   { terms: ["onion"], gEach: 110, singular: "onion" },
   { terms: ["shallot"], gEach: 40, singular: "shallot" },
-  { terms: ["sweet potato"], gEach: 130, singular: "sweet potato" },
-  { terms: ["potato"], gEach: 150, singular: "potato" },
+  { terms: ["sweet potato"], gEach: 130, singular: "sweet potato", plural: "sweet potatoes" },
+  { terms: ["potato"], gEach: 150, singular: "potato", plural: "potatoes" },
   { terms: ["zucchini", "courgette"], gEach: 196, singular: "zucchini" },
   { terms: ["cucumber"], gEach: 200, singular: "cucumber" },
   { terms: ["carrot"], gEach: 61, singular: "carrot" },
-  { terms: ["celery stalk", "celery rib"], gEach: 40, singular: "celery stalk" },
-  { terms: ["garlic clove", "garlic, raw"], gEach: 3, singular: "clove garlic" },
-  { terms: ["garlic"], gEach: 60, singular: "head garlic" },
+  { terms: ["celery stalk", "celery rib"], gEach: 40, singular: "celery stalk", plural: "celery stalks" },
+  { terms: ["garlic clove", "garlic, raw"], gEach: 3, singular: "clove garlic", plural: "cloves garlic" },
+  { terms: ["garlic"], gEach: 60, singular: "head garlic", plural: "heads garlic" },
   { terms: ["mango"], gEach: 200, singular: "mango" },
-  { terms: ["peach"], gEach: 150, singular: "peach" },
+  { terms: ["peach"], gEach: 150, singular: "peach", plural: "peaches" },
   { terms: ["pear"], gEach: 178, singular: "pear" },
   { terms: ["kiwi"], gEach: 69, singular: "kiwi" },
   { terms: ["grapefruit"], gEach: 246, singular: "grapefruit" },
@@ -89,7 +93,7 @@ export function gramsToConsumer(g: number, description: string): { label: string
     const oz = g / 28.35;
     if (oz >= 32) return { label: `${(oz / 16).toFixed(1)} lbs`, hint: gStr };
     if (oz >= 16) return { label: `1 lb`, hint: gStr };
-    return { label: `${Math.round(oz)} oz`, hint: gStr };
+    return { label: `${Math.max(1, Math.round(oz))} oz`, hint: gStr };
   }
   if (d.includes("almond") || d.includes("cashew") || d.includes("walnut") ||
       d.includes("pecan") || d.includes("pistachio") || d.includes("macadamia") ||
