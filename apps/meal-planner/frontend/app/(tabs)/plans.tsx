@@ -18,6 +18,7 @@ import { loadUserId } from "../../lib/storage";
 import { MealPlan, MealPlanSummary, Meal, FavoriteMealSummary } from "../../lib/types";
 import MealCard from "../../components/MealCard";
 import MacroBar from "../../components/MacroBar";
+import { gramsToConsumer } from "../../lib/formatIngredient";
 
 interface NutrientRow {
   label: string;
@@ -722,7 +723,7 @@ export default function PlansScreen() {
                               <Text style={{ fontSize: 13, fontWeight: item.status !== "same" ? "600" : "400", color: textColor, textDecorationLine: item.status === "removed" ? "line-through" : "none", flex: 1 }}>{item.desc}</Text>
                             </View>
                             <Text style={{ fontSize: 12, color: textColor, marginLeft: 8 }}>
-                              {item.status === "changed" && item.oldQty !== undefined ? `${Math.round(item.oldQty)}g → ` : ""}{Math.round(item.qty)}g
+                              {item.status === "changed" && item.oldQty !== undefined ? `${gramsToConsumer(item.oldQty, item.desc).label} → ` : ""}{gramsToConsumer(item.qty, item.desc).label}
                             </Text>
                           </View>
                         );

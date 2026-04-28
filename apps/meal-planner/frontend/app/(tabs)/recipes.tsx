@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { listFavorites, unfavoriteMeal } from "../../lib/api";
 import { loadUserId } from "../../lib/storage";
 import { FavoriteMeal } from "../../lib/types";
+import { gramsToConsumer, friendlyName } from "../../lib/formatIngredient";
 import MacroBar from "../../components/MacroBar";
 import NutritionLabel from "../../components/NutritionLabel";
 
@@ -218,21 +219,27 @@ export default function RecipesScreen() {
                       <Text className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
                         Ingredients
                       </Text>
-                      {fav.foods.map((food, i) => (
-                        <View
-                          key={food.id}
-                          className={`flex-row justify-between py-1.5 ${
-                            i < fav.foods.length - 1 ? "border-b border-gray-50" : ""
-                          }`}
-                        >
-                          <Text className="text-sm text-gray-700 flex-1 mr-2" numberOfLines={2}>
-                            {food.description}
-                          </Text>
-                          <Text className="text-sm text-gray-500 flex-shrink-0">
-                            {Math.round(food.quantity_g)}g
-                          </Text>
-                        </View>
-                      ))}
+                      {fav.foods.map((food, i) => {
+                        const { label, hint } = gramsToConsumer(food.quantity_g, food.description);
+                        return (
+                          <View
+                            key={food.id}
+                            className={`flex-row justify-between py-1.5 ${
+                              i < fav.foods.length - 1 ? "border-b border-gray-50" : ""
+                            }`}
+                          >
+                            <Text className="text-sm text-gray-700 flex-1 mr-2" numberOfLines={2}>
+                              {friendlyName(food.description)}
+                            </Text>
+                            <View className="items-end flex-shrink-0">
+                              <Text className="text-sm text-gray-500">{label}</Text>
+                              {!!hint && (
+                                <Text className="text-xs text-gray-400">{hint}</Text>
+                              )}
+                            </View>
+                          </View>
+                        );
+                      })}
                     </View>
                   )}
 
