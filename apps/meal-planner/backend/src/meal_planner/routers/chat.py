@@ -56,6 +56,21 @@ def _load_hearted_meal_summaries(conn, user_id: uuid.UUID) -> list[dict]:
     ]
 
 
+def _load_recent_meals(conn, user_id: uuid.UUID, limit: int = 30) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT m.name, m.meal_type
+        FROM meals m
+        JOIN meal_plans mp ON mp.id = m.meal_plan_id
+        WHERE mp.user_id = %s
+        ORDER BY mp.created_at DESC NULLS LAST, m.scheduled_date DESC
+        LIMIT %s
+        """,
+        (str(user_id), limit),
+    ).fetchall()
+    return [{"name": r[0], "meal_type": r[1]} for r in rows]
+
+
 def _load_profile(conn, user_id: uuid.UUID) -> UserProfileResponse | None:
     row = conn.execute(
         """
@@ -160,6 +175,7 @@ async def chat_stream(body: ChatRequest):
 
         profile = _load_profile(conn, body.user_id)
         hearted_meals = _load_hearted_meal_summaries(conn, body.user_id)
+        recent_meals = _load_recent_meals(conn, body.user_id)
         convo_id, history, is_new = _load_conversation(conn, body.user_id, body.session_id)
 
         # If the user quick-added favorites, resolve their names and prepend context
@@ -193,7 +209,7 @@ async def chat_stream(body: ChatRequest):
         if is_new:
             yield f"data: {json.dumps({'type': 'session_created', 'session_id': str(convo_id)})}\n\n"
 
-        async for chunk in ai_svc.chat_stream(messages, profile, hearted_meals):
+        async for chunk in ai_svc.chat_stream(messages, profile, hearted_meals, recent_meals):
             yield chunk
             # Parse chunks to collect assistant text and plan
             if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):

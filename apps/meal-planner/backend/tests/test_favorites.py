@@ -29,7 +29,7 @@ def client():
 def _mock_fav_response(fav_id: str, source_meal_id: str | None = None):
     """Build the row tuple returned by _load_favorite_response."""
     return (
-        fav_id, USER_ID, "Grilled Chicken Bowl", "dinner",
+        fav_id, "fav_testexternal001", USER_ID, "Grilled Chicken Bowl", "dinner",
         ["Grill chicken 6 min per side", "Serve over rice"],
         None, source_meal_id, "2026-04-22T00:00:00",
     )
@@ -37,8 +37,8 @@ def _mock_fav_response(fav_id: str, source_meal_id: str | None = None):
 
 def _mock_fav_food_rows(fav_id: str):
     return [
-        (str(uuid.uuid4()), FOOD_FDC_CHICKEN, "Chicken breast, grilled", None, CHICKEN_NUTRIENTS, 150.0, None),
-        (str(uuid.uuid4()), FOOD_FDC_RICE,    "Rice, white, cooked",     None, RICE_NUTRIENTS,    200.0, None),
+        (str(uuid.uuid4()), "mfood_testexternal01", FOOD_FDC_CHICKEN, "Chicken breast, grilled", None, CHICKEN_NUTRIENTS, 150.0, None),
+        (str(uuid.uuid4()), "mfood_testexternal02", FOOD_FDC_RICE,    "Rice, white, cooked",     None, RICE_NUTRIENTS,    200.0, None),
     ]
 
 
@@ -52,9 +52,9 @@ def _make_fav_conn(fav_id: str, source_meal_id: str | None = None):
         sql_stripped = " ".join(sql.split())
         cursor = MagicMock()
 
-        if "SELECT id, user_id, name" in sql_stripped:
+        if "SELECT id, external_id, user_id, name" in sql_stripped:
             cursor.fetchone.return_value = _mock_fav_response(fav_id, source_meal_id)
-        elif "SELECT fmf.id, fmf.fdc_id, f.description" in sql_stripped:
+        elif "SELECT fmf.id, fmf.external_id, fmf.fdc_id" in sql_stripped:
             cursor.fetchall.return_value = _mock_fav_food_rows(fav_id)
         elif "SELECT id FROM favorite_meals WHERE user_id" in sql_stripped:
             cursor.fetchall.return_value = [(fav_id,)]
