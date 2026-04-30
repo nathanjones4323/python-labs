@@ -157,6 +157,8 @@ export default function ChatScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const cancelledInputRef = useRef<string>("");
 
   // Favorites state
   const [favSummaries, setFavSummaries] = useState<FavoriteMealSummary[]>([]);
@@ -264,9 +266,14 @@ export default function ChatScreen() {
     });
   }
 
+  function cancelStream() {
+    abortControllerRef.current?.abort();
+  }
+
   async function send(text?: string) {
     const userMsg = (text ?? input).trim();
     if (!userMsg || streaming || !userId) return;
+    cancelledInputRef.current = text ?? input;
     setInput("");
     const favIds = [...selectedFavIds];
     setSelectedFavIds(new Set());
@@ -276,6 +283,9 @@ export default function ChatScreen() {
       { role: "assistant", content: "", isThinking: true },
     ]);
     setStreaming(true);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     try {
       let assistantText = "";
@@ -293,7 +303,7 @@ export default function ChatScreen() {
         ]);
       };
 
-      for await (const event of chatStream(userId, userMsg, sessionId, favIds)) {
+      for await (const event of chatStream(userId, userMsg, sessionId, favIds, controller.signal)) {
         if (event.type === "session_created" && event.session_id) {
           setSessionId(event.session_id);
           saveSessionId(event.session_id);
@@ -354,6 +364,11 @@ export default function ChatScreen() {
         ];
       });
     } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") {
+        setMessages((prev) => prev.slice(0, -2));
+        setInput(cancelledInputRef.current);
+        return;
+      }
       setMessages((prev) => [
         ...prev.slice(0, -1),
         {
@@ -363,6 +378,7 @@ export default function ChatScreen() {
       ]);
     } finally {
       setStreaming(false);
+      abortControllerRef.current = null;
     }
   }
 
@@ -412,26 +428,9 @@ export default function ChatScreen() {
             <Text className="text-2xl font-bold text-gray-900 mb-2 text-center">
               Your Meal Planner
             </Text>
-            <Text className="text-sm text-gray-500 text-center mb-8 leading-5">
+            <Text className="text-sm text-gray-500 text-center leading-5">
               I'll build a personalized plan with real USDA nutrition data. Just tell me what you need.
             </Text>
-
-            <View className="w-full gap-2">
-              {SUGGESTIONS.map((s) => (
-                <Pressable
-                  key={s}
-                  onPress={() => send(s)}
-                  className="flex-row items-center bg-white border border-gray-200 rounded-2xl px-4 py-3.5 shadow-sm active:bg-gray-50 web:cursor-pointer web:hover:shadow-md"
-                  style={{ shadowColor: "#000", shadowOpacity: 0.04, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } }}
-                >
-                  <View className="w-8 h-8 rounded-xl bg-primary-50 items-center justify-center mr-3">
-                    <Ionicons name="sparkles-outline" size={16} color="#16a34a" />
-                  </View>
-                  <Text className="text-sm font-medium text-gray-700 flex-1">{s}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#d1d5db" />
-                </Pressable>
-              ))}
-            </View>
           </View>
         )}
 
@@ -508,8 +507,8 @@ export default function ChatScreen() {
         className="bg-white border-t border-gray-100 px-4 py-3"
         style={{ shadowColor: "#000", shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: -2 } }}
       >
-        {/* Suggestion row when conversation has started */}
-        {messages.length > 0 && messages.length <= 3 && (
+        {/* Suggestion pills — always visible until conversation grows */}
+        {messages.length <= 3 && !streaming && (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -520,10 +519,9 @@ export default function ChatScreen() {
               <Pressable
                 key={s}
                 onPress={() => send(s)}
-                disabled={streaming}
-                className="bg-primary-50 border border-primary-200 rounded-full px-3 py-1.5 web:cursor-pointer"
+                className="bg-gray-100 border border-gray-200 rounded-full px-3 py-1.5 web:cursor-pointer"
               >
-                <Text className="text-xs font-medium text-primary-700">{s}</Text>
+                <Text className="text-xs text-gray-500">{s}</Text>
               </Pressable>
             ))}
           </ScrollView>
@@ -587,13 +585,13 @@ export default function ChatScreen() {
                 send();
               }
             } : undefined}
-            editable={!streaming}
+            editable
           />
           <Pressable
-            onPress={() => send()}
-            disabled={streaming || !input.trim()}
+            onPress={streaming ? cancelStream : () => send()}
+            disabled={!streaming && !input.trim()}
             className={`w-11 h-11 rounded-2xl items-center justify-center web:cursor-pointer ${
-              streaming || !input.trim() ? "bg-gray-100" : "bg-primary-600"
+              streaming ? "bg-gray-800" : !input.trim() ? "bg-gray-100" : "bg-primary-600"
             }`}
             style={
               !streaming && input.trim()
@@ -602,7 +600,7 @@ export default function ChatScreen() {
             }
           >
             {streaming ? (
-              <ActivityIndicator size="small" color="#9ca3af" />
+              <Ionicons name="stop" size={16} color="white" />
             ) : (
               <Ionicons
                 name="arrow-up"

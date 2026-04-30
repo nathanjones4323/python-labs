@@ -194,7 +194,8 @@ export async function* chatStream(
   userId: string,
   message: string,
   sessionId?: string | null,
-  favoriteIds?: string[]
+  favoriteIds?: string[],
+  signal?: AbortSignal
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(`${BASE_URL}/chat/stream`, {
     method: "POST",
@@ -205,6 +206,7 @@ export async function* chatStream(
       session_id: sessionId ?? null,
       favorite_ids: favoriteIds ?? [],
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -219,6 +221,10 @@ export async function* chatStream(
   let buffer = "";
 
   while (true) {
+    if (signal?.aborted) {
+      reader.cancel();
+      return;
+    }
     const { done, value } = await reader.read();
     if (done) break;
 
