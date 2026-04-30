@@ -13,18 +13,17 @@ Generate personalized memes and short AI videos featuring yourself and your frie
 | `workflows/tokyo_night_walk.json` | ComfyUI workflow: Nathan walking through neon-lit Tokyo at night |
 | `assets/nathan_reference.png` | Reference photo used for identity consistency |
 | `scripts/download_models.sh` | Downloads all required FOSS models from HuggingFace |
-| `docker-compose.yml` | ComfyUI container with GPU passthrough |
-| `Makefile` | `make start`, `make download-models`, `make run-workflow` |
+| `docker-compose.yml` | ComfyUI container for Linux + NVIDIA GPU (Docker path) |
+| `scripts/extra_model_paths.yaml` | Tells native ComfyUI where `./models/` lives (M1 path) |
+| `Makefile` | `make setup-mac`, `make start-mac`, `make start`, `make download-models`, `make run-workflow` |
 | `output/` | Generated images and videos land here |
 
 ---
 
 ## Quick start
 
-### Prerequisites
-- Docker + Docker Compose
-- NVIDIA GPU with drivers (or use `make start-cpu` for CPU-only, much slower)
-- Python 3.8+ (for `make run-workflow`)
+### Prerequisites (both paths)
+- Python 3.10+ with `pip`
 - `huggingface_hub` CLI: `pip install "huggingface_hub[cli]"`
 
 ### 1. Add the reference image
@@ -34,13 +33,69 @@ Place Nathan's reference photo at:
 assets/nathan_reference.png
 ```
 
-This file is mounted into ComfyUI's `input/` directory automatically.
+---
 
-### 2. Download models
+## Apple Silicon (M1 / M2 / M3)
+
+Docker on Apple Silicon can't access the Metal GPU, so ComfyUI runs natively instead. PyTorch detects MPS automatically — no extra configuration needed.
+
+**Expected performance:** ~2–5 minutes per image at 1024×1024 on M1.
+
+### Setup (one-time)
 
 ```bash
-make download-models
+cd apps/comfy-content
+make download-models   # ~10 GB, downloads to ./models/
+make setup-mac         # creates .venv, installs PyTorch + ComfyUI + custom nodes
 ```
+
+### Run
+
+```bash
+make start-mac
+```
+
+Open `http://localhost:8188`. Load `workflows/tokyo_night_walk.json` and click **Queue Prompt**, or use:
+
+```bash
+make run-workflow
+```
+
+Output images appear in `./output/`.
+
+---
+
+## Linux + NVIDIA GPU (Docker)
+
+### Prerequisites
+- Docker + Docker Compose with NVIDIA Container Toolkit
+- NVIDIA GPU with drivers
+
+### Setup (one-time)
+
+```bash
+cd apps/comfy-content
+make download-models   # ~10 GB
+make start             # pulls the container and starts ComfyUI
+make install-nodes     # installs custom nodes inside the container
+```
+
+### Run
+
+```bash
+make run-workflow
+# or open http://localhost:8188 and load the workflow manually
+```
+
+```bash
+make stop    # shut down the container
+make logs    # tail logs
+make shell   # bash into the container
+```
+
+---
+
+## Models
 
 This downloads (~8–12 GB total) to `./models/`:
 
@@ -52,41 +107,6 @@ This downloads (~8–12 GB total) to `./models/`:
 | CLIP ViT-H vision encoder | Apache-2.0 | [h94/IP-Adapter](https://huggingface.co/h94/IP-Adapter) |
 | ControlNet OpenPose SDXL | Apache-2.0 | [thibaud/controlnet-openpose-sdxl-1.0](https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0) |
 | DW-Pose (ONNX) | Apache-2.0 | [yzd-v/DWPose](https://huggingface.co/yzd-v/DWPose) |
-
-### 3. Start ComfyUI
-
-```bash
-make start
-```
-
-Open `http://localhost:8188` in your browser. Wait for the health check to pass (~60s on first pull).
-
-### 4. Install custom nodes (first time only)
-
-```bash
-make install-nodes
-```
-
-This installs inside the running container:
-- [ComfyUI_IPAdapter_plus](https://github.com/cubiq/ComfyUI_IPAdapter_plus)
-- [ComfyUI-Advanced-ControlNet](https://github.com/Kosinkadink/ComfyUI-Advanced-ControlNet)
-- [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux) (DW-Pose preprocessor)
-
-### 5. Run the Tokyo workflow
-
-**Option A — via the web UI:**
-1. Open `http://localhost:8188`
-2. Click **Load** → select `workflows/tokyo_night_walk.json`
-3. Click **Queue Prompt**
-
-**Option B — via CLI:**
-```bash
-make run-workflow
-# or a different workflow:
-make run-workflow WORKFLOW=my_other_workflow
-```
-
-Output images appear in `./output/`.
 
 ---
 

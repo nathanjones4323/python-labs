@@ -1,0 +1,14 @@
+# Tells ComfyUI where to find models when running natively (make start-mac).
+# The path is relative to the directory you run `make` from (apps/comfy-content/).
+# https://github.com/comfyanonymous/ComfyUI#extra-model-paths-config-file
+
+comfy-content:
+  base_path: ./models
+  checkpoints: checkpoints
+  vae: vae
+  loras: loras
+  controlnet: controlnet
+  ipadapter: ipadapter
+  clip_vision: clip_vision
+  animatediff_models: animatediff_models
+  onnx: onnx

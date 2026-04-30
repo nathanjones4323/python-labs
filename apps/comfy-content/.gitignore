@@ -1,0 +1,5 @@
+.venv/
+comfyui/
+models/
+output/*
+!output/.gitkeep

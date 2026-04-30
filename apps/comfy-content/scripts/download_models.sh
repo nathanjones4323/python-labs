@@ -3,6 +3,12 @@
 # Prerequisites: huggingface-cli  (pip install huggingface_hub[cli])
 #                wget
 # Optional:      HF_TOKEN env var for gated models
+#
+# Hardware note:
+#   Models are hardware-agnostic — the same weights run on CUDA and Apple MPS.
+#   On M1/M2/M3 Mac, ComfyUI uses Apple's Metal Performance Shaders (MPS)
+#   backend automatically (see `make start-mac`). Expect roughly 2–5 minutes
+#   per image at 1024×1024 on M1, vs ~15–30 seconds on a modern NVIDIA GPU.
 
 set -euo pipefail
 
