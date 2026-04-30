@@ -1,0 +1,242 @@
+{
+  "last_node_id": 40,
+  "last_link_id": 60,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [40, 80],
+      "size": [315, 98],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "outputs": [
+        {"name": "MODEL",      "type": "MODEL",  "links": [1, 30]},
+        {"name": "CLIP",       "type": "CLIP",   "links": [2]},
+        {"name": "VAE",        "type": "VAE",    "links": [3]}
+      ],
+      "properties": {"Node name for S&R": "CheckpointLoaderSimple"},
+      "widgets_values": ["sd_xl_base_1.0.safetensors"]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [400, 60],
+      "size": [600, 120],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs":  [{"name": "clip", "type": "CLIP", "link": 2}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [4]}],
+      "properties": {},
+      "widgets_values": ["cinematic photo of a man with reddish brown hair and full beard walking through neon-lit Tokyo streets at night, rain-slicked pavement, paper lanterns, crowded Shibuya crossing, dramatic rim lighting, reflections on wet asphalt, 8k, photorealistic, hyperdetailed"]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [400, 220],
+      "size": [600, 100],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs":  [{"name": "clip", "type": "CLIP", "link": 2}],
+      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": [5]}],
+      "properties": {},
+      "widgets_values": ["deformed, ugly, extra limbs, blurry, cartoon, low quality, worst quality, watermark, text, distorted face, bad anatomy, missing fingers"]
+    },
+    {
+      "id": 4,
+      "type": "LoadImage",
+      "pos": [40, 240],
+      "size": [210, 130],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [10, 20]},
+        {"name": "MASK",  "type": "MASK",  "links": []}
+      ],
+      "properties": {},
+      "widgets_values": ["nathan_reference.png", "image"]
+    },
+    {
+      "id": 5,
+      "type": "IPAdapterModelLoader",
+      "pos": [40, 420],
+      "size": [270, 58],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "outputs": [{"name": "IPADAPTER", "type": "IPADAPTER", "links": [11]}],
+      "properties": {},
+      "widgets_values": ["ip-adapter-plus_sdxl_vit-h.safetensors"]
+    },
+    {
+      "id": 6,
+      "type": "IPAdapterEncoder",
+      "pos": [40, 520],
+      "size": [270, 100],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "ipadapter", "type": "IPADAPTER", "link": 11},
+        {"name": "image",     "type": "IMAGE",     "link": 10}
+      ],
+      "outputs": [{"name": "POS_EMBED", "type": "EMBEDS", "links": [12]}],
+      "properties": {},
+      "widgets_values": [1.0]
+    },
+    {
+      "id": 7,
+      "type": "IPAdapterApply",
+      "pos": [380, 380],
+      "size": [315, 190],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "ipadapter",  "type": "IPADAPTER",  "link": 11},
+        {"name": "model",      "type": "MODEL",      "link": 1},
+        {"name": "image",      "type": "IMAGE",      "link": 10},
+        {"name": "pos_embeds", "type": "EMBEDS",     "link": 12}
+      ],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [13]}],
+      "properties": {},
+      "widgets_values": [0.75, "linear", "V only"]
+    },
+    {
+      "id": 8,
+      "type": "ControlNetLoader",
+      "pos": [40, 660],
+      "size": [270, 58],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "outputs": [{"name": "CONTROL_NET", "type": "CONTROL_NET", "links": [21]}],
+      "properties": {},
+      "widgets_values": ["controlnet-openpose-sdxl-1.0.safetensors"]
+    },
+    {
+      "id": 9,
+      "type": "DWPreprocessor",
+      "pos": [340, 660],
+      "size": [270, 120],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs":  [{"name": "image", "type": "IMAGE", "link": 20}],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [22]}],
+      "properties": {},
+      "widgets_values": ["enable", "enable", 512]
+    },
+    {
+      "id": 10,
+      "type": "ControlNetApplyAdvanced",
+      "pos": [660, 380],
+      "size": [315, 190],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "positive",    "type": "CONDITIONING", "link": 4},
+        {"name": "negative",    "type": "CONDITIONING", "link": 5},
+        {"name": "control_net", "type": "CONTROL_NET",  "link": 21},
+        {"name": "image",       "type": "IMAGE",        "link": 22}
+      ],
+      "outputs": [
+        {"name": "positive", "type": "CONDITIONING", "links": [23]},
+        {"name": "negative", "type": "CONDITIONING", "links": [24]}
+      ],
+      "properties": {},
+      "widgets_values": [0.7, 0.0, 1.0]
+    },
+    {
+      "id": 11,
+      "type": "KSampler",
+      "pos": [1020, 380],
+      "size": [315, 262],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {"name": "model",     "type": "MODEL",      "link": 13},
+        {"name": "positive",  "type": "CONDITIONING","link": 23},
+        {"name": "negative",  "type": "CONDITIONING","link": 24},
+        {"name": "latent_image", "type": "LATENT",  "link": 31}
+      ],
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [32]}],
+      "properties": {},
+      "widgets_values": [42, "fixed", 30, 7.0, "dpmpp_2m", "karras", 1.0]
+    },
+    {
+      "id": 12,
+      "type": "EmptyLatentImage",
+      "pos": [1020, 200],
+      "size": [315, 106],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "outputs": [{"name": "LATENT", "type": "LATENT", "links": [31]}],
+      "properties": {},
+      "widgets_values": [1024, 1024, 1]
+    },
+    {
+      "id": 13,
+      "type": "VAEDecode",
+      "pos": [1380, 380],
+      "size": [210, 46],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 32},
+        {"name": "vae",     "type": "VAE",    "link": 3}
+      ],
+      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [33]}],
+      "properties": {}
+    },
+    {
+      "id": 14,
+      "type": "SaveImage",
+      "pos": [1380, 480],
+      "size": [315, 270],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [{"name": "images", "type": "IMAGE", "link": 33}],
+      "properties": {},
+      "widgets_values": ["output/tokyo_night_walk"]
+    }
+  ],
+  "links": [
+    [1,  1, 0, 7,  1, "MODEL"],
+    [2,  1, 1, 2,  0, "CLIP"],
+    [2,  1, 1, 3,  0, "CLIP"],
+    [3,  1, 2, 13, 1, "VAE"],
+    [4,  2, 0, 10, 0, "CONDITIONING"],
+    [5,  3, 0, 10, 1, "CONDITIONING"],
+    [10, 4, 0, 6,  1, "IMAGE"],
+    [10, 4, 0, 7,  2, "IMAGE"],
+    [11, 5, 0, 6,  0, "IPADAPTER"],
+    [11, 5, 0, 7,  0, "IPADAPTER"],
+    [12, 6, 0, 7,  3, "EMBEDS"],
+    [13, 7, 0, 11, 0, "MODEL"],
+    [20, 4, 0, 9,  0, "IMAGE"],
+    [21, 8, 0, 10, 2, "CONTROL_NET"],
+    [22, 9, 0, 10, 3, "IMAGE"],
+    [23, 10, 0, 11, 1, "CONDITIONING"],
+    [24, 10, 1, 11, 2, "CONDITIONING"],
+    [30, 1, 0, 1,  0, "MODEL"],
+    [31, 12, 0, 11, 3, "LATENT"],
+    [32, 11, 0, 13, 0, "LATENT"],
+    [33, 13, 0, 14, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {"scale": 0.75, "offset": [0, 0]},
+    "_comfyui_workflow_note": "tokyo_night_walk — IP-Adapter SDXL + ControlNet OpenPose. Requires: sd_xl_base_1.0.safetensors, ip-adapter-plus_sdxl_vit-h.safetensors, controlnet-openpose-sdxl-1.0.safetensors, DW-Pose preprocessor node."
+  },
+  "version": 0.4
+}

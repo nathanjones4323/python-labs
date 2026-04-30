@@ -1,0 +1,36 @@
+services:
+  comfyui:
+    image: ghcr.io/ai-dock/comfyui:latest-cuda
+    # For CPU-only (no GPU) replace with:
+    # image: ghcr.io/ai-dock/comfyui:latest-cpu
+    ports:
+      - "8188:8188"
+    environment:
+      - DIRECT_ADDRESS=0.0.0.0
+      - DIRECT_ADDRESS_GET_WAN=false
+      - WEB_ENABLE_AUTH=false
+      # Uncomment if you need HuggingFace token for gated models
+      # - HF_TOKEN=${HF_TOKEN}
+    volumes:
+      - ./models:/opt/ComfyUI/models
+      - ./workflows:/opt/ComfyUI/workflows
+      - ./assets:/opt/ComfyUI/input
+      - ./output:/opt/ComfyUI/output
+      - comfyui_custom_nodes:/opt/ComfyUI/custom_nodes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8188/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  comfyui_custom_nodes:
