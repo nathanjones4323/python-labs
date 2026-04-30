@@ -44,7 +44,7 @@ FOOD_FDC_RICE    = 169756
 
 def _make_meal_row():
     return (
-        MEAL_ID, "Grilled Chicken Bowl", "dinner", "2026-04-22",
+        MEAL_ID, "meal_testexternal001", "Grilled Chicken Bowl", "dinner", "2026-04-22",
         ["Grill chicken 6 min per side", "Serve over rice"],
         None,
     )
@@ -52,8 +52,8 @@ def _make_meal_row():
 
 def _make_food_rows():
     return [
-        (str(uuid.uuid4()), FOOD_FDC_CHICKEN, "Chicken breast, grilled", CHICKEN_NUTRIENTS, 150.0, None),
-        (str(uuid.uuid4()), FOOD_FDC_RICE,    "Rice, white, cooked",     RICE_NUTRIENTS,    200.0, None),
+        (str(uuid.uuid4()), "mfood_testexternal01", FOOD_FDC_CHICKEN, "Chicken breast, grilled", CHICKEN_NUTRIENTS, 150.0, None),
+        (str(uuid.uuid4()), "mfood_testexternal02", FOOD_FDC_RICE,    "Rice, white, cooked",     RICE_NUTRIENTS,    200.0, None),
     ]
 
 

@@ -71,9 +71,9 @@ def _make_meal_db_conn():
         sql_stripped = " ".join(sql.split())
         cursor = MagicMock()
 
-        if "SELECT id, name, meal_type, scheduled_date" in sql_stripped:
+        if "SELECT id, external_id, name, meal_type" in sql_stripped:
             cursor.fetchone.return_value = _make_meal_row()
-        elif "SELECT mf.id, mf.fdc_id" in sql_stripped:
+        elif "SELECT mf.id, mf.external_id, mf.fdc_id" in sql_stripped:
             cursor.fetchall.return_value = _make_food_rows()
         elif "SELECT description, food_category, nutrients FROM foods WHERE fdc_id" in sql_stripped:
             fdc_id = params[0] if params else None
@@ -120,16 +120,16 @@ def _make_update_conn():
             cursor.fetchone.return_value = None
         elif "INSERT INTO foods" in sql_stripped:
             cursor.fetchone.return_value = None
-        elif "SELECT id, name, meal_type, scheduled_date" in sql_stripped:
+        elif "SELECT id, external_id, name, meal_type" in sql_stripped:
             cursor.fetchone.return_value = (
-                MEAL_ID, "Grilled Salmon Bowl", "dinner", "2026-04-22",
+                MEAL_ID, "meal_testexternal001", "Grilled Salmon Bowl", "dinner", "2026-04-22",
                 ["Season salmon with salt", "Cook salmon 4 min per side", "Serve over rice"],
                 None,
             )
-        elif "SELECT mf.id, mf.fdc_id" in sql_stripped:
+        elif "SELECT mf.id, mf.external_id, mf.fdc_id" in sql_stripped:
             cursor.fetchall.return_value = [
-                (str(uuid.uuid4()), FOOD_FDC_SALMON, "Atlantic salmon, raw", SALMON_NUTRIENTS, 150.0, None),
-                (str(uuid.uuid4()), FOOD_FDC_RICE,   "Rice, white, cooked",  RICE_NUTRIENTS,  200.0, None),
+                (str(uuid.uuid4()), "mfood_testexternal01", FOOD_FDC_SALMON, "Atlantic salmon, raw", SALMON_NUTRIENTS, 150.0, None),
+                (str(uuid.uuid4()), "mfood_testexternal02", FOOD_FDC_RICE,   "Rice, white, cooked",  RICE_NUTRIENTS,  200.0, None),
             ]
         else:
             cursor.fetchone.return_value = None
