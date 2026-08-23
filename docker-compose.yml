@@ -1,3 +1,17 @@
+# Full local dev stack for apps/meal-planner.
+#
+#   docker compose up            # db → migrations → backend + frontend
+#   docker compose down          # stop everything (keeps the DB volume)
+#   docker compose down -v       # stop and wipe the database
+#
+# Secrets come from the repo-root .env (copy .env.example). Compose also
+# substitutes those values into this file, so POSTGRES_* below stay in sync.
+
+name: meal-planner
+
+x-db-url: &db-url
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
+
 services:
   db:
     image: postgis/postgis:17-3.5
@@ -11,25 +25,86 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
+      # On a fresh PostGIS volume the container restarts postgres during
+      # extension init, so start_period + retries keep it from flipping healthy
+      # before it accepts TCP connections from outside the container.
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-app}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 15s
+
+  # One-shot: runs pending Alembic migrations, then exits. Everything that
+  # touches the DB waits on it completing successfully.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/meal-planner/backend/Dockerfile
+    working_dir: /app/libs/db
+    command: alembic -c alembic.ini upgrade head
+    environment:
+      <<: *db-url
+    volumes:
+      - ./libs:/app/libs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
   backend:
     build:
       context: .
       dockerfile: apps/meal-planner/backend/Dockerfile
+    # --reload-dir keeps the watcher off /app/.venv (tens of thousands of files).
+    command: >
+      uvicorn meal_planner.main:app --host 0.0.0.0 --port 8000 --reload
+      --reload-dir /app/apps/meal-planner/backend/src
+      --reload-dir /app/libs
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
+    env_file:
+      # Optional so `docker compose` still works before .env exists; the app
+      # needs ANTHROPIC_API_KEY from it for any AI feature.
+      - path: .env
+        required: false
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-app}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Overrides .env: inside the network the DB is `db`, not localhost.
+      <<: *db-url
       USDA_API_KEY: ${USDA_API_KEY:-DEMO_KEY}
+    volumes:
+      # Workspace packages are installed editable, so mounting source is enough
+      # for --reload to pick up edits. Scoped to subdirs so /app/.venv survives.
+      - ./libs:/app/libs
+      - ./apps/meal-planner/backend/src:/app/apps/meal-planner/backend/src
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./apps/meal-planner/frontend
+    ports:
+      - "${FRONTEND_PORT:-8081}:8081"
+    environment:
+      # Resolved by the browser on the host, so localhost is correct here.
+      EXPO_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
+      EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: ${GOOGLE_IOS_CLIENT_ID:-}
+      EXPO_PUBLIC_DEV_BYPASS_AUTH: ${EXPO_PUBLIC_DEV_BYPASS_AUTH:-false}
+      # Metro's fsevents don't cross the bind mount; poll instead.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./apps/meal-planner/frontend:/app
+      # Anonymous volume keeps the container's own node_modules (native binaries
+      # differ from the host's) from being shadowed by the bind mount above.
+      - /app/node_modules
+    stdin_open: true
+    tty: true
+    depends_on:
+      - backend
 
 volumes:
   db_data:

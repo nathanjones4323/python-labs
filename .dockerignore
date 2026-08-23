@@ -1,0 +1,33 @@
+# Version control / tooling
+.git
+.gitignore
+.claude
+.claire
+.ruff_cache
+.pytest_cache
+.mypy_cache
+
+# Secrets — injected via compose env_file, never baked into images
+.env
+.env.local
+*.env.local
+
+# Python build artifacts
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/*.egg-info
+**/build
+**/dist
+
+# Node / Expo
+**/node_modules
+**/.expo
+**/.next
+apps/meal-planner/frontend/ios
+apps/meal-planner/frontend/android
+
+# Docs / misc
+**/.DS_Store
+README.md
+**/README.md
