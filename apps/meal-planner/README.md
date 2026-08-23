@@ -4,35 +4,80 @@ Expo (web) frontend and FastAPI backend for meal planning, with PostgreSQL/PostG
 
 ## Prerequisites
 
+- **Docker** (Docker Desktop on macOS) — this is all you need for the Docker path below.
+
+For the non-Docker path you also need:
+
 - **Node.js 20** (see `frontend/package.json` Volta pin)
 - **Python 3.12+** and **[uv](https://docs.astral.sh/uv/)** (workspace installs dependencies from the repo root)
-- **Docker** (recommended) to run PostgreSQL
 
-## Quick start (dev machine)
+## Quick start (Docker)
 
-The fastest way to get everything running locally is a single script that starts the DB, runs migrations, and launches the backend and frontend in one shot.
-
-**1. Copy and fill in `.env`** at the repository root:
+Everything — database, migrations, API, and web app — runs with one command from the **repository root**:
 
 ```bash
-cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY (required for AI features)
+make up
 ```
 
-**2. Run the dev script** from the repository root:
+That's it. `make up` creates a `.env` from `.env.example` if you don't have one, builds the images, and starts the stack in dependency order:
+
+1. **db** — PostGIS 17, waits until its healthcheck passes
+2. **migrate** — runs `alembic upgrade head`, then exits (a one-shot service)
+3. **backend** — FastAPI on [http://localhost:8000](http://localhost:8000), starts only after migrations succeed
+4. **frontend** — Expo web dev server on [http://localhost:8081](http://localhost:8081)
+
+Open [http://localhost:8081](http://localhost:8081) and you're running. Press **Ctrl-C** to stop.
+
+**Set `ANTHROPIC_API_KEY` in the repo-root `.env`** before using any AI feature — the stack starts without it, but chat and plan generation will fail.
+
+If you prefer plain Compose, `docker compose up --build` does the same thing.
+
+### Common commands
+
+| Command | What it does |
+| --- | --- |
+| `make up` | Start the whole stack (build + run) |
+| `make down` | Stop everything, keep the database |
+| `make clean` | Stop everything and delete the database volume |
+| `make reset` | `clean` then `up` — fresh database from scratch |
+| `make migrate` | Run pending migrations against the running database |
+| `make test` | Run the backend test suite in Docker |
+| `make logs` | Tail logs from every service |
+| `make shell` | Bash shell in the backend container |
+| `make psql` | `psql` session against the dev database |
+| `make build` | Rebuild images without starting anything |
+
+Run `make help` to list them from the terminal.
+
+### Hot reload
+
+Both services pick up your edits without a rebuild:
+
+- **Backend** — `libs/` and `backend/src/` are bind-mounted, and the workspace packages are installed editable, so `uvicorn --reload` restarts on save.
+- **Frontend** — the whole `frontend/` directory is bind-mounted and Metro rebundles on save. `node_modules` lives in a container-owned volume, so the container's install (Linux native binaries) isn't shadowed by your host's.
+
+You only need to rebuild when dependencies change:
 
 ```bash
+make build
+```
+
+### Ports
+
+Every port is overridable in `.env`: `BACKEND_PORT` (8000), `FRONTEND_PORT` (8081), `POSTGRES_PORT` (5432). Note that the backend's CORS allowlist (`backend/src/meal_planner/main.py`) only covers the standard dev origins, so if you change `FRONTEND_PORT` you'll need to add the new origin there too.
+
+---
+
+## Quick start (no Docker, except the database)
+
+If you'd rather run Python and Node on your host, `dev.sh` starts the DB in Docker and everything else natively:
+
+```bash
+cp .env.example .env   # then set ANTHROPIC_API_KEY
 bash apps/meal-planner/dev.sh
 ```
 
-This will:
-- Start the PostGIS container via Docker Compose
-- Wait until the DB is healthy
-- Run any pending Alembic migrations
-- Start the FastAPI backend on [http://localhost:8000](http://localhost:8000)
-- Install frontend dependencies and launch the Expo web dev server
-
-Press **Ctrl-C** in the terminal running the frontend to stop it; the backend process is cleaned up automatically.
+This starts the PostGIS container, waits for it to be healthy, runs migrations, launches the FastAPI backend on port 8000, and starts the Expo web dev server. Press **Ctrl-C** to stop the frontend; the backend is cleaned up automatically.
 
 ---
 
@@ -102,16 +147,11 @@ npm start
 
 The UI talks to **http://localhost:8000** by default (`frontend/lib/api.ts`). To point at another host, set `EXPO_PUBLIC_API_URL` before starting (or configure `expo.extra.apiUrl` in `app.json`).
 
-## Optional: run backend with Docker
-
-From the **repository root**, with `ANTHROPIC_API_KEY` set in your environment or a `.env` file loaded by Compose:
-
-```bash
-docker compose up --build backend db
-```
-
-You still need to run the migration step from your machine (step 2) against `localhost:5432` unless you automate migrations elsewhere.
-
 ## Troubleshooting
 
 - **CORS errors in the browser:** the API allows specific dev origins (see `backend/src/meal_planner/main.py`). If your Expo web dev server uses another origin, add it to `CORSMiddleware` or align the dev server port.
+- **`make up` fails on the port being in use:** something else (often a previous `dev.sh` run) holds 5432, 8000, or 8081. Stop it, or set `POSTGRES_PORT` / `BACKEND_PORT` / `FRONTEND_PORT` in `.env`.
+- **Backend edits aren't picked up:** only `libs/` and `backend/src/` are mounted. Changes to `pyproject.toml` or anything outside those paths need `make build`.
+- **Frontend edits aren't picked up:** Metro polls for changes across the bind mount, which can lag on large trees. `docker compose restart frontend` forces a fresh watch.
+- **Migrations fail on start:** read them with `docker compose logs migrate`. The backend won't start until `migrate` exits 0, so a bad migration shows up as a backend that never comes up.
+- **Stale database:** `make clean` deletes the volume; `make reset` deletes it and rebuilds from scratch.
