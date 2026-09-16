@@ -16,7 +16,7 @@ def main() -> int:
     created_at = datetime.now(timezone.utc)
     run_id = created_at.strftime("%Y%m%dT%H%M%SZ")
 
-    target = target_date()
+    target = settings.target_date_override or target_date()
     logger.info(
         f"Run {run_id}: booking {config.COURSE_NAME} on {target:%A %Y-%m-%d} "
         f"between {config.EARLIEST_TEE_TIME:%I:%M %p} "

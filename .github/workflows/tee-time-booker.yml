@@ -55,14 +55,13 @@ jobs:
           TEE_TIME_ARTIFACTS_DIR: artifacts
           SOULE_EMAIL: ${{ secrets.SOULE_EMAIL }}
           SOULE_PASSWORD: ${{ secrets.SOULE_PASSWORD }}
-          CREDIT_CARD_NAME: ${{ secrets.CREDIT_CARD_NAME }}
           CREDIT_CARD_NUMBER: ${{ secrets.CREDIT_CARD_NUMBER }}
           CREDIT_CARD_EXPIRATION_MONTH: ${{ secrets.CREDIT_CARD_EXPIRATION_MONTH }}
           CREDIT_CARD_EXPIRATION_YEAR: ${{ secrets.CREDIT_CARD_EXPIRATION_YEAR }}
           CREDIT_CARD_CVC: ${{ secrets.CREDIT_CARD_CVC }}
           CREDIT_CARD_POSTAL_CODE: ${{ secrets.CREDIT_CARD_POSTAL_CODE }}
 
-      - name: Upload failure screenshots
+      - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:

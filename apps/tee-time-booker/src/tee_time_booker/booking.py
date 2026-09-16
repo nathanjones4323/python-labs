@@ -5,8 +5,9 @@ Flow (mirrors what a person does on the site):
   2. log in
   3. fetch the day's slots from the API using the browser's logged-in session
      and choose one per our preferences
-  4. set the date, click the slot, choose 4 players, "Book Time", confirm
-  5. fill the card fields (each lives in its own iframe)
+  4. set the date, click the slot, choose holes (if asked) and players,
+     "Book Time", confirm
+  5. fill the card (Basis Theory hosted iframe) and postal code
   6. optionally click Submit
 """
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from loguru import logger
 from playwright.sync_api import BrowserContext, Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from tee_time_booker import config
 from tee_time_booker.config import Credentials, Settings
@@ -40,17 +42,31 @@ LOGIN_PASSWORD = "#login_password"
 LOGIN_SUBMIT = "#login .modal-footer button.btn-primary.login"
 DATE_FIELD = "#date-field"
 SLOT_TIME_LABEL = "div.booking-start-time-label"
-PLAYERS_ROW = "#book_time .js-booking-players a"
+BOOKING_MODAL = "#book_time"
+HOLES_BUTTON = f"#book_time [data-field='holes'] a[data-value='{config.HOLES}']"
+PLAYERS_BUTTON = f"#book_time [data-field='players'] a[data-value='{config.PLAYERS}']"
 BOOK_TIME_BUTTON = "#book_time .modal-footer button.js-book-button"
 CONFIRM_BOOKING_BUTTON = "#payment_selection .modal-footer button.continue"
-CARD_IFRAMES = {
-    "name": "#field-wrapper-name iframe",
-    "number": "#field-wrapper-number iframe",
-    "expiration": "#field-wrapper-expiration_date iframe",
-    "cvc": "#field-wrapper-security_code iframe",
-    "postal_code": "#field-wrapper-postal_code iframe",
-}
-SUBMIT_PAYMENT_BUTTON = "#btnSubmitMobile"
+# Payment is an OdinPay form built on Basis Theory hosted elements: one iframe
+# holds number / expiry / CVC; postal code is a plain input. No name field.
+CARD_IFRAME = "#payment_selection iframe[src*='card-element']"
+CARD_NUMBER_INPUT = "input[autocomplete='cc-number']"
+CARD_EXP_INPUT = "input[autocomplete='cc-exp']"
+CARD_CVC_INPUT = "input[autocomplete='cc-csc']"
+POSTAL_INPUT = "#payment_selection input.odin-input[placeholder='Postal Code']"
+SUBMIT_PAYMENT_BUTTON = "#payment_selection button#submit"
+
+
+def _user_agent(browser_version: str) -> str:
+    """A normal desktop Chrome UA matching the launched Chromium's major version.
+
+    foreUP returns 403 to the default headless UA ("HeadlessChrome/...").
+    """
+    major = browser_version.split(".")[0]
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
 
 
 def _pause(low: float = 0.4, high: float = 1.2) -> None:
@@ -105,22 +121,42 @@ def set_date(page: Page, target: date) -> None:
     field.fill("")
     field.type(target.strftime(config.FOREUP_DATE_FORMAT))
     field.press("Enter")
+    # The slot list re-renders after the date changes; let it settle.
+    page.wait_for_load_state("networkidle")
     _pause(0.5, 1.0)
 
 
-def select_slot(page: Page, tee_time: TeeTime) -> None:
+def select_slot(page: Page, tee_time: TeeTime, target: date) -> None:
     label = tee_time.ui_label
     # Anchor on digit boundaries so "1:00pm" can't match "11:00pm".
     pattern = re.compile(rf"(?<!\d){re.escape(label)}(?!\w)", re.IGNORECASE)
     slot = page.locator(SLOT_TIME_LABEL, has_text=pattern).first
-    slot.wait_for(state="visible")
-    slot.click()
-    logger.info(f"Clicked slot {label}")
-    _pause()
+    # foreUP rejects the hold (HTTP 400, no modal) if the account already has a
+    # pending reservation, and a click can land mid-re-render. Confirm the
+    # modal opened; otherwise refresh the list and retry.
+    for attempt in range(1, 4):
+        if attempt > 1:
+            _pause(2.0, 4.0)
+            set_date(page, target)
+        slot.wait_for(state="visible")
+        slot.click()
+        try:
+            page.wait_for_selector(BOOKING_MODAL, state="visible", timeout=5_000)
+            logger.info(f"Clicked slot {label}")
+            _pause()
+            return
+        except PlaywrightTimeoutError:
+            logger.warning(f"Slot click {attempt} did not open the booking modal")
+    raise RuntimeError(f"Could not open the booking modal for slot {label}")
 
 
 def choose_players_and_book(page: Page) -> None:
-    page.locator(PLAYERS_ROW).nth(config.PLAYERS - 1).click()
+    # Slots offered as "9 or 18" show a holes picker; 18-only slots don't.
+    holes = page.locator(HOLES_BUTTON)
+    if holes.count():
+        holes.click()
+        _pause()
+    page.click(PLAYERS_BUTTON)
     _pause()
     page.click(BOOK_TIME_BUTTON)
     _pause()
@@ -129,16 +165,20 @@ def choose_players_and_book(page: Page) -> None:
 
 
 def fill_payment_details(page: Page, creds: Credentials) -> None:
-    values = {
-        "name": creds.card_name,
-        "number": creds.card_number,
-        "expiration": f"{creds.card_expiration_month}{creds.card_expiration_year}",
-        "cvc": creds.card_cvc,
-        "postal_code": creds.card_postal_code,
-    }
-    for field, value in values.items():
-        frame = page.frame_locator(CARD_IFRAMES[field])
-        frame.locator("input").first.fill(value)
+    card = page.frame_locator(CARD_IFRAME)
+    # Hosted inputs format as you type, so send keystrokes rather than fill().
+    fields = [
+        (card.locator(CARD_NUMBER_INPUT), creds.card_number),
+        (
+            card.locator(CARD_EXP_INPUT),
+            creds.card_expiration_month + creds.card_expiration_year,
+        ),
+        (card.locator(CARD_CVC_INPUT), creds.card_cvc),
+        (page.locator(POSTAL_INPUT), creds.card_postal_code),
+    ]
+    for locator, value in fields:
+        locator.click()
+        locator.press_sequentially(value, delay=40)
         _pause(0.2, 0.6)
     logger.info("Filled payment details")
 
@@ -162,6 +202,7 @@ def book_tee_time(
         context = browser.new_context(
             viewport={"width": 1400, "height": 1000},
             timezone_id=str(config.COURSE_TZ),
+            user_agent=_user_agent(browser.version),
         )
         context.set_default_timeout(STEP_TIMEOUT_MS)
         page = context.new_page()
@@ -175,7 +216,7 @@ def book_tee_time(
             )
 
             set_date(page, target)
-            select_slot(page, tee_time)
+            select_slot(page, tee_time, target)
             choose_players_and_book(page)
             fill_payment_details(page, creds)
 
@@ -185,21 +226,21 @@ def book_tee_time(
                 logger.warning(
                     "TEE_TIME_SUBMIT_PAYMENT is off — stopping before Submit (dry run)"
                 )
+                _save_screenshot(page, settings.artifacts_dir, f"dryrun-{run_id}")
             return tee_time
         except Exception:
-            _save_screenshot(page, settings.artifacts_dir, run_id)
+            _save_screenshot(page, settings.artifacts_dir, f"failure-{run_id}")
             raise
         finally:
             context.close()
             browser.close()
 
 
-def _save_screenshot(page: Page, artifacts_dir: Path, run_id: str) -> None:
+def _save_screenshot(page: Page, artifacts_dir: Path, name: str) -> None:
     try:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        safe_id = re.sub(r"[^A-Za-z0-9_-]+", "_", run_id)
-        path = artifacts_dir / f"failure-{safe_id}.png"
+        path = artifacts_dir / (re.sub(r"[^A-Za-z0-9_-]+", "_", name) + ".png")
         page.screenshot(path=str(path), full_page=True)
-        logger.info(f"Saved failure screenshot to {path}")
+        logger.info(f"Saved screenshot to {path}")
     except Exception as e:  # never mask the original error
-        logger.warning(f"Could not save failure screenshot: {e}")
+        logger.warning(f"Could not save screenshot: {e}")

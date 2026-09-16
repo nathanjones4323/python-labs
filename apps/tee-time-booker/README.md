@@ -19,12 +19,22 @@ The run:
 1. opens the booking page and logs in
 2. queries foreUP's tee-time API through the logged-in browser session and
    chooses a slot per the preferences above
-3. sets the date, clicks the slot, picks 4 players, "Book Time", confirms
-4. fills the card fields
+3. sets the date, clicks the slot, picks 18 holes (when the slot offers 9 or
+   18) and 4 players, "Book Time", confirms
+4. fills the card fields (an OdinPay / Basis Theory hosted iframe) and postal code
 5. clicks **Submit** only if `TEE_TIME_SUBMIT_PAYMENT=true`; otherwise it stops
-   there (a dry run) and logs `Success (dry run)`
+   there (a dry run), saves a screenshot of the filled form to `artifacts/`,
+   and logs `Success (dry run)`
 
 On any failure a full-page screenshot is written to `artifacts/`.
+
+Notes on foreUP's behaviour that the code works around:
+
+- It returns **403** to Chromium's default headless user agent, so the browser
+  context uses a normal desktop Chrome UA.
+- Clicking a slot **holds it for 5 minutes** on your account. When testing
+  repeatedly, point `TEE_TIME_TARGET_DATE` at another open date rather than
+  waiting.
 
 ## Local development
 
@@ -55,21 +65,22 @@ uv run --package tee-time-booker pytest
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `SOULE_EMAIL`, `SOULE_PASSWORD` | yes | | foreUP login |
-| `CREDIT_CARD_NAME`, `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | yes | | Card entered at checkout |
+| `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | yes | | Card entered at checkout |
 | `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final Submit button |
 | `TEE_TIME_HEADLESS` | no | `true` | Run Chromium headless |
 | `TEE_TIME_LOG_PATH` | no | `log.csv` | Run log location |
-| `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Failure screenshot location |
+| `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |
+| `TEE_TIME_TARGET_DATE` | no | | Testing aid: book this `YYYY-MM-DD` instead of the computed date |
 
 ## Deployment (GitHub Actions)
 
 `.github/workflows/tee-time-booker.yml` runs every Sunday at 08:00 UTC
 (1:00 AM PDT / 12:00 AM PST — just after Soule Park releases tee times) and on
 manual dispatch. It commits `log.csv` back to the repo after every run and
-uploads failure screenshots as a workflow artifact.
+uploads screenshots as a workflow artifact.
 
 Repository **secrets** needed: `SOULE_EMAIL`, `SOULE_PASSWORD`,
-`CREDIT_CARD_NAME`, `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
+`CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
 `CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE`.
 
 Scheduled runs are dry runs until you set the repository **variable**

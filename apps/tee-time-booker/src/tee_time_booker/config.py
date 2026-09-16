@@ -6,7 +6,7 @@ secret or environment-specific comes from the environment / `.env`.
 
 import os
 from dataclasses import dataclass
-from datetime import time
+from datetime import date, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -56,7 +56,6 @@ def _env_flag(name: str, default: bool) -> bool:
 class Credentials:
     email: str
     password: str
-    card_name: str
     card_number: str
     card_expiration_month: str
     card_expiration_year: str
@@ -74,7 +73,6 @@ class Credentials:
         return cls(
             email=req("SOULE_EMAIL"),
             password=req("SOULE_PASSWORD"),
-            card_name=req("CREDIT_CARD_NAME"),
             card_number=req("CREDIT_CARD_NUMBER"),
             card_expiration_month=req("CREDIT_CARD_EXPIRATION_MONTH"),
             card_expiration_year=req("CREDIT_CARD_EXPIRATION_YEAR"),
@@ -89,12 +87,16 @@ class Settings:
     headless: bool
     log_path: Path
     artifacts_dir: Path
+    # Testing aid: book this date (YYYY-MM-DD) instead of the computed one.
+    target_date_override: date | None
 
     @classmethod
     def from_env(cls) -> "Settings":
+        raw_date = os.environ.get("TEE_TIME_TARGET_DATE", "").strip()
         return cls(
             submit_payment=_env_flag("TEE_TIME_SUBMIT_PAYMENT", default=False),
             headless=_env_flag("TEE_TIME_HEADLESS", default=True),
             log_path=Path(os.environ.get("TEE_TIME_LOG_PATH", "log.csv")),
             artifacts_dir=Path(os.environ.get("TEE_TIME_ARTIFACTS_DIR", "artifacts")),
+            target_date_override=date.fromisoformat(raw_date) if raw_date else None,
         )
