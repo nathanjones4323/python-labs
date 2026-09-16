@@ -1,56 +1,19 @@
-"""Booking preferences and runtime settings.
+"""Runtime settings and credentials.
 
-Preferences (which day, which time window) live here as constants; anything
-secret or environment-specific comes from the environment / `.env`.
+Booking preferences live in `courses.py`; anything secret or environment
+specific comes from the environment / `.env` and lands here.
 """
 
 import os
-from dataclasses import dataclass
-from datetime import date, time
+from dataclasses import dataclass, fields
+from datetime import date
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
+from tee_time_booker.courses import DEFAULT_COURSE, CourseConfig
+
 load_dotenv()
-
-# --- Course --------------------------------------------------------------------
-COURSE_NAME = "Soule Park"
-COURSE_TZ = ZoneInfo("America/Los_Angeles")
-
-# foreUP identifiers for Soule Park's public booking page.
-FOREUP_COURSE_ID = "19620"
-BOOKING_CLASS = "4718"
-# The label on the booking-class button that corresponds to BOOKING_CLASS.
-BOOKING_CLASS_NAME = "Regular"
-SCHEDULE_ID = "1945"
-
-# foreUP opens each day's tee sheet at course-local midnight, 20 days ahead
-# (its "21 day" window counts today). A run that starts at or after
-# PRE_RELEASE_START waits for the coming midnight and books for that new day.
-RELEASE_TIME = time(0, 0)
-PRE_RELEASE_START = time(20, 0)
-
-BOOKING_URL = f"https://foreupsoftware.com/index.php/booking/index/{FOREUP_COURSE_ID}"
-TEE_TIMES_API_URL = "https://foreupsoftware.com/index.php/api/booking/times"
-
-# --- Tee time preferences -------------------------------------------------------
-# Book the Nth upcoming occurrence of TARGET_WEEKDAY (Monday=0 ... Sunday=6).
-# "Upcoming" includes today if today is that weekday.
-TARGET_WEEKDAY = 5  # Saturday
-WEEKS_AHEAD = 3  # the 3rd upcoming Saturday
-
-# Acceptable tee-off window (course-local time), inclusive on both ends.
-EARLIEST_TEE_TIME = time(8, 0)
-LATEST_TEE_TIME = time(14, 0)
-# Within the window, take the earliest slot. False takes the latest.
-PREFER_EARLIER = True
-
-HOLES = 18
-PLAYERS = 4
-
-# Date format foreUP uses in both the API query string and the UI date field.
-FOREUP_DATE_FORMAT = "%m-%d-%Y"
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -60,37 +23,91 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _required(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required environment variable {name}")
+    return value
+
+
 @dataclass(frozen=True)
-class Credentials:
+class Account:
+    """A login on a booking site."""
+
     email: str
     password: str
-    card_number: str
-    card_expiration_month: str
-    card_expiration_year: str
-    card_cvc: str
-    card_postal_code: str
 
     @classmethod
-    def from_env(cls) -> "Credentials":
-        def req(name: str) -> str:
-            value = os.environ.get(name, "").strip()
-            if not value:
-                raise RuntimeError(f"Missing required environment variable {name}")
-            return value
-
+    def from_env(cls, course: CourseConfig) -> "Account":
         return cls(
-            email=req("SOULE_EMAIL"),
-            password=req("SOULE_PASSWORD"),
-            card_number=req("CREDIT_CARD_NUMBER"),
-            card_expiration_month=req("CREDIT_CARD_EXPIRATION_MONTH"),
-            card_expiration_year=req("CREDIT_CARD_EXPIRATION_YEAR"),
-            card_cvc=req("CREDIT_CARD_CVC"),
-            card_postal_code=req("CREDIT_CARD_POSTAL_CODE"),
+            email=_required(course.email_env),
+            password=_required(course.password_env),
         )
 
 
 @dataclass(frozen=True)
+class PaymentCard:
+    """The card entered at checkout.
+
+    Sites ask for different subsets of this: foreUP wants the number, expiry,
+    CVC and postal code; GolfNow also wants a cardholder name, billing address
+    and phone number. Each adapter declares the fields it needs
+    (`BookingPlatform.required_card_fields`) and `from_env` only insists on
+    those, so a run doesn't fail over a field its site never asks for.
+    """
+
+    number: str
+    expiration_month: str  # MM
+    expiration_year: str  # YY
+    cvc: str
+    postal_code: str
+    name: str | None = None
+    billing_address: str | None = None
+    phone: str | None = None
+
+    # Field name -> environment variable holding it.
+    ENV_VARS = {
+        "number": "CREDIT_CARD_NUMBER",
+        "expiration_month": "CREDIT_CARD_EXPIRATION_MONTH",
+        "expiration_year": "CREDIT_CARD_EXPIRATION_YEAR",
+        "cvc": "CREDIT_CARD_CVC",
+        "postal_code": "CREDIT_CARD_POSTAL_CODE",
+        "name": "CREDIT_CARD_NAME",
+        "billing_address": "CREDIT_CARD_BILLING_ADDRESS",
+        "phone": "PHONE_NUMBER",
+    }
+
+    @classmethod
+    def from_env(cls, required: tuple[str, ...]) -> "PaymentCard":
+        unknown = set(required) - set(cls.ENV_VARS)
+        if unknown:
+            raise ValueError(f"Not card fields: {', '.join(sorted(unknown))}")
+        values: dict[str, str | None] = {}
+        for f in fields(cls):
+            env_var = cls.ENV_VARS[f.name]
+            values[f.name] = (
+                _required(env_var)
+                if f.name in required
+                else os.environ.get(env_var, "").strip() or None
+            )
+        return cls(**values)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """A login, and the card to pay with once there is something to pay for.
+
+    `card` is None for runs that only look (listing tee times), so a search
+    doesn't need card details in the environment.
+    """
+
+    account: Account
+    card: PaymentCard | None = None
+
+
+@dataclass(frozen=True)
 class Settings:
+    course_key: str
     submit_payment: bool
     headless: bool
     log_path: Path
@@ -102,6 +119,7 @@ class Settings:
     def from_env(cls) -> "Settings":
         raw_date = os.environ.get("TEE_TIME_TARGET_DATE", "").strip()
         return cls(
+            course_key=os.environ.get("TEE_TIME_COURSE", "").strip() or DEFAULT_COURSE,
             submit_payment=_env_flag("TEE_TIME_SUBMIT_PAYMENT", default=False),
             headless=_env_flag("TEE_TIME_HEADLESS", default=True),
             log_path=Path(os.environ.get("TEE_TIME_LOG_PATH", "log.csv")),

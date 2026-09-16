@@ -1,7 +1,7 @@
 [project]
 name = "tee-time-booker"
 version = "0.1.0"
-description = "Books a Soule Park tee time with Playwright on a schedule"
+description = "Books tee times with Playwright on a schedule, one adapter per booking site"
 requires-python = ">=3.12"
 dependencies = [
     "playwright>=1.47.0",

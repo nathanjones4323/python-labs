@@ -19,6 +19,10 @@ on:
         description: "Book this date (YYYY-MM-DD) instead of the computed Saturday; skips the midnight wait"
         type: string
         default: ""
+      course:
+        description: "Course to book (see --list-courses); blank uses the TEE_TIME_COURSE variable"
+        type: string
+        default: ""
 
 # Needed to push the updated log.csv back to the repo.
 permissions:
@@ -60,16 +64,26 @@ jobs:
           # Actions > Variables); unset means dry run.
           TEE_TIME_SUBMIT_PAYMENT: ${{ github.event.inputs.submit_payment || vars.TEE_TIME_SUBMIT_PAYMENT || 'false' }}
           TEE_TIME_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
+          # Which course the run books. The cron above is timed for Soule
+          # Park's midnight release, so leave the variable unset unless the
+          # schedule moves with it.
+          TEE_TIME_COURSE: ${{ github.event.inputs.course || vars.TEE_TIME_COURSE || '' }}
           TEE_TIME_HEADLESS: "true"
           TEE_TIME_LOG_PATH: log.csv
           TEE_TIME_ARTIFACTS_DIR: artifacts
           SOULE_EMAIL: ${{ secrets.SOULE_EMAIL }}
           SOULE_PASSWORD: ${{ secrets.SOULE_PASSWORD }}
+          GOLFNOW_EMAIL: ${{ secrets.GOLFNOW_EMAIL }}
+          GOLFNOW_PASSWORD: ${{ secrets.GOLFNOW_PASSWORD }}
           CREDIT_CARD_NUMBER: ${{ secrets.CREDIT_CARD_NUMBER }}
           CREDIT_CARD_EXPIRATION_MONTH: ${{ secrets.CREDIT_CARD_EXPIRATION_MONTH }}
           CREDIT_CARD_EXPIRATION_YEAR: ${{ secrets.CREDIT_CARD_EXPIRATION_YEAR }}
           CREDIT_CARD_CVC: ${{ secrets.CREDIT_CARD_CVC }}
           CREDIT_CARD_POSTAL_CODE: ${{ secrets.CREDIT_CARD_POSTAL_CODE }}
+          # Only GolfNow's checkout asks for these.
+          CREDIT_CARD_NAME: ${{ secrets.CREDIT_CARD_NAME }}
+          CREDIT_CARD_BILLING_ADDRESS: ${{ secrets.CREDIT_CARD_BILLING_ADDRESS }}
+          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
 
       - name: Upload screenshots
         if: always()
