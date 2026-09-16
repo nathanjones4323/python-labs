@@ -3,7 +3,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from tee_time_booker import config
-from tee_time_booker.dates import nth_upcoming_weekday, target_date
+from tee_time_booker.dates import (
+    next_release,
+    nth_upcoming_weekday,
+    release_day,
+    target_date,
+)
+
+LA = ZoneInfo("America/Los_Angeles")
 
 SATURDAY = 5
 
@@ -31,7 +38,27 @@ def test_rejects_non_positive_n(n):
 
 
 def test_target_date_uses_course_local_day():
-    # 06:30 UTC Sun 2026-09-20 is still Sat 2026-09-19 (23:30 PDT) in Los Angeles.
-    now = datetime(2026, 9, 20, 6, 30, tzinfo=ZoneInfo("UTC"))
+    # 20:30 UTC Sat 2026-09-19 is 13:30 PDT Saturday in Los Angeles.
+    now = datetime(2026, 9, 19, 20, 30, tzinfo=ZoneInfo("UTC"))
     assert config.TARGET_WEEKDAY == SATURDAY and config.WEEKS_AHEAD == 3
     assert target_date(now) == date(2026, 10, 3)
+
+
+def test_late_evening_run_belongs_to_the_coming_release():
+    # 06:30 UTC Sun 2026-09-20 is 23:30 PDT Saturday: waiting on Sunday's
+    # midnight release, which opens Sat 2026-10-10 (20 days out).
+    now = datetime(2026, 9, 20, 6, 30, tzinfo=ZoneInfo("UTC"))
+    assert release_day(now) == date(2026, 9, 20)
+    assert target_date(now) == date(2026, 10, 10)
+    assert next_release(now) == datetime(2026, 9, 20, 0, 0, tzinfo=LA)
+
+
+def test_run_after_midnight_needs_no_wait():
+    now = datetime(2026, 9, 20, 0, 5, tzinfo=LA)
+    assert release_day(now) == date(2026, 9, 20)
+    assert next_release(now) is None
+    assert target_date(now) == date(2026, 10, 10)
+
+
+def test_daytime_run_needs_no_wait():
+    assert next_release(datetime(2026, 9, 16, 12, 0, tzinfo=LA)) is None

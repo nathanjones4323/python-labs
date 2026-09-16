@@ -21,7 +21,15 @@ COURSE_TZ = ZoneInfo("America/Los_Angeles")
 # foreUP identifiers for Soule Park's public booking page.
 FOREUP_COURSE_ID = "19620"
 BOOKING_CLASS = "4718"
+# The label on the booking-class button that corresponds to BOOKING_CLASS.
+BOOKING_CLASS_NAME = "Regular"
 SCHEDULE_ID = "1945"
+
+# foreUP opens each day's tee sheet at course-local midnight, 20 days ahead
+# (its "21 day" window counts today). A run that starts at or after
+# PRE_RELEASE_START waits for the coming midnight and books for that new day.
+RELEASE_TIME = time(0, 0)
+PRE_RELEASE_START = time(20, 0)
 
 BOOKING_URL = f"https://foreupsoftware.com/index.php/booking/index/{FOREUP_COURSE_ID}"
 TEE_TIMES_API_URL = "https://foreupsoftware.com/index.php/api/booking/times"

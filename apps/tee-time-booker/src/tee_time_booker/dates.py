@@ -1,4 +1,10 @@
-"""Target-date selection."""
+"""Target-date selection and release timing.
+
+foreUP opens each day's tee sheet at course-local midnight `BOOKING_WINDOW_DAYS`
+days ahead. A run may start shortly *before* that midnight (so it's logged in
+and ready the moment slots appear); such a run belongs to the day about to
+begin, not the one ending.
+"""
 
 from datetime import date, datetime, timedelta
 
@@ -19,8 +25,34 @@ def nth_upcoming_weekday(today: date, weekday: int, n: int) -> date:
     return today + timedelta(days=days_until + 7 * (n - 1))
 
 
+def _local(now: datetime | None) -> datetime:
+    now = now or datetime.now(config.COURSE_TZ)
+    return now.astimezone(config.COURSE_TZ)
+
+
+def release_day(now: datetime | None = None) -> date:
+    """The course-local day this run books for.
+
+    Late in the evening (from `config.PRE_RELEASE_START` onward) that's
+    tomorrow, because the run is waiting for tomorrow's midnight release.
+    """
+    local = _local(now)
+    if local.time() >= config.PRE_RELEASE_START:
+        return local.date() + timedelta(days=1)
+    return local.date()
+
+
+def next_release(now: datetime | None = None) -> datetime | None:
+    """When the tee sheet this run is waiting on opens, or None if it's already open."""
+    local = _local(now)
+    day = release_day(local)
+    if day == local.date():
+        return None
+    return datetime.combine(day, config.RELEASE_TIME, tzinfo=config.COURSE_TZ)
+
+
 def target_date(now: datetime | None = None) -> date:
     """The date to book, per the preferences in `config`, in course-local time."""
-    now = now or datetime.now(config.COURSE_TZ)
-    today = now.astimezone(config.COURSE_TZ).date()
-    return nth_upcoming_weekday(today, config.TARGET_WEEKDAY, config.WEEKS_AHEAD)
+    return nth_upcoming_weekday(
+        release_day(now), config.TARGET_WEEKDAY, config.WEEKS_AHEAD
+    )

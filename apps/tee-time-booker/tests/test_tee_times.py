@@ -25,6 +25,7 @@ def test_parse_tee_times_reads_api_rows_and_skips_junk():
             "green_fee": "52",
             "holes": 18,
             "maximum_players_per_booking": "4",
+            "teesheet_side_name": "Front",
         },
         {"time": "not a time"},
         {"nope": 1},
@@ -35,6 +36,7 @@ def test_parse_tee_times_reads_api_rows_and_skips_junk():
     assert tt.green_fee == 52.0
     assert tt.holes == 18
     assert tt.max_players == 4
+    assert tt.side == "Front"
 
 
 def test_parse_tee_times_rejects_non_list():
@@ -66,6 +68,12 @@ def test_choose_latest_in_window_when_not_preferring_earlier():
 def test_window_is_inclusive():
     chosen = choose_tee_time([_slot("08:00")], earliest=time(8, 0), latest=time(14, 0))
     assert chosen.start.time() == time(8, 0)
+
+
+def test_exclude_skips_slots_already_tried():
+    slots = [_slot("08:20"), _slot("09:30")]
+    chosen = choose_tee_time(slots, time(8, 0), time(14, 0), exclude={slots[0].start})
+    assert chosen.start.time() == time(9, 30)
 
 
 def test_no_slots_in_window_raises():

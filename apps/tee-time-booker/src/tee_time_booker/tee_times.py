@@ -1,5 +1,6 @@
 """Fetching and choosing a tee time from foreUP's booking API."""
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
@@ -13,6 +14,9 @@ class TeeTime:
     green_fee: float | None
     holes: int | None
     max_players: int | None
+    # Which side the round starts on ("Front" / "Back"). The slot list can show
+    # the same clock time once per side, so this disambiguates the UI tile.
+    side: str | None = None
 
     @property
     def ui_label(self) -> str:
@@ -67,6 +71,9 @@ def parse_tee_times(payload: Any) -> list[TeeTime]:
                 green_fee=_to_float(row.get("green_fee")),
                 holes=_to_int(row.get("holes")),
                 max_players=_to_int(row.get("maximum_players_per_booking")),
+                side=str(row["teesheet_side_name"])
+                if row.get("teesheet_side_name")
+                else None,
             )
         )
     return tee_times
@@ -77,9 +84,17 @@ def choose_tee_time(
     earliest: time = config.EARLIEST_TEE_TIME,
     latest: time = config.LATEST_TEE_TIME,
     prefer_earlier: bool = config.PREFER_EARLIER,
+    exclude: Collection[datetime] = (),
 ) -> TeeTime:
-    """Pick the earliest (or latest) slot starting within [earliest, latest]."""
-    candidates = [t for t in tee_times if earliest <= t.start.time() <= latest]
+    """Pick the earliest (or latest) slot starting within [earliest, latest].
+
+    `exclude` lists start times to skip, e.g. slots we already failed to hold.
+    """
+    candidates = [
+        t
+        for t in tee_times
+        if earliest <= t.start.time() <= latest and t.start not in exclude
+    ]
     if not candidates:
         raise ValueError(
             f"No tee times available between {earliest:%I:%M %p} "
