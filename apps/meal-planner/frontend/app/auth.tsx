@@ -113,7 +113,9 @@ export default function AuthScreen() {
         )}
       </Pressable>
 
-      {!hasPlatformClientId && (
+      {/* In dev-bypass mode Google OAuth is intentionally unconfigured, so the
+          warning would just be noise — use the bypass button below instead. */}
+      {!hasPlatformClientId && !isDevBypassEnabled && (
         <Text className="text-orange-500 text-xs text-center mt-4 max-w-sm">
           Missing Google client ID. Set EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID and restart Metro.
         </Text>

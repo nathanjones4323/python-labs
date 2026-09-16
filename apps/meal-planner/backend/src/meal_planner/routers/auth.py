@@ -113,10 +113,10 @@ async def dev_bypass_sign_in():
         ).fetchone()
         if not row:
             row = conn.execute(
-                "SELECT id, external_id, email FROM users WHERE email = %s",
-                (dev_email,),
+                "INSERT INTO users (email, display_name) VALUES (%s, %s) "
+                "RETURNING id, external_id, email",
+                (dev_email, "Dev User"),
             ).fetchone()
-
             conn.commit()
 
         profile_row = conn.execute(

@@ -51,6 +51,35 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # One-shot: fills the `foods` table from USDA FoodData Central. Not started by
+  # `docker compose up` — it is a slow (~30 min), API-quota-consuming pull that
+  # only needs to happen on a fresh database. Run it with `make seed`.
+  # Every AI feature (recipes, chat, meal plans) matches ingredients against
+  # this table, so an unseeded database makes them all fail.
+  seed:
+    profiles: ["seed"]
+    build:
+      context: .
+      dockerfile: apps/meal-planner/backend/Dockerfile
+    working_dir: /app/apps/meal-planner/backend
+    command: python scripts/ingest_usda.py --skip-if-populated
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *db-url
+      USDA_API_KEY: ${USDA_API_KEY:-DEMO_KEY}
+    volumes:
+      - ./libs:/app/libs
+      - ./apps/meal-planner/backend/src:/app/apps/meal-planner/backend/src
+      - ./apps/meal-planner/backend/scripts:/app/apps/meal-planner/backend/scripts
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   backend:
     build:
       context: .
@@ -71,11 +100,15 @@ services:
       # Overrides .env: inside the network the DB is `db`, not localhost.
       <<: *db-url
       USDA_API_KEY: ${USDA_API_KEY:-DEMO_KEY}
+      DEV_MODE: ${DEV_MODE:-false}
     volumes:
       # Workspace packages are installed editable, so mounting source is enough
       # for --reload to pick up edits. Scoped to subdirs so /app/.venv survives.
       - ./libs:/app/libs
       - ./apps/meal-planner/backend/src:/app/apps/meal-planner/backend/src
+      # Dev tooling (USDA ingest, audits) is run via `docker compose exec`, so
+      # mount it too — otherwise edits need a full image rebuild to take effect.
+      - ./apps/meal-planner/backend/scripts:/app/apps/meal-planner/backend/scripts
     depends_on:
       db:
         condition: service_healthy
@@ -92,7 +125,9 @@ services:
       EXPO_PUBLIC_API_URL: http://localhost:${BACKEND_PORT:-8000}
       EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: ${GOOGLE_IOS_CLIENT_ID:-}
-      EXPO_PUBLIC_DEV_BYPASS_AUTH: ${EXPO_PUBLIC_DEV_BYPASS_AUTH:-false}
+      # Driven by the same DEV_MODE as the backend, so the bypass button is
+      # never shown against a backend that 404s /auth/dev-bypass.
+      EXPO_PUBLIC_DEV_BYPASS_AUTH: ${DEV_MODE:-false}
       # Metro's fsevents don't cross the bind mount; poll instead.
       WATCHPACK_POLLING: "true"
       CHOKIDAR_USEPOLLING: "true"

@@ -30,6 +30,31 @@ Open [http://localhost:8081](http://localhost:8081) and you're running. Press **
 
 **Set `ANTHROPIC_API_KEY` in the repo-root `.env`** before using any AI feature — the stack starts without it, but chat and plan generation will fail.
 
+### Seed the food database (once, on a fresh database)
+
+Migrations create the `foods` table but leave it **empty**, and every AI feature
+matches ingredients against it. Until it is seeded, recipe and meal-plan
+requests come back as a puzzling `422 "Claude did not produce a recipe"` — the
+agent searched for every ingredient and found nothing. The backend logs a
+warning at startup when the table is empty.
+
+```bash
+make seed
+```
+
+This runs the USDA FoodData Central ingest as a one-shot container. It takes
+**~30 minutes** with a registered `USDA_API_KEY`, and re-running it is a no-op
+once the table is populated, so it is safe in a loop or a setup script. It is
+deliberately **not** part of `make up`: it is slow and consumes API quota, and
+most `up` runs are against an already-seeded volume.
+
+- `make seed` — seed if empty, skip if already populated
+- `make reseed` — force a full re-pull (USDA ships quarterly updates)
+
+Get a free key at <https://fdc.nal.usda.gov/api-key-signup.html> and put it in
+`.env` as `USDA_API_KEY`. Without one the ingest falls back to `DEMO_KEY`,
+which is rate-limited to 30 requests/hour and takes ~14 hours.
+
 If you prefer plain Compose, `docker compose up --build` does the same thing.
 
 ### Common commands
@@ -41,6 +66,8 @@ If you prefer plain Compose, `docker compose up --build` does the same thing.
 | `make clean` | Stop everything and delete the database volume |
 | `make reset` | `clean` then `up` — fresh database from scratch |
 | `make migrate` | Run pending migrations against the running database |
+| `make seed` | Fill the `foods` table from USDA (skipped if already seeded) |
+| `make reseed` | Force a full USDA re-pull |
 | `make test` | Run the backend test suite in Docker |
 | `make logs` | Tail logs from every service |
 | `make shell` | Bash shell in the backend container |
@@ -154,4 +181,6 @@ The UI talks to **http://localhost:8000** by default (`frontend/lib/api.ts`). To
 - **Backend edits aren't picked up:** only `libs/` and `backend/src/` are mounted. Changes to `pyproject.toml` or anything outside those paths need `make build`.
 - **Frontend edits aren't picked up:** Metro polls for changes across the bind mount, which can lag on large trees. `docker compose restart frontend` forces a fresh watch.
 - **Migrations fail on start:** read them with `docker compose logs migrate`. The backend won't start until `migrate` exits 0, so a bad migration shows up as a backend that never comes up.
-- **Stale database:** `make clean` deletes the volume; `make reset` deletes it and rebuilds from scratch.
+- **Stale database:** `make clean` deletes the volume; `make reset` deletes it and rebuilds from scratch. Both wipe the seeded `foods` table, so follow either with `make seed`.
+- **Recipes and meal plans fail with 422 "Claude did not produce a recipe":** the `foods` table is empty — run `make seed`. The agent can only build a recipe out of ingredients it can find locally.
+- **The USDA ingest fails with a 404:** FoodData Central intermittently serves an HTML 404 page for valid requests. Both the ingest script and the runtime client retry these automatically; if a run still aborts, FDC is having a bad stretch — re-run `make seed` later.
