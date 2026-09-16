@@ -1,5 +1,5 @@
 # Local dev entrypoints for the meal-planner stack. See README.md.
-.PHONY: help up dev down clean build migrate logs shell psql test reset
+.PHONY: help up dev down clean build migrate seed reseed logs shell psql test reset
 
 COMPOSE := docker compose
 
@@ -28,6 +28,12 @@ build: .env ## Rebuild images without starting anything
 
 migrate: .env ## Run pending Alembic migrations against the running database
 	$(COMPOSE) run --rm migrate
+
+seed: .env ## Fill the foods table from USDA (skipped if already seeded, ~30 min)
+	$(COMPOSE) --profile seed run --rm seed
+
+reseed: .env ## Force a full USDA re-pull even if the foods table is populated
+	$(COMPOSE) --profile seed run --rm seed python scripts/ingest_usda.py
 
 logs: ## Tail logs from every service
 	$(COMPOSE) logs -f

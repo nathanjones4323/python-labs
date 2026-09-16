@@ -36,6 +36,9 @@ Key nutrient IDs (per 100g basis):
   1167 = Niacin
 """
 
+import asyncio
+import logging
+
 import httpx
 from meal_planner.config import USDA_API_KEY, USDA_BASE_URL, USDA_DATA_TYPES
 from meal_planner.models.food import FoodResult, NutrientSummary
@@ -118,10 +121,51 @@ def _to_food_result(item: dict) -> FoodResult:
     )
 
 
+logger = logging.getLogger("uvicorn.error")
+
+_MAX_ATTEMPTS = 4
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _is_flaky(resp: httpx.Response) -> bool:
+    """
+    True when FDC failed transiently rather than answering the question.
+
+    FDC intermittently serves its HTML SPA 404 page (~30% of calls in testing)
+    for perfectly valid requests. An HTML body is the tell: a genuine "no such
+    food" 404 comes back as JSON, so only the HTML flavour is worth retrying.
+    """
+    if resp.status_code in _RETRY_STATUSES:
+        return True
+    content_type = resp.headers.get("content-type", "")
+    return resp.status_code == 404 and not content_type.startswith("application/json")
+
+
+async def _request_with_retry(
+    client: httpx.AsyncClient, method: str, url: str, **kwargs
+) -> httpx.Response:
+    resp = await client.request(method, url, **kwargs)
+    for attempt in range(1, _MAX_ATTEMPTS):
+        if not _is_flaky(resp):
+            return resp
+        logger.warning(
+            "USDA FDC returned a transient %s for %s (attempt %s/%s), retrying",
+            resp.status_code,
+            url,
+            attempt,
+            _MAX_ATTEMPTS,
+        )
+        await asyncio.sleep(0.25 * 2 ** (attempt - 1))
+        resp = await client.request(method, url, **kwargs)
+    return resp
+
+
 async def search_foods(query: str, limit: int = 10) -> list[FoodResult]:
     """Search USDA FDC for whole food ingredients."""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
+        resp = await _request_with_retry(
+            client,
+            "POST",
             f"{USDA_BASE_URL}/foods/search",
             params={"api_key": USDA_API_KEY},
             json={
@@ -141,7 +185,9 @@ async def search_foods(query: str, limit: int = 10) -> list[FoodResult]:
 async def get_food(fdc_id: int) -> FoodResult | None:
     """Fetch full nutrient detail for a single food by FDC ID."""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
+        resp = await _request_with_retry(
+            client,
+            "GET",
             f"{USDA_BASE_URL}/food/{fdc_id}",
             params={"api_key": USDA_API_KEY},
         )

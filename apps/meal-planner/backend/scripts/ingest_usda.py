@@ -38,6 +38,12 @@ PAGE_SIZE = 200  # max allowed by USDA search API
 DETAIL_BATCH = 20  # max fdc_ids per /foods bulk request
 DB_BATCH = 200  # rows per Postgres executemany
 DATA_TYPES = ["Foundation", "SR Legacy"]
+# Foundation alone is only ~400 foods; a real seed lands in the thousands, so
+# anything under this means a previous run died partway through.
+SEEDED_THRESHOLD = 5000
+# FDC's HTML-404 flakiness can persist for a stretch, and losing one data type
+# to it leaves a silently half-seeded database — so retry patiently.
+RETRY_ATTEMPTS = 10
 
 
 def _parse_nutrients(food_nutrients: list[dict]) -> dict:
@@ -79,6 +85,30 @@ def _sleep_if_demo(secs: float = 120.0) -> None:
         time.sleep(secs)
 
 
+def _post_with_retry(client: httpx.Client, url: str, **kwargs) -> httpx.Response:
+    """POST to FDC, retrying its intermittent HTML 404s and 5xx.
+
+    FDC sporadically serves its HTML SPA 404 page for valid requests (~30% of
+    calls in testing). Without this a single bad roll aborts the whole ingest.
+    A genuine JSON 404 is returned to the caller untouched.
+    """
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        resp = client.post(url, **kwargs)
+        is_html_404 = resp.status_code == 404 and not resp.headers.get(
+            "content-type", ""
+        ).startswith("application/json")
+        if not (is_html_404 or resp.status_code in (500, 502, 503, 504)):
+            return resp
+        wait = min(0.5 * 2 ** (attempt - 1), 30.0)
+        print(
+            f"\n  transient {resp.status_code} from FDC — "
+            f"retry {attempt}/{RETRY_ATTEMPTS} in {wait:.1f}s",
+            file=sys.stderr,
+        )
+        time.sleep(wait)
+    return resp
+
+
 def collect_search_data(
     data_type: str, client: httpx.Client
 ) -> tuple[list[int], dict[int, tuple]]:
@@ -92,7 +122,8 @@ def collect_search_data(
     fallback: dict[int, tuple] = {}
     page = 1
 
-    resp = client.post(
+    resp = _post_with_retry(
+        client,
         f"{USDA_BASE_URL}/foods/search",
         params={"api_key": USDA_API_KEY},
         json={"query": "", "dataType": [data_type], "pageSize": 1, "pageNumber": 1},
@@ -104,7 +135,8 @@ def collect_search_data(
     _sleep_if_demo()
 
     while page <= total_pages:
-        resp = client.post(
+        resp = _post_with_retry(
+            client,
             f"{USDA_BASE_URL}/foods/search",
             params={"api_key": USDA_API_KEY},
             json={
@@ -141,7 +173,8 @@ def collect_search_data(
 def fetch_detail_batch(fdc_ids: list[int], client: httpx.Client) -> list[dict]:
     """Phase 2: fetch full nutrient profiles for up to DETAIL_BATCH fdc_ids."""
     while True:
-        resp = client.post(
+        resp = _post_with_retry(
+            client,
             f"{USDA_BASE_URL}/foods",
             params={"api_key": USDA_API_KEY, "format": "full"},
             json={"fdcIds": fdc_ids},
@@ -184,7 +217,23 @@ def upsert_batch(conn, rows: list[tuple]) -> None:
     conn.commit()
 
 
+def _food_count(db_url: str) -> int:
+    with psycopg.connect(db_url) as conn:
+        return conn.execute("SELECT count(*) FROM foods").fetchone()[0]
+
+
 def main() -> None:
+    db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1)
+
+    # `make seed` passes this so re-running against a seeded database is a
+    # no-op instead of another 30-minute pull.
+    if "--skip-if-populated" in sys.argv:
+        existing = _food_count(db_url)
+        if existing >= SEEDED_THRESHOLD:
+            print(f"foods table already has {existing} rows — nothing to do.")
+            return
+        print(f"foods table has {existing} rows — seeding.")
+
     if USDA_API_KEY == "DEMO_KEY":
         print(
             "Using DEMO_KEY (30 req/hr). Phase 2 (detail fetch) will take ~14 hours.\n"
@@ -196,6 +245,7 @@ def main() -> None:
     print("Phase 1: collecting food IDs via search API...")
     all_ids: list[int] = []
     search_fallback: dict[int, tuple] = {}
+    failed_types: list[str] = []
     with httpx.Client(timeout=120.0) as client:
         for data_type in DATA_TYPES:
             try:
@@ -204,6 +254,17 @@ def main() -> None:
                 search_fallback.update(fallback)
             except Exception as e:
                 print(f"\n  ERROR collecting IDs for {data_type}: {e}", file=sys.stderr)
+                failed_types.append(data_type)
+
+    if failed_types:
+        # Continuing would upsert a partial catalog that looks successful and
+        # then quietly fails to match ingredients at recipe time.
+        print(
+            f"\nCould not collect: {', '.join(failed_types)}. "
+            "Refusing to write a partial catalog — re-run once FDC settles.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     if not all_ids:
         print("No food IDs collected — aborting.", file=sys.stderr)
@@ -218,7 +279,6 @@ def main() -> None:
     # If the detail API silently drops IDs from a batch (a known USDA behaviour
     # for certain Foundation foods that cause server-side timeouts), fall back to
     # the search-derived row captured in Phase 1.
-    db_url = DATABASE_URL.replace("postgresql+psycopg://", "postgresql://")
     processed = 0
     errors = 0
     fallback_used = 0
@@ -230,8 +290,25 @@ def main() -> None:
             try:
                 items = fetch_detail_batch(batch_ids, client)
             except Exception as e:
+                # A whole-batch failure used to drop all 20 foods outright, even
+                # though Phase 1 already captured a usable row for each of them.
+                # Write those instead of losing the foods entirely — that is how
+                # staples like "Limes, raw" went missing from a seeded database.
                 print(f"\n  ERROR on batch {batch_num}: {e}", file=sys.stderr)
-                errors += len(batch_ids)
+                salvaged = [
+                    search_fallback[fdc_id]
+                    for fdc_id in batch_ids
+                    if fdc_id in search_fallback
+                ]
+                if salvaged:
+                    upsert_batch(conn, salvaged)
+                    fallback_used += len(salvaged)
+                    print(
+                        f"  recovered {len(salvaged)}/{len(batch_ids)} from search data",
+                        file=sys.stderr,
+                    )
+                errors += len(batch_ids) - len(salvaged)
+                processed += len(batch_ids)
                 _sleep_if_demo()
                 continue
 
