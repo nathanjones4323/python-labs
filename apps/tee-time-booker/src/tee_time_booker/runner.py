@@ -26,6 +26,8 @@ from tee_time_booker.selection import choose_tee_time
 # After a release, keep polling for slots to appear this long.
 RELEASE_POLL_SECONDS = 15 * 60
 RELEASE_POLL_INTERVAL_SECONDS = 3.0
+# Log a "still polling" line this often, so a long wait is visibly alive.
+POLL_HEARTBEAT_SECONDS = 60
 # How many different slots to try holding before giving up.
 MAX_HOLD_ATTEMPTS = 4
 
@@ -102,7 +104,9 @@ def search(
     late rather than that the day is sold out.
     """
     logger.info(f"Fetching tee times for {criteria.target_date:%A %Y-%m-%d}")
-    deadline = time.monotonic() + poll_seconds
+    started = time.monotonic()
+    deadline = started + poll_seconds
+    next_heartbeat = started + POLL_HEARTBEAT_SECONDS
     attempt = 0
     while True:
         attempt += 1
@@ -110,15 +114,25 @@ def search(
         if tee_times:
             logger.info(f"Found {len(tee_times)} tee times (attempt {attempt})")
             return tee_times
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             if poll_seconds:
                 raise RuntimeError(
                     f"No tee times on {criteria.target_date} after polling for "
-                    f"{poll_seconds / 60:.0f} min"
+                    f"{poll_seconds / 60:.0f} min ({attempt} searches)"
                 )
             return []
         if attempt == 1:
-            logger.info("No tee times yet; polling until they appear")
+            logger.info(
+                f"No tee times yet; polling every {RELEASE_POLL_INTERVAL_SECONDS:g} s "
+                f"for up to {poll_seconds / 60:.0f} min"
+            )
+        elif now >= next_heartbeat:
+            logger.info(
+                f"Still no tee times after {(now - started) / 60:.0f} min "
+                f"({attempt} searches)"
+            )
+            next_heartbeat = now + POLL_HEARTBEAT_SECONDS
         time.sleep(RELEASE_POLL_INTERVAL_SECONDS)
 
 

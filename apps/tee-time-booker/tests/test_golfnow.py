@@ -1,6 +1,7 @@
 from datetime import date, datetime, time
 
 import pytest
+from loguru import logger
 from tee_time_booker.courses import SATICOY
 from tee_time_booker.models import SearchCriteria
 from tee_time_booker.platforms.golfnow import (
@@ -92,6 +93,24 @@ def test_parse_returns_nothing_for_a_day_golfnow_hasnt_opened():
         "ttException": {"errorType": "HasNoTimes"},
     }
     assert parse_tee_times(payload, SATICOY, _criteria()) == []
+
+
+def test_parse_explains_an_open_day_where_nothing_fits():
+    """The runner polls on an empty list; make clear when polling is pointless."""
+    payload = _response(
+        _row("2026-10-03T08:00:00+00:00", _rate(1, holes=18), _rate(2, holes=18)),
+        _row("2026-10-03T09:00:00+00:00", _rate(3, player_rule="OneTwo")),
+    )
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m.record["message"]), level="WARNING")
+    try:
+        assert parse_tee_times(payload, SATICOY, _criteria(holes=9, players=4)) == []
+    finally:
+        logger.remove(sink)
+    (message,) = messages
+    assert "listed 2 tee times" in message
+    assert "2 rates wrong hole count" in message
+    assert "1 won't take that group size" in message
 
 
 def test_parse_rejects_a_response_that_isnt_a_search_result():
