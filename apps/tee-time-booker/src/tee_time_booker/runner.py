@@ -52,13 +52,15 @@ def open_platform(
     *,
     with_card: bool = True,
     run_id: str = "",
+    credentials: Credentials | None = None,
 ) -> Iterator[BookingPlatform]:
     """A browser signed in to `course`'s booking site, ready to search.
 
     Anything raised inside leaves a screenshot and the page HTML in the
     artifacts directory; the HTML is what you need to repair a selector.
     """
-    credentials = load_credentials(course, with_card=with_card)
+    if credentials is None:
+        credentials = load_credentials(course, with_card=with_card)
     with browser_session(
         headless=settings.headless,
         artifacts_dir=settings.artifacts_dir,
@@ -135,11 +137,16 @@ def book_tee_time(
     submit and leaves a screenshot behind.
     """
     platform_type = get_platform(course.platform)
+    # Load secrets before any wait, so a missing one fails now rather than
+    # after sleeping up to the release.
+    credentials = load_credentials(course, with_card=True)
     if settings.target_date_override is None:
         # An override points at an already-open day; there's nothing to wait for.
         sleep_until_release(course, platform_type.release_lead_seconds)
 
-    with open_platform(course, criteria, settings, run_id=run_id) as platform:
+    with open_platform(
+        course, criteria, settings, run_id=run_id, credentials=credentials
+    ) as platform:
         tee_times = search(platform, criteria, poll_seconds=RELEASE_POLL_SECONDS)
         tee_time = hold_best(platform, criteria, tee_times)
         result = platform.complete_booking(

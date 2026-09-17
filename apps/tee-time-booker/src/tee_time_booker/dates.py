@@ -14,6 +14,11 @@ from loguru import logger
 
 from tee_time_booker.courses import CourseConfig
 
+# Refuse to wait longer than this for a release. The GitHub job is killed at
+# 110 min (tee-time-booker.yml), which would skip logging the run entirely, so
+# fail early with a clear message instead.
+MAX_RELEASE_WAIT_SECONDS = 95 * 60
+
 
 def nth_upcoming_weekday(today: date, weekday: int, n: int) -> date:
     """Return the n-th upcoming occurrence of `weekday`, counting today if it matches.
@@ -65,14 +70,28 @@ def target_date(course: CourseConfig, now: datetime | None = None) -> date:
     )
 
 
-def sleep_until_release(course: CourseConfig, lead_seconds: float) -> None:
-    """Sleep until `lead_seconds` before the tee sheet we're booking opens."""
+def sleep_until_release(
+    course: CourseConfig,
+    lead_seconds: float,
+    max_wait_seconds: float = MAX_RELEASE_WAIT_SECONDS,
+) -> None:
+    """Sleep until `lead_seconds` before the tee sheet we're booking opens.
+
+    Raises if that's more than `max_wait_seconds` away (e.g. a manual run
+    started early in the evening) rather than sleeping past the job timeout.
+    """
     release_at = next_release(course)
     if release_at is None:
         return
     delay = (release_at - datetime.now(course.timezone)).total_seconds() - lead_seconds
     if delay <= 0:
         return
+    if delay > max_wait_seconds:
+        raise RuntimeError(
+            f"The {release_at:%Y-%m-%d %H:%M} release is {delay / 60:.0f} min away, "
+            f"more than the {max_wait_seconds / 60:.0f} min this run may wait; "
+            "start later or pass --date / TEE_TIME_TARGET_DATE"
+        )
     logger.info(
         f"Waiting {delay / 60:.1f} min for the {release_at:%Y-%m-%d %H:%M} release"
     )

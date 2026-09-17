@@ -190,7 +190,7 @@ def _start_time(row: Any) -> datetime | None:
     GolfNow stamps local times with a "+00:00" offset, so the offset is
     dropped rather than converted.
     """
-    stamp = row.get("time", {}).get("date") if isinstance(row, dict) else None
+    stamp = (row.get("time") or {}).get("date") if isinstance(row, dict) else None
     try:
         return datetime.fromisoformat(str(stamp)).replace(tzinfo=None)
     except (TypeError, ValueError):
@@ -207,7 +207,7 @@ def parse_tee_times(
     """
     if not isinstance(payload, dict):
         raise ValueError(f"Unexpected search payload: {payload!r}")
-    rows = payload.get("ttResults", {}).get("teeTimes")
+    rows = (payload.get("ttResults") or {}).get("teeTimes")
     if rows is None:
         rows = payload.get("results")
     if not isinstance(rows, list):
@@ -280,8 +280,12 @@ class GolfNowPlatform(BookingPlatform):
         try:
             page.locator(LOGIN_FRAME).wait_for(state="attached", timeout=10_000)
         except PlaywrightTimeoutError:
-            # No login iframe: GolfNow served the account page itself, so this
-            # browser session is already signed in.
+            if LOGIN_REDIRECT.search(page.url):
+                raise RuntimeError(
+                    f"GolfNow's login form never appeared at {page.url}"
+                ) from None
+            # No login iframe and no bounce to the login page: GolfNow served
+            # the account page itself, so this browser session is signed in.
             logger.info("Already signed in to GolfNow")
             return
         frame = page.frame_locator(LOGIN_FRAME)
@@ -509,12 +513,12 @@ class GolfNowPlatform(BookingPlatform):
         """Click Reserve and wait for GolfNow to confirm the booking."""
         page = self.page
         page.locator(RESERVE_BUTTON).first.click()
-        error = page.locator(CHECKOUT_ERROR)
+        error = page.locator(CHECKOUT_ERROR).filter(visible=True)
         for _ in range(CONFIRMATION_TIMEOUT_SECONDS * 2):
             if CONFIRMATION_URL.search(page.url):
                 logger.info(f"Reservation confirmed at {page.url}")
                 return page.url
-            if error.count() and error.first.is_visible():
+            if error.count():
                 raise RuntimeError(
                     f"GolfNow rejected the booking: {error.first.inner_text().strip()}"
                 )

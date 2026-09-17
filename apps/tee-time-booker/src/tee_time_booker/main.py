@@ -84,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     _describe_plan(course, criteria, run_id)
 
     result: BookingResult | None = None
+    status = "Failed"
     try:
         result = book_tee_time(course, criteria, settings, run_id)
         status = result.status
