@@ -85,13 +85,14 @@ A run then:
    not been released yet
 4. takes the best slot in the window; if that fails because someone else got
    it, searches again and tries the next-best, up to 4 times
-5. fills in checkout
-6. clicks the final submit **only** if `TEE_TIME_SUBMIT_PAYMENT=true`;
-   otherwise it stops there (a dry run), saves a screenshot of the filled form
-   to `artifacts/`, and logs `Success (dry run)`
+5. reaches the checkout form. If `TEE_TIME_SUBMIT_PAYMENT` is not `true`
+   it stops here (a dry run), saves a screenshot to `artifacts/`, and logs
+   `Success (dry run)` — card details are never entered on a dry run
+6. otherwise fills in the card and clicks the final submit
 
 On any failure a full-page screenshot and the page HTML are written to
-`artifacts/`; the HTML is what you need to repair a selector.
+`artifacts/`; the HTML is what you need to repair a selector. Card inputs are
+hidden in every screenshot, since artifacts are uploaded to GitHub Actions.
 
 ## foreUP (Soule Park)
 
@@ -155,8 +156,10 @@ Reserve.
   cookie banner is accepted too so it can't sit over the Reserve button.
 - Checkout also requires a **billing state** (`CREDIT_CARD_STATE`, two-letter
   code) alongside the address and postal code; Reserve stays disabled until
-  every mandatory field validates, and the adapter waits for it to enable so
-  a dry run only reports success on a form GolfNow would accept.
+  every mandatory field validates, and the adapter waits for it to enable
+  before clicking. A dry run doesn't fill the form, so instead it logs which
+  of the expected checkout fields are on the page — the first place to look
+  when GolfNow renames an id.
 - GolfNow auto-opts the booking into a round-up **charitable donation**
   (cents to the next dollar); the adapter leaves that as the site sets it.
 - The whole flow up to Reserve — login, search, detail page, checkout — was
@@ -259,5 +262,7 @@ Suggested rollout for a new course:
 
 `cost_dollars` is the per-player green fee reported for the chosen slot;
 `service_fee_dollars` is GolfNow's booking fee where the site reports one
-(foreUP doesn't). `status` is `Success`, `Success (dry run)`, or
-`Error in booking process: <traceback>`.
+(foreUP doesn't). `status` is `Success`, `Success (dry run)`,
+`Error in booking process: <short message>` (the full traceback is in the job
+log), or `Unknown: ...` when the final submit was clicked but no confirmation
+or error appeared — check your account on the booking site before retrying.

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, datetime, time
 
 import pytest
@@ -51,8 +52,17 @@ def test_window_is_inclusive():
 
 def test_exclude_skips_slots_already_tried():
     slots = [_slot("08:20"), _slot("09:30")]
-    chosen = choose_tee_time(slots, _criteria(), exclude={slots[0].start})
+    chosen = choose_tee_time(slots, _criteria(), exclude={slots[0]})
     assert chosen.start.time() == time(9, 30)
+
+
+def test_exclude_is_per_slot_not_per_clock_time():
+    front = replace(_slot("08:20"), side="Front")
+    back = replace(_slot("08:20"), side="Back")
+    chosen = choose_tee_time(
+        [front, back, _slot("09:30")], _criteria(), exclude={front}
+    )
+    assert chosen == back
 
 
 def test_no_slots_in_window_raises():

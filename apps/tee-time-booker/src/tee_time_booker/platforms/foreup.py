@@ -35,7 +35,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from tee_time_booker.browser import pause
 from tee_time_booker.courses import ForeUpCourse
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
-from tee_time_booker.platforms.base import BookingPlatform
+from tee_time_booker.platforms.base import BookingPlatform, PaymentOutcomeUnknownError
 
 BOOKING_URL = "https://foreupsoftware.com/index.php/booking/index/{course_id}"
 TEE_TIMES_API_URL = "https://foreupsoftware.com/index.php/api/booking/times"
@@ -75,6 +75,8 @@ POSTAL_INPUT = "#payment_selection #postalCode input"
 SUBMIT_PAYMENT_BUTTON = "#payment_selection button#submit"
 # Site-wide toast foreUP uses for errors (App.ventErrorMessage -> bootstrapGrowl).
 ERROR_TOAST = ".bootstrap-growl.alert-danger"
+# Hidden before any screenshot; see BookingPlatform.sensitive_fields.
+SENSITIVE_FIELDS = f"{CARD_IFRAME}, {POSTAL_INPUT}"
 
 
 def _option_button(field: str, value: int) -> str:
@@ -173,6 +175,7 @@ class ForeUpPlatform(BookingPlatform):
         "cvc",
         "postal_code",
     )
+    sensitive_fields = SENSITIVE_FIELDS
 
     course: ForeUpCourse
 
@@ -281,7 +284,8 @@ class ForeUpPlatform(BookingPlatform):
 
         Tiles have no ARIA roles, so match on the rendered time label and, when
         known, the starting side ("Front"/"Back") since a clock time can appear
-        once per side.
+        once per side. If the side isn't known, either tile for that time will
+        do, so take the first rather than trip Playwright's strict-mode check.
         """
         page = self.page
         tile = page.locator(SLOT_TILE).filter(
@@ -291,21 +295,21 @@ class ForeUpPlatform(BookingPlatform):
             tile = tile.filter(
                 has=page.locator(SLOT_SIDE_LABEL, has_text=_exact(tee_time.side))
             )
-        return tile
+        return tile.first
 
     def complete_booking(
         self, tee_time: TeeTime, criteria: SearchCriteria, *, submit_payment: bool
     ) -> BookingResult:
         self._book_and_confirm(criteria)
-        self._fill_payment_details()
         if not submit_payment:
             logger.warning(
-                "Payment submission is off — stopping before Submit (dry run)"
+                "Payment submission is off — stopping at the payment form (dry run)"
             )
-            self.session.save_artifacts("dryrun")
+            self.save_artifacts("dryrun")
             return BookingResult(tee_time=tee_time, submitted=False)
+        self._fill_payment_details()
         confirmation = self._submit_payment(tee_time)
-        self.session.save_artifacts("confirmation")
+        self.save_artifacts("confirmation")
         return BookingResult(
             tee_time=tee_time, submitted=True, confirmation=confirmation
         )
@@ -324,8 +328,7 @@ class ForeUpPlatform(BookingPlatform):
             page.locator(BOOK_TIME_BUTTON).click()
         validation = info.value
         if not (validation.ok and _json(validation).get("valid")):
-            error = page.locator(BOOKING_MODAL_ERROR).inner_text().strip()
-            detail = error or validation.text()[:300]
+            detail = self._modal_error() or validation.text()[:300]
             raise RuntimeError(f"Booking rejected ({validation.status}): {detail}")
         pause()
 
@@ -335,6 +338,20 @@ class ForeUpPlatform(BookingPlatform):
             raise RuntimeError(f"Payment form failed to load ({info.value.status})")
         logger.info("Reached the payment form")
         pause()
+
+    def _modal_error(self) -> str:
+        """The Book Time modal's error text, or "" if it didn't render one.
+
+        Don't block on it: a missing element would turn the real rejection into
+        a misleading locator timeout.
+        """
+        error = self.page.locator(BOOKING_MODAL_ERROR)
+        try:
+            if error.count():
+                return error.first.inner_text(timeout=2_000).strip()
+        except PlaywrightTimeoutError:
+            pass
+        return ""
 
     def _fill_payment_details(self) -> None:
         page = self.page
@@ -356,7 +373,7 @@ class ForeUpPlatform(BookingPlatform):
             pause(0.2, 0.5)
         logger.info("Filled payment details")
 
-    def _submit_payment(self, tee_time: TeeTime) -> str | None:
+    def _submit_payment(self, tee_time: TeeTime) -> str:
         """Click Submit and wait for foreUP to finish charging the card.
 
         Submit tokenises the card with Basis Theory, then foreUP posts the token
@@ -386,11 +403,10 @@ class ForeUpPlatform(BookingPlatform):
                 logger.info(f"Payment accepted; confirmation at {page.url}")
                 return page.url
             page.wait_for_timeout(500)
-        logger.warning(
+        raise PaymentOutcomeUnknownError(
             "Payment submitted but no confirmation page or error seen within 30 s; "
-            "check the artifacts and your foreUP account"
+            "check the artifacts and your foreUP account before retrying"
         )
-        return None
 
 
 def _select_option(button: Locator) -> None:

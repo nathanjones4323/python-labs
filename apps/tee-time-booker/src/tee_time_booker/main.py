@@ -1,7 +1,6 @@
 """Command line entry point: book a tee time, or just list what's available."""
 
 import argparse
-import traceback
 from dataclasses import replace
 from datetime import date, datetime, timezone
 
@@ -11,6 +10,7 @@ from tee_time_booker import dates
 from tee_time_booker.config import Settings
 from tee_time_booker.courses import COURSES, CourseConfig, get_course
 from tee_time_booker.models import BookingResult, SearchCriteria
+from tee_time_booker.platforms import PaymentOutcomeUnknownError
 from tee_time_booker.run_log import RunRecord, log_run
 from tee_time_booker.runner import book_tee_time, find_tee_times
 
@@ -88,9 +88,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = book_tee_time(course, criteria, settings, run_id)
         status = result.status
-    except Exception:
-        status = f"Error in booking process: {traceback.format_exc()}"
-        logger.error(status)
+    except PaymentOutcomeUnknownError as e:
+        status = f"Unknown: {e}"
+        logger.exception(status)
+    except Exception as e:
+        # log.csv is committed to the repo, so keep only a short message there
+        # (error messages can embed server responses); the traceback goes to
+        # the job log.
+        status = f"Error in booking process: {_brief(e)}"
+        logger.exception(status)
     finally:
         tee_time = result.tee_time if result else None
         log_run(
@@ -108,6 +114,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     return 0 if status.startswith("Success") else 1
+
+
+def _brief(e: Exception, limit: int = 200) -> str:
+    """`ExcType: first line of the message`, capped at `limit` characters."""
+    message = str(e).splitlines()[0] if str(e) else ""
+    text = f"{type(e).__name__}: {message}" if message else type(e).__name__
+    return text[:limit]
 
 
 if __name__ == "__main__":

@@ -28,6 +28,14 @@ from tee_time_booker.courses import CourseConfig
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
 
 
+class PaymentOutcomeUnknownError(RuntimeError):
+    """Submit was clicked but neither a confirmation nor an error showed up.
+
+    The card may have been charged; the caller must not report this as either
+    success or a clean failure.
+    """
+
+
 class BookingPlatform(ABC):
     """Drives one booking site for one course."""
 
@@ -40,6 +48,10 @@ class BookingPlatform(ABC):
     # Start the browser and sign in this long before a release, so the session
     # is fresh but ready the moment slots appear.
     release_lead_seconds: ClassVar[float] = 45
+    # CSS selector for the checkout inputs that take card details. Hidden before
+    # every screenshot so typed card data never lands in artifacts (they're
+    # uploaded to GitHub Actions and downloadable by anyone with repo read).
+    sensitive_fields: ClassVar[str] = ""
 
     def __init__(
         self,
@@ -70,6 +82,10 @@ class BookingPlatform(ABC):
             )
         return self.credentials.card
 
+    def save_artifacts(self, name: str) -> None:
+        """Screenshot plus page HTML, with this site's card inputs hidden."""
+        self.session.save_artifacts(name, hide=self.sensitive_fields)
+
     @abstractmethod
     def start(self, criteria: SearchCriteria) -> None:
         """Open the booking site and sign in, ready to search."""
@@ -97,6 +113,11 @@ class BookingPlatform(ABC):
     ) -> BookingResult:
         """Fill checkout for the held slot and, unless dry-running, pay.
 
-        A dry run stops before the final Submit and leaves a screenshot behind,
-        so the whole flow can be exercised without being charged.
+        A dry run stops before entering card details and leaves a screenshot
+        behind, so the flow can be exercised without being charged and without
+        card data reaching the artifacts.
+
+        Raises `PaymentOutcomeUnknownError` when payment was submitted but the
+        site showed neither a confirmation nor an error: the run must not be
+        logged as a success or a clean failure.
         """

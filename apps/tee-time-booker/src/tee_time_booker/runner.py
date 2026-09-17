@@ -12,7 +12,6 @@ an HTTP layer should call them tomorrow, rather than reaching for an adapter.
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 
 from loguru import logger
 
@@ -72,7 +71,7 @@ def open_platform(
             platform.start(criteria)
             yield platform
         except Exception:
-            session.save_artifacts(f"failure-{course.key}-{criteria.target_date}")
+            platform.save_artifacts(f"failure-{course.key}-{criteria.target_date}")
             raise
 
 
@@ -163,10 +162,11 @@ def hold_best(
 
     A hold is refused when somebody else took the slot between the search and
     the click, so each retry searches again rather than trusting the old list.
-    Refused start times are skipped wholesale: if a site offers the same time
-    on two sides or at two rates, that time is gone for all of them.
+    Only the refused slot itself is skipped: the same time on another side or
+    at another rate is a different slot, and the fresh search says whether it's
+    still there.
     """
-    tried: set[datetime] = set()
+    tried: set[TeeTime] = set()
     for attempt in range(1, MAX_HOLD_ATTEMPTS + 1):
         tee_time = choose_tee_time(tee_times, criteria, exclude=tried)
         logger.info(
@@ -175,7 +175,7 @@ def hold_best(
         )
         if platform.hold(tee_time, criteria):
             return tee_time
-        tried.add(tee_time.start)
+        tried.add(tee_time)
         pause(1.5, 3.0)
         tee_times = platform.find_tee_times(criteria)
     raise RuntimeError(

@@ -46,7 +46,7 @@ from playwright.sync_api import expect
 from tee_time_booker.browser import pause
 from tee_time_booker.courses import GolfNowCourse
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
-from tee_time_booker.platforms.base import BookingPlatform
+from tee_time_booker.platforms.base import BookingPlatform, PaymentOutcomeUnknownError
 
 BASE_URL = "https://www.golfnow.com"
 ACCOUNT_URL = f"{BASE_URL}/tee-times/my-account"
@@ -115,6 +115,35 @@ CHECKOUT_ERROR = (
 
 # How long to wait for the confirmation page after clicking Reserve.
 CONFIRMATION_TIMEOUT_SECONDS = 60
+# Hidden before any screenshot; see BookingPlatform.sensitive_fields.
+SENSITIVE_FIELDS = ", ".join(
+    (
+        CARD_NUMBER_INPUT,
+        CARD_EXP_MONTH_SELECT,
+        CARD_EXP_YEAR_SELECT,
+        CARD_CVC_INPUT,
+        CARD_NAME_INPUT,
+        BILLING_ADDRESS_INPUT,
+        BILLING_POSTAL_INPUT,
+        PHONE_INPUT,
+    )
+)
+# The checkout inputs a dry run confirms are on the page, since it doesn't
+# fill them. These ids predate GolfNow's redesign and are the likeliest thing
+# to need repair.
+CHECKOUT_FIELDS = {
+    "card number": CARD_NUMBER_INPUT,
+    "expiry month": CARD_EXP_MONTH_SELECT,
+    "expiry year": CARD_EXP_YEAR_SELECT,
+    "cvc": CARD_CVC_INPUT,
+    "name": CARD_NAME_INPUT,
+    "billing address": BILLING_ADDRESS_INPUT,
+    "state": BILLING_STATE_SELECT,
+    "postal code": BILLING_POSTAL_INPUT,
+    "phone": PHONE_INPUT,
+    "terms": TERMS_CHECKBOX,
+    "reserve": RESERVE_BUTTON,
+}
 
 # GolfNow spells a rate's allowed group sizes as a word run: "Any", "One",
 # "OneTwo", "TwoThreeFour", ...
@@ -260,6 +289,7 @@ class GolfNowPlatform(BookingPlatform):
         "state",
         "phone",
     )
+    sensitive_fields = SENSITIVE_FIELDS
 
     course: GolfNowCourse
 
@@ -403,18 +433,45 @@ class GolfNowPlatform(BookingPlatform):
     def complete_booking(
         self, tee_time: TeeTime, criteria: SearchCriteria, *, submit_payment: bool
     ) -> BookingResult:
-        self._fill_payment_details()
+        self._open_checkout_form()
         if not submit_payment:
             logger.warning(
-                "Payment submission is off — stopping before Reserve (dry run)"
+                "Payment submission is off — stopping at the checkout form (dry run)"
             )
-            self.session.save_artifacts("dryrun")
+            self._check_checkout_fields()
+            self.save_artifacts("dryrun")
             return BookingResult(tee_time=tee_time, submitted=False)
+        self._fill_payment_details()
         confirmation = self._reserve()
-        self.session.save_artifacts("confirmation")
+        self.save_artifacts("confirmation")
         return BookingResult(
             tee_time=tee_time, submitted=True, confirmation=confirmation
         )
+
+    def _open_checkout_form(self) -> None:
+        """Get the checkout form on screen: past the interstitial and cookie bar."""
+        # The interstitial hides the whole form; give it a moment to appear.
+        self._dismiss_marketing_popup(timeout=5_000)
+        self._accept_cookie_banner()
+        self.page.locator(CHECKOUT_FORM).wait_for(state="visible")
+
+    def _check_checkout_fields(self) -> None:
+        """Report which checkout inputs are on the page, without filling them.
+
+        A dry run stops before card entry, so this is how it still catches a
+        renamed field id before a real run fails at the same spot. A missing
+        field isn't an error: a saved card or profile removes some of them.
+        """
+        page = self.page
+        missing = [
+            label
+            for label, selector in CHECKOUT_FIELDS.items()
+            if not page.locator(selector).count()
+        ]
+        if missing:
+            logger.warning(f"Checkout fields not found: {', '.join(missing)}")
+        else:
+            logger.info("All expected checkout fields are present")
 
     def _fill_payment_details(self) -> None:
         """Fill whatever of the checkout form this account is asked for.
@@ -423,11 +480,6 @@ class GolfNowPlatform(BookingPlatform):
         page, so each is filled only when present rather than required.
         """
         page = self.page
-        # The interstitial hides the whole form; give it a moment to appear.
-        self._dismiss_marketing_popup(timeout=5_000)
-        self._accept_cookie_banner()
-        page.locator(CHECKOUT_FORM).wait_for(state="visible")
-
         card = self.card
         for selector, value in (
             (CARD_NUMBER_INPUT, card.number),
@@ -509,7 +561,7 @@ class GolfNowPlatform(BookingPlatform):
             f"No option for expiry {value!r} in {selector}; options: {options}"
         )
 
-    def _reserve(self) -> str | None:
+    def _reserve(self) -> str:
         """Click Reserve and wait for GolfNow to confirm the booking."""
         page = self.page
         page.locator(RESERVE_BUTTON).first.click()
@@ -523,9 +575,8 @@ class GolfNowPlatform(BookingPlatform):
                     f"GolfNow rejected the booking: {error.first.inner_text().strip()}"
                 )
             page.wait_for_timeout(500)
-        logger.warning(
+        raise PaymentOutcomeUnknownError(
             "Reserve clicked but no confirmation page or error seen within "
             f"{CONFIRMATION_TIMEOUT_SECONDS} s; check the artifacts and your "
-            "GolfNow account"
+            "GolfNow account before retrying"
         )
-        return None

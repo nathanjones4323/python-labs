@@ -60,11 +60,20 @@ class BrowserSession:
         except Exception as e:  # never mask the original error
             logger.warning(f"Could not save {name}: {e}")
 
-    def save_artifacts(self, name: str) -> None:
-        """Screenshot plus page HTML; the HTML is what you need to fix a selector."""
+    def save_artifacts(self, name: str, *, hide: str = "") -> None:
+        """Screenshot plus page HTML; the HTML is what you need to fix a selector.
+
+        Elements matching `hide` (a CSS selector, e.g. card inputs) are made
+        invisible first. Typed values aren't part of ``page.content()`` and
+        hosted card iframes are cross-origin, so the HTML is safe as is.
+        """
         try:
             self.artifacts_dir.mkdir(parents=True, exist_ok=True)
             stem = self._path(name)
+            if hide:
+                self.page.add_style_tag(
+                    content=f"{hide} {{ visibility: hidden !important; }}"
+                )
             self.page.screenshot(path=str(stem.with_suffix(".png")), full_page=True)
             stem.with_suffix(".html").write_text(self.page.content())
             logger.info(f"Saved {stem}.png and .html")

@@ -74,16 +74,18 @@ def sleep_until_release(
     course: CourseConfig,
     lead_seconds: float,
     max_wait_seconds: float = MAX_RELEASE_WAIT_SECONDS,
+    now: datetime | None = None,
 ) -> None:
     """Sleep until `lead_seconds` before the tee sheet we're booking opens.
 
     Raises if that's more than `max_wait_seconds` away (e.g. a manual run
     started early in the evening) rather than sleeping past the job timeout.
     """
-    release_at = next_release(course)
+    now = now or datetime.now(course.timezone)
+    release_at = next_release(course, now)
     if release_at is None:
         return
-    delay = (release_at - datetime.now(course.timezone)).total_seconds() - lead_seconds
+    delay = (release_at - now).total_seconds() - lead_seconds
     if delay <= 0:
         return
     if delay > max_wait_seconds:

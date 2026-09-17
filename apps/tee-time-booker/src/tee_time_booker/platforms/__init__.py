@@ -8,7 +8,7 @@ add it to `_ADAPTERS` below, and give its courses `platform="<site>"` in
 from tee_time_booker.browser import BrowserSession
 from tee_time_booker.config import Credentials
 from tee_time_booker.courses import CourseConfig
-from tee_time_booker.platforms.base import BookingPlatform
+from tee_time_booker.platforms.base import BookingPlatform, PaymentOutcomeUnknownError
 from tee_time_booker.platforms.foreup import ForeUpPlatform
 from tee_time_booker.platforms.golfnow import GolfNowPlatform
 
@@ -39,6 +39,7 @@ __all__ = [
     "BookingPlatform",
     "ForeUpPlatform",
     "GolfNowPlatform",
+    "PaymentOutcomeUnknownError",
     "build_platform",
     "get_platform",
 ]
