@@ -1,0 +1,91 @@
+name: Tee Time Booker
+
+on:
+  # Sunday 06:40 UTC = 11:40 PM PDT / 10:40 PM PST Saturday. Soule Park
+  # releases tee times at course-local midnight; the booker logs in, then
+  # waits for midnight itself (config.PRE_RELEASE_START), so this only needs
+  # to land before it in both DST states. Cron minutes away from :00 are
+  # less delayed by GitHub's scheduler.
+  schedule:
+    - cron: "40 6 * * 0"
+  # Manual "Run workflow" button in the Actions tab.
+  workflow_dispatch:
+    inputs:
+      submit_payment:
+        description: "Actually submit payment (otherwise dry run up to the final step)"
+        type: boolean
+        default: false
+      target_date:
+        description: "Book this date (YYYY-MM-DD) instead of the computed Saturday; skips the midnight wait"
+        type: string
+        default: ""
+
+# Needed to push the updated log.csv back to the repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: tee-time-booker
+  cancel-in-progress: false
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+    # Covers the pre-midnight wait (up to ~80 min in PST) plus the booking.
+    timeout-minutes: 110
+    defaults:
+      run:
+        working-directory: apps/tee-time-booker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: .
+        run: uv sync --package tee-time-booker --no-dev
+
+      - name: Install Playwright Chromium
+        run: uv run --package tee-time-booker playwright install --with-deps chromium
+
+      - name: Book tee time
+        run: uv run --package tee-time-booker python -m tee_time_booker
+        env:
+          # Manual runs can opt in via the input. Scheduled runs follow the repo
+          # variable TEE_TIME_SUBMIT_PAYMENT (Settings > Secrets and variables >
+          # Actions > Variables); unset means dry run.
+          TEE_TIME_SUBMIT_PAYMENT: ${{ github.event.inputs.submit_payment || vars.TEE_TIME_SUBMIT_PAYMENT || 'false' }}
+          TEE_TIME_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
+          TEE_TIME_HEADLESS: "true"
+          TEE_TIME_LOG_PATH: log.csv
+          TEE_TIME_ARTIFACTS_DIR: artifacts
+          SOULE_EMAIL: ${{ secrets.SOULE_EMAIL }}
+          SOULE_PASSWORD: ${{ secrets.SOULE_PASSWORD }}
+          CREDIT_CARD_NUMBER: ${{ secrets.CREDIT_CARD_NUMBER }}
+          CREDIT_CARD_EXPIRATION_MONTH: ${{ secrets.CREDIT_CARD_EXPIRATION_MONTH }}
+          CREDIT_CARD_EXPIRATION_YEAR: ${{ secrets.CREDIT_CARD_EXPIRATION_YEAR }}
+          CREDIT_CARD_CVC: ${{ secrets.CREDIT_CARD_CVC }}
+          CREDIT_CARD_POSTAL_CODE: ${{ secrets.CREDIT_CARD_POSTAL_CODE }}
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tee-time-booker-artifacts
+          path: apps/tee-time-booker/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Commit run log
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add log.csv
+          git commit -m "Update tee-time-booker log after run" || echo "No changes to commit"
+          git pull --rebase
+          git push
