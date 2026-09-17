@@ -50,8 +50,8 @@ class PaymentCard:
     """The card entered at checkout.
 
     Sites ask for different subsets of this: foreUP wants the number, expiry,
-    CVC and postal code; GolfNow also wants a cardholder name, billing address
-    and phone number. Each adapter declares the fields it needs
+    CVC and postal code; GolfNow also wants a cardholder name, billing address,
+    state and phone number. Each adapter declares the fields it needs
     (`BookingPlatform.required_card_fields`) and `from_env` only insists on
     those, so a run doesn't fail over a field its site never asks for.
     """
@@ -63,6 +63,7 @@ class PaymentCard:
     postal_code: str
     name: str | None = None
     billing_address: str | None = None
+    state: str | None = None  # two-letter code, e.g. CA
     phone: str | None = None
 
     # Field name -> environment variable holding it.
@@ -74,6 +75,7 @@ class PaymentCard:
         "postal_code": "CREDIT_CARD_POSTAL_CODE",
         "name": "CREDIT_CARD_NAME",
         "billing_address": "CREDIT_CARD_BILLING_ADDRESS",
+        "state": "CREDIT_CARD_STATE",
         "phone": "PHONE_NUMBER",
     }
 

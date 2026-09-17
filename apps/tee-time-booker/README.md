@@ -149,10 +149,20 @@ Reserve.
 - GolfNow releases availability on a rolling window rather than at a fixed
   local time, so `saticoy` has no `release` schedule and books whatever is
   already open.
-- The search endpoint, the login iframe and the detail-page controls were
-  confirmed against the live site. The **checkout field ids** come from the
-  older Selenium booker and are the most likely thing to need repair; a failed
-  run leaves the page HTML in `artifacts/` for exactly that.
+- Checkout loads under a **GolfPass upsell interstitial** that hides the whole
+  form (every field reports as not visible) until "Skip to checkout" is
+  clicked, so the adapter dismisses it before filling anything. A OneTrust
+  cookie banner is accepted too so it can't sit over the Reserve button.
+- Checkout also requires a **billing state** (`CREDIT_CARD_STATE`, two-letter
+  code) alongside the address and postal code; Reserve stays disabled until
+  every mandatory field validates, and the adapter waits for it to enable so
+  a dry run only reports success on a form GolfNow would accept.
+- GolfNow auto-opts the booking into a round-up **charitable donation**
+  (cents to the next dollar); the adapter leaves that as the site sets it.
+- The whole flow up to Reserve — login, search, detail page, checkout — was
+  confirmed against the live site with a dry run. What a real Reserve click
+  lands on (`CONFIRMATION_URL`) has not been, so the first paid run should be
+  watched; a failed run leaves the page HTML in `artifacts/` for repair.
 
 ## Local development
 
@@ -195,7 +205,7 @@ uv run --package tee-time-booker pytest
 | `SOULE_EMAIL`, `SOULE_PASSWORD` | for `soule-park` | | foreUP login |
 | `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD` | for `saticoy` | | GolfNow login |
 | `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | to book | | Card entered at checkout |
-| `CREDIT_CARD_NAME`, `CREDIT_CARD_BILLING_ADDRESS`, `PHONE_NUMBER` | to book on GolfNow | | Extra fields GolfNow's checkout asks for |
+| `CREDIT_CARD_NAME`, `CREDIT_CARD_BILLING_ADDRESS`, `CREDIT_CARD_STATE` (two-letter code), `PHONE_NUMBER` | to book on GolfNow | | Extra fields GolfNow's checkout asks for |
 | `TEE_TIME_COURSE` | no | `soule-park` | Course to book |
 | `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final submit button |
 | `TEE_TIME_HEADLESS` | no | `true` | Run Chromium headless |
@@ -223,7 +233,8 @@ Repository **secrets** needed: `SOULE_EMAIL`, `SOULE_PASSWORD`,
 `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
 `CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE`,
 plus `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD`, `CREDIT_CARD_NAME`,
-`CREDIT_CARD_BILLING_ADDRESS` and `PHONE_NUMBER` for GolfNow runs.
+`CREDIT_CARD_BILLING_ADDRESS`, `CREDIT_CARD_STATE` and `PHONE_NUMBER` for
+GolfNow runs.
 
 Scheduled runs are dry runs until you set the repository **variable**
 `TEE_TIME_SUBMIT_PAYMENT=true`. A manual run can also tick the

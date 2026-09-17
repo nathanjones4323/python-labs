@@ -40,7 +40,8 @@ def test_card_only_insists_on_the_fields_its_site_asks_for(env):
     card = PaymentCard.from_env(("number", "cvc"))
     assert card.number == CARD_ENV["CREDIT_CARD_NUMBER"]
     # GolfNow-only fields stay unset rather than failing a foreUP run.
-    assert card.name is None and card.billing_address is None and card.phone is None
+    assert card.name is None and card.billing_address is None
+    assert card.state is None and card.phone is None
 
 
 def test_card_fails_when_a_required_field_is_missing(env):

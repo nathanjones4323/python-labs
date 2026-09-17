@@ -83,6 +83,7 @@ jobs:
           # Only GolfNow's checkout asks for these.
           CREDIT_CARD_NAME: ${{ secrets.CREDIT_CARD_NAME }}
           CREDIT_CARD_BILLING_ADDRESS: ${{ secrets.CREDIT_CARD_BILLING_ADDRESS }}
+          CREDIT_CARD_STATE: ${{ secrets.CREDIT_CARD_STATE }}
           PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
 
       - name: Upload screenshots
