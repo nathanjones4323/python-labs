@@ -137,4 +137,6 @@ Suggested rollout:
 
 `cost_dollars` is the green fee reported by the API for the chosen slot;
 `service_fee_dollars` is not yet captured. `status` is `Success`,
-`Success (dry run)`, or `Error in booking process: <traceback>`.
+`Success (dry run)`, `Error in booking process: <short message>` (the full
+traceback is in the job log), or `Unknown: ...` when Submit was clicked but no
+confirmation or error appeared — check your foreUP account before retrying.

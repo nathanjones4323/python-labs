@@ -84,16 +84,18 @@ def choose_tee_time(
     earliest: time = config.EARLIEST_TEE_TIME,
     latest: time = config.LATEST_TEE_TIME,
     prefer_earlier: bool = config.PREFER_EARLIER,
-    exclude: Collection[datetime] = (),
+    exclude: Collection[TeeTime] = (),
 ) -> TeeTime:
     """Pick the earliest (or latest) slot starting within [earliest, latest].
 
-    `exclude` lists start times to skip, e.g. slots we already failed to hold.
+    `exclude` lists slots to skip, e.g. ones we already failed to hold. It's
+    per slot, not per clock time: the same time on the other side is still
+    fair game.
     """
     candidates = [
         t
         for t in tee_times
-        if earliest <= t.start.time() <= latest and t.start not in exclude
+        if earliest <= t.start.time() <= latest and t not in exclude
     ]
     if not candidates:
         raise ValueError(

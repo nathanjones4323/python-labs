@@ -62,6 +62,10 @@ MAX_HOLD_ATTEMPTS = 4
 # Start the browser and log in this long before the release so the session is
 # fresh but ready the moment slots appear.
 RELEASE_LEAD_SECONDS = 45
+# Refuse to wait longer than this for the release. The GitHub job is killed at
+# 110 min (tee-time-booker.yml), which would skip logging the run entirely, so
+# fail early with a clear message instead.
+MAX_RELEASE_WAIT_SECONDS = 95 * 60
 
 # --- foreUP API paths the UI calls, used to wait on the right response ----------
 LOGIN_API = "/api/booking/users/login"
@@ -98,6 +102,17 @@ POSTAL_INPUT = "#payment_selection #postalCode input"
 SUBMIT_PAYMENT_BUTTON = "#payment_selection button#submit"
 # Site-wide toast foreUP uses for errors (App.ventErrorMessage -> bootstrapGrowl).
 ERROR_TOAST = ".bootstrap-growl.alert-danger"
+# Hidden before any screenshot so typed card details never land in artifacts
+# (they're uploaded to GitHub Actions and downloadable by anyone with repo read).
+SENSITIVE_FIELDS = f"{CARD_IFRAME}, {POSTAL_INPUT}"
+
+
+class PaymentOutcomeUnknownError(RuntimeError):
+    """Submit was clicked but neither a confirmation nor an error showed up.
+
+    The card may have been charged; the caller must not report this as either
+    success or a clean failure.
+    """
 
 
 def _user_agent(browser_version: str) -> str:
@@ -166,14 +181,27 @@ def login(page: Page, creds: Credentials) -> None:
     _pause()
 
 
-def wait_for_release(lead_seconds: float = RELEASE_LEAD_SECONDS) -> None:
-    """Sleep until `lead_seconds` before the tee sheet we're booking opens."""
+def wait_for_release(
+    lead_seconds: float = RELEASE_LEAD_SECONDS,
+    max_wait_seconds: float = MAX_RELEASE_WAIT_SECONDS,
+) -> None:
+    """Sleep until `lead_seconds` before the tee sheet we're booking opens.
+
+    Raises if that's more than `max_wait_seconds` away (e.g. a manual run
+    started early in the evening) rather than sleeping past the job timeout.
+    """
     release_at = dates.next_release()
     if release_at is None:
         return
     delay = (release_at - datetime.now(config.COURSE_TZ)).total_seconds() - lead_seconds
     if delay <= 0:
         return
+    if delay > max_wait_seconds:
+        raise RuntimeError(
+            f"The {release_at:%Y-%m-%d %H:%M} release is {delay / 60:.0f} min away, "
+            f"more than the {max_wait_seconds / 60:.0f} min this run may wait; "
+            "start later or pass TEE_TIME_TARGET_DATE"
+        )
     logger.info(
         f"Waiting {delay / 60:.1f} min for the {release_at:%Y-%m-%d %H:%M} release"
     )
@@ -250,7 +278,8 @@ def slot_tile(page: Page, tee_time: TeeTime) -> Locator:
 
     Tiles have no ARIA roles, so match on the rendered time label and, when
     known, the starting side ("Front"/"Back") since a clock time can appear
-    once per side.
+    once per side. If the side isn't known, either tile for that time will do,
+    so take the first rather than trip Playwright's strict-mode check.
     """
     tile = page.locator(SLOT_TILE).filter(
         has=page.locator(SLOT_TIME_LABEL, has_text=_exact(tee_time.ui_label))
@@ -259,7 +288,7 @@ def slot_tile(page: Page, tee_time: TeeTime) -> Locator:
         tile = tile.filter(
             has=page.locator(SLOT_SIDE_LABEL, has_text=_exact(tee_time.side))
         )
-    return tile
+    return tile.first
 
 
 def try_hold_slot(page: Page, tee_time: TeeTime) -> bool:
@@ -297,7 +326,7 @@ def hold_slot(
     A hold is refused when someone else grabbed the slot between our API read
     and the click, or when the account already holds a pending reservation.
     """
-    tried: set[datetime] = set()
+    tried: set[TeeTime] = set()
     for attempt in range(1, MAX_HOLD_ATTEMPTS + 1):
         tee_time = choose_tee_time(tee_times, exclude=tried)
         logger.info(
@@ -307,7 +336,7 @@ def hold_slot(
         if try_hold_slot(page, tee_time):
             _pause()
             return tee_time
-        tried.add(tee_time.start)
+        tried.add(tee_time)
         _pause(1.5, 3.0)
         tee_times = fetch_tee_times(context, target)
         show_date(page, target)
@@ -329,8 +358,7 @@ def book_and_confirm(page: Page) -> None:
         page.locator(BOOK_TIME_BUTTON).click()
     validation = info.value
     if not (validation.ok and _json(validation).get("valid")):
-        error = page.locator(BOOKING_MODAL_ERROR).inner_text().strip()
-        detail = error or validation.text()[:300]
+        detail = _modal_error(page) or validation.text()[:300]
         raise RuntimeError(f"Booking rejected ({validation.status}): {detail}")
     _pause()
 
@@ -340,6 +368,21 @@ def book_and_confirm(page: Page) -> None:
         raise RuntimeError(f"Payment form failed to load ({info.value.status})")
     logger.info("Reached the payment form")
     _pause()
+
+
+def _modal_error(page: Page) -> str:
+    """The Book Time modal's error text, or "" if it didn't render one.
+
+    Don't block on it: a missing element would turn the real rejection into
+    a misleading locator timeout.
+    """
+    error = page.locator(BOOKING_MODAL_ERROR)
+    try:
+        if error.count():
+            return error.first.inner_text(timeout=2_000).strip()
+    except PlaywrightTimeoutError:
+        pass
+    return ""
 
 
 def _select_option(button: Locator) -> None:
@@ -395,9 +438,9 @@ def submit_payment(page: Page, artifacts_dir: Path, run_id: str) -> None:
             logger.info(f"Payment accepted; confirmation at {page.url}")
             return
         page.wait_for_timeout(500)
-    logger.warning(
+    raise PaymentOutcomeUnknownError(
         "Payment submitted but no confirmation page or error seen within 30 s; "
-        "check the artifacts and your foreUP account"
+        "check the artifacts and your foreUP account before retrying"
     )
 
 
@@ -432,16 +475,17 @@ def book_tee_time(
             show_date(page, target)
             tee_time = hold_slot(page, context, target, tee_times)
             book_and_confirm(page)
-            fill_payment_details(page, creds)
 
-            if settings.submit_payment:
-                submit_payment(page, settings.artifacts_dir, run_id)
-                _save_artifacts(page, settings.artifacts_dir, f"confirmation-{run_id}")
-            else:
+            if not settings.submit_payment:
                 logger.warning(
                     "TEE_TIME_SUBMIT_PAYMENT is off — stopping before Submit (dry run)"
                 )
                 _save_artifacts(page, settings.artifacts_dir, f"dryrun-{run_id}")
+                return tee_time
+
+            fill_payment_details(page, creds)
+            submit_payment(page, settings.artifacts_dir, run_id)
+            _save_artifacts(page, settings.artifacts_dir, f"confirmation-{run_id}")
             return tee_time
         except Exception:
             _save_artifacts(page, settings.artifacts_dir, f"failure-{run_id}")
@@ -460,10 +504,18 @@ def _save_text(artifacts_dir: Path, name: str, text: str) -> None:
 
 
 def _save_artifacts(page: Page, artifacts_dir: Path, name: str) -> None:
-    """Screenshot plus page HTML; the HTML is what you need to fix a selector."""
+    """Screenshot plus page HTML; the HTML is what you need to fix a selector.
+
+    Card inputs are hidden first (see SENSITIVE_FIELDS). Typed values aren't
+    part of ``page.content()``, and the card iframe is cross-origin, so the
+    HTML is safe as is.
+    """
     try:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         stem = artifacts_dir / re.sub(r"[^A-Za-z0-9_-]+", "_", name)
+        page.add_style_tag(
+            content=f"{SENSITIVE_FIELDS} {{ visibility: hidden !important; }}"
+        )
         page.screenshot(path=str(stem.with_suffix(".png")), full_page=True)
         stem.with_suffix(".html").write_text(page.content())
         logger.info(f"Saved {stem}.png and .html")

@@ -1,10 +1,9 @@
-import traceback
 from datetime import datetime, timezone
 
 from loguru import logger
 
 from tee_time_booker import config
-from tee_time_booker.booking import book_tee_time
+from tee_time_booker.booking import PaymentOutcomeUnknownError, book_tee_time
 from tee_time_booker.config import Credentials, Settings
 from tee_time_booker.dates import target_date
 from tee_time_booker.run_log import RunRecord, log_run
@@ -30,9 +29,15 @@ def main() -> int:
         tee_time = book_tee_time(target, creds, settings, run_id)
         status = "Success" if settings.submit_payment else "Success (dry run)"
         logger.success(f"{status}: {tee_time.start:%A %Y-%m-%d %I:%M %p}")
-    except Exception:
-        status = f"Error in booking process: {traceback.format_exc()}"
-        logger.error(status)
+    except PaymentOutcomeUnknownError as e:
+        status = f"Unknown: {e}"
+        logger.exception(status)
+    except Exception as e:
+        # log.csv is committed to the repo, so keep only a short message there
+        # (error messages can embed server responses); the traceback goes to
+        # the job log.
+        status = f"Error in booking process: {_brief(e)}"
+        logger.exception(status)
     finally:
         log_run(
             RunRecord(
@@ -49,6 +54,13 @@ def main() -> int:
         )
 
     return 0 if status.startswith("Success") else 1
+
+
+def _brief(e: Exception, limit: int = 200) -> str:
+    """`ExcType: first line of the message`, capped at `limit` characters."""
+    message = str(e).splitlines()[0] if str(e) else ""
+    text = f"{type(e).__name__}: {message}" if message else type(e).__name__
+    return text[:limit]
 
 
 if __name__ == "__main__":
