@@ -1,34 +1,93 @@
-from datetime import datetime, timezone
+"""Command line entry point: book a tee time, or just list what's available."""
+
+import argparse
+from dataclasses import replace
+from datetime import date, datetime, timezone
 
 from loguru import logger
 
-from tee_time_booker import config
-from tee_time_booker.booking import PaymentOutcomeUnknownError, book_tee_time
-from tee_time_booker.config import Credentials, Settings
-from tee_time_booker.dates import target_date
+from tee_time_booker import dates
+from tee_time_booker.config import Settings
+from tee_time_booker.courses import COURSES, CourseConfig, get_course
+from tee_time_booker.models import BookingResult, SearchCriteria
+from tee_time_booker.platforms import PaymentOutcomeUnknownError
 from tee_time_booker.run_log import RunRecord, log_run
+from tee_time_booker.runner import book_tee_time, find_tee_times
 
 
-def main() -> int:
-    """Book one tee time, append the outcome to the CSV log, return an exit code."""
-    settings = Settings.from_env()
-    created_at = datetime.now(timezone.utc)
-    run_id = created_at.strftime("%Y%m%dT%H%M%SZ")
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="tee-time-booker",
+        description="Book a tee time on whichever site the course uses.",
+    )
+    parser.add_argument(
+        "--course",
+        help="Course to book (default: TEE_TIME_COURSE, else soule-park)",
+    )
+    parser.add_argument(
+        "--date",
+        help="Book this YYYY-MM-DD instead of the course's computed target date",
+    )
+    parser.add_argument(
+        "--find-only",
+        action="store_true",
+        help="List the available tee times and exit without booking",
+    )
+    parser.add_argument(
+        "--list-courses",
+        action="store_true",
+        help="Show the configured courses and exit",
+    )
+    return parser.parse_args(argv)
 
-    target = settings.target_date_override or target_date()
+
+def _criteria(course: CourseConfig, settings: Settings) -> SearchCriteria:
+    target = settings.target_date_override or dates.target_date(course)
+    return course.criteria(target)
+
+
+def _describe_plan(course: CourseConfig, criteria: SearchCriteria, run_id: str) -> None:
     logger.info(
-        f"Run {run_id}: booking {config.COURSE_NAME} on {target:%A %Y-%m-%d} "
-        f"between {config.EARLIEST_TEE_TIME:%I:%M %p} "
-        f"and {config.LATEST_TEE_TIME:%I:%M %p}"
+        f"Run {run_id}: booking {course.name} ({course.platform}) on "
+        f"{criteria.target_date:%A %Y-%m-%d} between "
+        f"{criteria.earliest:%I:%M %p} and {criteria.latest:%I:%M %p} "
+        f"for {criteria.players} players, {criteria.holes} holes"
     )
 
-    tee_time = None
+
+def main(argv: list[str] | None = None) -> int:
+    """Book one tee time, append the outcome to the CSV log, return an exit code."""
+    args = parse_args(argv)
+    if args.list_courses:
+        for key, course in sorted(COURSES.items()):
+            print(f"{key:<12} {course.name} ({course.platform})")
+        return 0
+
+    # Command line arguments win over the environment for the same settings.
+    settings = Settings.from_env()
+    if args.course:
+        settings = replace(settings, course_key=args.course)
+    if args.date:
+        settings = replace(settings, target_date_override=date.fromisoformat(args.date))
+    course = get_course(settings.course_key)
+    criteria = _criteria(course, settings)
+
+    if args.find_only:
+        for tee_time in find_tee_times(course, criteria, settings):
+            fee = "" if tee_time.green_fee is None else f" ${tee_time.green_fee:.2f}"
+            side = f" {tee_time.side}" if tee_time.side else ""
+            print(f"{tee_time.start:%Y-%m-%d %I:%M %p}{side}{fee}")
+        return 0
+
+    created_at = datetime.now(timezone.utc)
+    run_id = created_at.strftime("%Y%m%dT%H%M%SZ")
+    _describe_plan(course, criteria, run_id)
+
+    result: BookingResult | None = None
     status = "Failed"
     try:
-        creds = Credentials.from_env()
-        tee_time = book_tee_time(target, creds, settings, run_id)
-        status = "Success" if settings.submit_payment else "Success (dry run)"
-        logger.success(f"{status}: {tee_time.start:%A %Y-%m-%d %I:%M %p}")
+        result = book_tee_time(course, criteria, settings, run_id)
+        status = result.status
     except PaymentOutcomeUnknownError as e:
         status = f"Unknown: {e}"
         logger.exception(status)
@@ -39,15 +98,16 @@ def main() -> int:
         status = f"Error in booking process: {_brief(e)}"
         logger.exception(status)
     finally:
+        tee_time = result.tee_time if result else None
         log_run(
             RunRecord(
                 run_id=run_id,
                 created_at=created_at,
                 finished_at=datetime.now(timezone.utc),
-                course_name=config.COURSE_NAME if tee_time else None,
+                course_name=course.name if tee_time else None,
                 tee_time_pst=tee_time.start if tee_time else None,
                 cost_dollars=tee_time.green_fee if tee_time else None,
-                service_fee_dollars=None,
+                service_fee_dollars=tee_time.service_fee if tee_time else None,
                 status=status,
             ),
             settings.log_path,
