@@ -672,7 +672,11 @@ class GolfNowPlatform(BookingPlatform):
         # GolfNow renders the empty postal input holding whitespace, which its
         # validation then rejects as part of the value, so clear it first.
         postal = page.locator(BILLING_POSTAL_INPUT)
-        if postal.count() and not postal.first.input_value().strip() and details.postal_code:
+        if (
+            postal.count()
+            and not postal.first.input_value().strip()
+            and details.postal_code
+        ):
             postal.first.fill("")
             postal.first.press_sequentially(details.postal_code, delay=40)
             pause(0.2, 0.5)

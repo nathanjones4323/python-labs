@@ -1,17 +1,16 @@
 """Runtime settings and credentials.
 
-Booking preferences live in `courses.py`; anything secret or environment
-specific comes from the environment / `.env` and lands here.
+Who books what lives in the database (`tee_time_booker.db`); anything secret
+or environment specific comes from the environment / `.env` and lands here.
 """
 
 import os
+import uuid
 from dataclasses import dataclass, fields
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-from tee_time_booker.courses import DEFAULT_COURSE, CourseConfig
 
 load_dotenv()
 
@@ -38,10 +37,15 @@ class Account:
     password: str
 
     @classmethod
-    def from_env(cls, course: CourseConfig) -> "Account":
+    def from_env(cls, env_prefix: str) -> "Account":
+        """The login held in `<PREFIX>_EMAIL` / `<PREFIX>_PASSWORD`.
+
+        A site account row (`db.SiteAccount`) names its prefix; the secrets
+        themselves stay out of the database until there's an encryption story.
+        """
         return cls(
-            email=_required(course.email_env),
-            password=_required(course.password_env),
+            email=_required(f"{env_prefix}_EMAIL"),
+            password=_required(f"{env_prefix}_PASSWORD"),
         )
 
 
@@ -106,10 +110,15 @@ class Credentials:
 
 @dataclass(frozen=True)
 class Settings:
-    course_key: str
+    # Where runs are recorded. None only works for commands that don't touch
+    # the database; `require_database_url` names the variable otherwise.
+    database_url: str | None
+    # The booking plan a scheduled run books (TEE_TIME_PLAN, or --plan).
+    plan_id: uuid.UUID | None
+    # Operator kill switch: False turns every run into a dry run, whatever
+    # the request asks for.
     submit_payment: bool
     headless: bool
-    log_path: Path
     artifacts_dir: Path
     # Testing aid: book this date (YYYY-MM-DD) instead of the computed one.
     target_date_override: date | None
@@ -117,11 +126,17 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         raw_date = os.environ.get("TEE_TIME_TARGET_DATE", "").strip()
+        raw_plan = os.environ.get("TEE_TIME_PLAN", "").strip()
         return cls(
-            course_key=os.environ.get("TEE_TIME_COURSE", "").strip() or DEFAULT_COURSE,
+            database_url=os.environ.get("DATABASE_URL", "").strip() or None,
+            plan_id=uuid.UUID(raw_plan) if raw_plan else None,
             submit_payment=_env_flag("TEE_TIME_SUBMIT_PAYMENT", default=False),
             headless=_env_flag("TEE_TIME_HEADLESS", default=True),
-            log_path=Path(os.environ.get("TEE_TIME_LOG_PATH", "log.csv")),
             artifacts_dir=Path(os.environ.get("TEE_TIME_ARTIFACTS_DIR", "artifacts")),
             target_date_override=date.fromisoformat(raw_date) if raw_date else None,
         )
+
+    def require_database_url(self) -> str:
+        if not self.database_url:
+            raise RuntimeError("Missing required environment variable DATABASE_URL")
+        return self.database_url

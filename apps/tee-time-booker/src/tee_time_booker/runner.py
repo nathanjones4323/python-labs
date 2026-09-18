@@ -32,7 +32,9 @@ POLL_HEARTBEAT_SECONDS = 60
 MAX_HOLD_ATTEMPTS = 4
 
 
-def load_credentials(course: CourseConfig, *, with_payment: bool) -> Credentials:
+def load_credentials(
+    course: CourseConfig, account_env_prefix: str, *, with_payment: bool
+) -> Credentials:
     """The login, and whatever checkout will ask for if the run may pay.
 
     Called before the browser starts so a missing secret fails in a second
@@ -40,7 +42,7 @@ def load_credentials(course: CourseConfig, *, with_payment: bool) -> Credentials
     """
     platform = get_platform(course.platform)
     return Credentials(
-        account=Account.from_env(course),
+        account=Account.from_env(account_env_prefix),
         payment=(
             PaymentDetails.from_env(platform.required_payment_fields)
             if with_payment
@@ -55,17 +57,21 @@ def open_platform(
     criteria: SearchCriteria,
     settings: Settings,
     *,
+    account_env_prefix: str = "",
     with_payment: bool = True,
     run_id: str = "",
     credentials: Credentials | None = None,
 ) -> Iterator[BookingPlatform]:
     """A browser signed in to `course`'s booking site, ready to search.
 
-    Anything raised inside leaves a screenshot and the page HTML in the
-    artifacts directory; the HTML is what you need to repair a selector.
+    Pass `credentials`, or `account_env_prefix` to load them from the
+    environment. Anything raised inside leaves a screenshot and the page HTML
+    in the artifacts directory; the HTML is what you need to repair a selector.
     """
     if credentials is None:
-        credentials = load_credentials(course, with_payment=with_payment)
+        credentials = load_credentials(
+            course, account_env_prefix, with_payment=with_payment
+        )
     with browser_session(
         headless=settings.headless,
         artifacts_dir=settings.artifacts_dir,
@@ -106,6 +112,7 @@ def find_tee_times(
     criteria: SearchCriteria,
     settings: Settings,
     *,
+    account_env_prefix: str,
     poll_seconds: float = 0,
 ) -> list[TeeTime]:
     """Every slot bookable at `course` for `criteria`.
@@ -115,7 +122,13 @@ def find_tee_times(
     share one session.
     """
     check_target_date(course, criteria.target_date)
-    with open_platform(course, criteria, settings, with_payment=False) as platform:
+    with open_platform(
+        course,
+        criteria,
+        settings,
+        account_env_prefix=account_env_prefix,
+        with_payment=False,
+    ) as platform:
         return search(platform, criteria, poll_seconds=poll_seconds)
 
 
@@ -165,7 +178,9 @@ def book_tee_time(
     course: CourseConfig,
     criteria: SearchCriteria,
     settings: Settings,
-    run_id: str = "",
+    run_id: str,
+    *,
+    account_env_prefix: str,
 ) -> BookingResult:
     """Book the best available slot at `course`, start to finish.
 
@@ -178,7 +193,7 @@ def book_tee_time(
     # Check the date and load secrets before any wait, so a bad one fails now
     # rather than after sleeping up to the release.
     check_target_date(course, criteria.target_date)
-    credentials = load_credentials(course, with_payment=True)
+    credentials = load_credentials(course, account_env_prefix, with_payment=True)
     if settings.target_date_override is None:
         # An override points at an already-open day; there's nothing to wait for.
         sleep_until_release(course, platform_type.release_lead_seconds)

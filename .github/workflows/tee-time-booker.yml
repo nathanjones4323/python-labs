@@ -19,14 +19,13 @@ on:
         description: "Book this date (YYYY-MM-DD) instead of the computed Saturday; skips the midnight wait"
         type: string
         default: ""
-      course:
-        description: "Course to book (see --list-courses); blank uses the TEE_TIME_COURSE variable"
+      plan:
+        description: "Booking plan id to run (see --list-plans); blank uses the TEE_TIME_PLAN variable"
         type: string
         default: ""
 
-# Needed to push the updated log.csv back to the repo.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: tee-time-booker
@@ -56,20 +55,27 @@ jobs:
       - name: Install Playwright Chromium
         run: uv run --package tee-time-booker playwright install --with-deps chromium
 
+      - name: Migrate database
+        run: uv run --package tee-time-booker alembic upgrade head
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
       - name: Book tee time
         run: uv run --package tee-time-booker python -m tee_time_booker
         env:
+          # Runs, requests and plans live here; see the README's "Database".
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # Manual runs can opt in via the input. Scheduled runs follow the repo
           # variable TEE_TIME_SUBMIT_PAYMENT (Settings > Secrets and variables >
           # Actions > Variables); unset means dry run.
           TEE_TIME_SUBMIT_PAYMENT: ${{ github.event.inputs.submit_payment || vars.TEE_TIME_SUBMIT_PAYMENT || 'false' }}
           TEE_TIME_TARGET_DATE: ${{ github.event.inputs.target_date || '' }}
-          # Which course the run books. The cron above is timed for Soule
-          # Park's midnight release, so leave the variable unset unless the
-          # schedule moves with it.
-          TEE_TIME_COURSE: ${{ github.event.inputs.course || vars.TEE_TIME_COURSE || '' }}
+          # Which booking plan the run books (a UUID from `--list-plans`). The
+          # cron above is timed for Soule Park's midnight release, so keep the
+          # variable pointing at a Soule Park plan unless the schedule moves
+          # with it.
+          TEE_TIME_PLAN: ${{ github.event.inputs.plan || vars.TEE_TIME_PLAN }}
           TEE_TIME_HEADLESS: "true"
-          TEE_TIME_LOG_PATH: log.csv
           TEE_TIME_ARTIFACTS_DIR: artifacts
           SOULE_EMAIL: ${{ secrets.SOULE_EMAIL }}
           SOULE_PASSWORD: ${{ secrets.SOULE_PASSWORD }}
@@ -93,13 +99,3 @@ jobs:
           path: apps/tee-time-booker/artifacts/
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Commit run log
-        if: always()
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add log.csv
-          git commit -m "Update tee-time-booker log after run" || echo "No changes to commit"
-          git pull --rebase
-          git push
