@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from loguru import logger
 
 from tee_time_booker.browser import browser_session, pause
-from tee_time_booker.config import Account, Credentials, PaymentCard, Settings
+from tee_time_booker.config import Account, Credentials, PaymentDetails, Settings
 from tee_time_booker.courses import CourseConfig
 from tee_time_booker.dates import check_target_date, release_day, sleep_until_release
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
@@ -32,8 +32,8 @@ POLL_HEARTBEAT_SECONDS = 60
 MAX_HOLD_ATTEMPTS = 4
 
 
-def load_credentials(course: CourseConfig, *, with_card: bool) -> Credentials:
-    """The login, and the card if the run may pay, from the environment.
+def load_credentials(course: CourseConfig, *, with_payment: bool) -> Credentials:
+    """The login, and whatever checkout will ask for if the run may pay.
 
     Called before the browser starts so a missing secret fails in a second
     rather than halfway through a booking.
@@ -41,7 +41,11 @@ def load_credentials(course: CourseConfig, *, with_card: bool) -> Credentials:
     platform = get_platform(course.platform)
     return Credentials(
         account=Account.from_env(course),
-        card=PaymentCard.from_env(platform.required_card_fields) if with_card else None,
+        payment=(
+            PaymentDetails.from_env(platform.required_payment_fields)
+            if with_payment
+            else None
+        ),
     )
 
 
@@ -51,7 +55,7 @@ def open_platform(
     criteria: SearchCriteria,
     settings: Settings,
     *,
-    with_card: bool = True,
+    with_payment: bool = True,
     run_id: str = "",
     credentials: Credentials | None = None,
 ) -> Iterator[BookingPlatform]:
@@ -61,7 +65,7 @@ def open_platform(
     artifacts directory; the HTML is what you need to repair a selector.
     """
     if credentials is None:
-        credentials = load_credentials(course, with_card=with_card)
+        credentials = load_credentials(course, with_payment=with_payment)
     with browser_session(
         headless=settings.headless,
         artifacts_dir=settings.artifacts_dir,
@@ -111,7 +115,7 @@ def find_tee_times(
     share one session.
     """
     check_target_date(course, criteria.target_date)
-    with open_platform(course, criteria, settings, with_card=False) as platform:
+    with open_platform(course, criteria, settings, with_payment=False) as platform:
         return search(platform, criteria, poll_seconds=poll_seconds)
 
 
@@ -174,7 +178,7 @@ def book_tee_time(
     # Check the date and load secrets before any wait, so a bad one fails now
     # rather than after sleeping up to the release.
     check_target_date(course, criteria.target_date)
-    credentials = load_credentials(course, with_card=True)
+    credentials = load_credentials(course, with_payment=True)
     if settings.target_date_override is None:
         # An override points at an already-open day; there's nothing to wait for.
         sleep_until_release(course, platform_type.release_lead_seconds)

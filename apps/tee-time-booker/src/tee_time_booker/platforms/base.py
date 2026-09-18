@@ -24,7 +24,7 @@ from datetime import date
 from typing import ClassVar
 
 from tee_time_booker.browser import BrowserSession
-from tee_time_booker.config import Credentials, PaymentCard
+from tee_time_booker.config import Credentials, PaymentDetails
 from tee_time_booker.courses import CourseConfig
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
 
@@ -44,13 +44,13 @@ class BookingPlatform(ABC):
     name: ClassVar[str]
     # Course dataclass this adapter needs (e.g. ForeUpCourse), checked on init.
     course_type: ClassVar[type[CourseConfig]]
-    # `PaymentCard` fields this site's checkout asks for.
-    required_card_fields: ClassVar[tuple[str, ...]]
+    # `PaymentDetails` fields this site's checkout asks for.
+    required_payment_fields: ClassVar[tuple[str, ...]]
     # Start the browser and sign in this long before a release, so the session
     # is fresh but ready the moment slots appear.
     release_lead_seconds: ClassVar[float] = 45
-    # CSS selector for the checkout inputs that take card details. Hidden before
-    # every screenshot so typed card data never lands in artifacts (they're
+    # CSS selector for the checkout inputs holding card or personal details.
+    # Hidden before every screenshot so none of it lands in artifacts (they're
     # uploaded to GitHub Actions and downloadable by anyone with repo read).
     sensitive_fields: ClassVar[str] = ""
 
@@ -74,17 +74,19 @@ class BookingPlatform(ABC):
         return self.session.page
 
     @property
-    def card(self) -> PaymentCard:
-        """The card to pay with, once a run has got as far as needing one."""
-        if self.credentials.card is None:
+    def payment(self) -> PaymentDetails:
+        """What to pay with, once a run has got as far as needing it."""
+        if self.credentials.payment is None:
             raise RuntimeError(
-                f"Booking {self.course.name} needs card details: "
-                + ", ".join(PaymentCard.ENV_VARS[f] for f in self.required_card_fields)
+                f"Booking {self.course.name} needs payment details: "
+                + ", ".join(
+                    PaymentDetails.ENV_VARS[f] for f in self.required_payment_fields
+                )
             )
-        return self.credentials.card
+        return self.credentials.payment
 
     def save_artifacts(self, name: str) -> None:
-        """Screenshot plus page HTML, with this site's card inputs hidden."""
+        """Screenshot plus page HTML, with this site's sensitive inputs hidden."""
         self.session.save_artifacts(name, hide=self.sensitive_fields)
 
     @abstractmethod

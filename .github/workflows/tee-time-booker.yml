@@ -75,16 +75,15 @@ jobs:
           SOULE_PASSWORD: ${{ secrets.SOULE_PASSWORD }}
           GOLFNOW_EMAIL: ${{ secrets.GOLFNOW_EMAIL }}
           GOLFNOW_PASSWORD: ${{ secrets.GOLFNOW_PASSWORD }}
+          # Only foreUP (Soule Park) needs a card typed in; GolfNow pays with
+          # the card saved on the account.
           CREDIT_CARD_NUMBER: ${{ secrets.CREDIT_CARD_NUMBER }}
           CREDIT_CARD_EXPIRATION_MONTH: ${{ secrets.CREDIT_CARD_EXPIRATION_MONTH }}
           CREDIT_CARD_EXPIRATION_YEAR: ${{ secrets.CREDIT_CARD_EXPIRATION_YEAR }}
           CREDIT_CARD_CVC: ${{ secrets.CREDIT_CARD_CVC }}
+          # Billing details both checkouts ask for (GolfNow: state too).
           CREDIT_CARD_POSTAL_CODE: ${{ secrets.CREDIT_CARD_POSTAL_CODE }}
-          # Only GolfNow's checkout asks for these.
-          CREDIT_CARD_NAME: ${{ secrets.CREDIT_CARD_NAME }}
-          CREDIT_CARD_BILLING_ADDRESS: ${{ secrets.CREDIT_CARD_BILLING_ADDRESS }}
           CREDIT_CARD_STATE: ${{ secrets.CREDIT_CARD_STATE }}
-          PHONE_NUMBER: ${{ secrets.PHONE_NUMBER }}
 
       - name: Upload screenshots
         if: always()

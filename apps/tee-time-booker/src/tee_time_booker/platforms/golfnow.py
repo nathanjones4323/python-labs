@@ -7,8 +7,8 @@ Flow (mirrors what a person does on the site):
      browser's session so member pricing and cookies apply
   3. open the chosen rate's detail page, pick the number of golfers and
      "Continue to Book", which lands on that rate's checkout
-  4. fill the card, billing details (address, state, postal code) and phone,
-     tick the terms
+  4. confirm the card saved on the account is selected, fill the billing
+     state and postal code, tick the terms
   5. optionally click Reserve
 
 Why the API and not the results grid: GolfNow renders the grid client-side and
@@ -31,6 +31,14 @@ GolfNow quirks the code works around:
   group size is gone.
 - Checkout loads under a GolfPass upsell interstitial that hides the entire
   form until dismissed, so nothing is filled before that's gone.
+- Payment is the card saved on the GolfNow account, never one typed in here,
+  so no card number ever reaches this app. With a saved card GolfNow renders
+  a "Saved Cards" dropdown with it selected and collapses the new-card form;
+  without one the adapter stops rather than fall back to typing a card.
+- Even with a saved card, checkout wants a billing state and postal code: the
+  profile supplies name, address and phone but never those two. They're
+  filled from the environment and "Save billing address to your account
+  profile" is ticked so GolfNow keeps them.
 - Reserve stays disabled until every mandatory field (billing state included)
   validates, so the adapter waits for it to enable rather than assuming.
 - GolfID occasionally refuses a correct password ("There was an issue logging
@@ -112,18 +120,27 @@ MARKETING_POPUP_DISMISS = "[id^='aInterstitialRemindLater']"
 COOKIE_BANNER_ACCEPT = "#onetrust-accept-btn-handler"
 
 # --- Checkout ---------------------------------------------------------------------
-CHECKOUT_FORM = "#creditcardform"
-CARD_NUMBER_INPUT = "#billingcard"
-CARD_EXP_MONTH_SELECT = "#cc-exp-month"
-CARD_EXP_YEAR_SELECT = "#cc-exp-year"
-CARD_CVC_INPUT = "#CreditCardInfo_CVVCode"
+CHECKOUT_FORM = "#fmcheck"
+# Which card pays: the account's saved card, or one typed into #creditcardform.
+# GolfNow sets this hidden flag from what the page rendered, and with a saved
+# card the new-card form stays collapsed; the adapter never uses it.
+USE_SAVED_CARD_FLAG = "#UseSavedCreditCard"
+SAVED_CARD_SELECT = "#selCreditCard"
+# Shown next to the saved card when GolfNow wants its CVV re-entered (the
+# option says so in data-iscvvrequired). The app doesn't hold a CVV.
+SAVED_CARD_CVV_INPUT = "#cc-cvv"
+NEW_CARD_FORM = "#creditcardform"
+# Prefilled from the profile; hidden in artifacts, never filled here.
 CARD_NAME_INPUT = "#billingname"
 BILLING_ADDRESS_INPUT = "#billingaddress"
+PHONE_INPUT = "#reservationphonenumber"
 BILLING_COUNTRY_SELECT = "#selCountryCode"
 BILLING_COUNTRY = "US"
 BILLING_STATE_SELECT = "#selStateProvinceCode"
 BILLING_POSTAL_INPUT = "#billingpostalcode"
-PHONE_INPUT = "#reservationphonenumber"
+# "Save billing address to your account profile", so GolfNow keeps the state
+# and postal code it otherwise asks for on every checkout.
+SAVE_BILLING_CHECKBOX = "#save-info-to-account"
 TERMS_CHECKBOX = "input[id^='agree-terms']"
 RESERVE_BUTTON = "#reservation-button-top, #reservation-button-bottom"
 # How long to give GolfNow's client-side validation to enable Reserve once the
@@ -138,13 +155,14 @@ CHECKOUT_ERROR = (
 
 # How long to wait for the confirmation page after clicking Reserve.
 CONFIRMATION_TIMEOUT_SECONDS = 60
-# Hidden before any screenshot; see BookingPlatform.sensitive_fields.
+# Hidden before any screenshot; see BookingPlatform.sensitive_fields. The
+# saved-card dropdown shows the card's last four digits, and the new-card form
+# is included in case GolfNow ever renders it expanded.
 SENSITIVE_FIELDS = ", ".join(
     (
-        CARD_NUMBER_INPUT,
-        CARD_EXP_MONTH_SELECT,
-        CARD_EXP_YEAR_SELECT,
-        CARD_CVC_INPUT,
+        SAVED_CARD_SELECT,
+        SAVED_CARD_CVV_INPUT,
+        f"{NEW_CARD_FORM} :is(input, select)",
         CARD_NAME_INPUT,
         BILLING_ADDRESS_INPUT,
         BILLING_POSTAL_INPUT,
@@ -155,15 +173,9 @@ SENSITIVE_FIELDS = ", ".join(
 # fill them. These ids predate GolfNow's redesign and are the likeliest thing
 # to need repair.
 CHECKOUT_FIELDS = {
-    "card number": CARD_NUMBER_INPUT,
-    "expiry month": CARD_EXP_MONTH_SELECT,
-    "expiry year": CARD_EXP_YEAR_SELECT,
-    "cvc": CARD_CVC_INPUT,
-    "name": CARD_NAME_INPUT,
-    "billing address": BILLING_ADDRESS_INPUT,
     "state": BILLING_STATE_SELECT,
     "postal code": BILLING_POSTAL_INPUT,
-    "phone": PHONE_INPUT,
+    "save billing address": SAVE_BILLING_CHECKBOX,
     "terms": TERMS_CHECKBOX,
     "reserve": RESERVE_BUTTON,
 }
@@ -329,17 +341,8 @@ def parse_tee_times(
 class GolfNowPlatform(BookingPlatform):
     name = "golfnow"
     course_type = GolfNowCourse
-    required_card_fields = (
-        "number",
-        "expiration_month",
-        "expiration_year",
-        "cvc",
-        "postal_code",
-        "name",
-        "billing_address",
-        "state",
-        "phone",
-    )
+    # The card itself is the one saved on the GolfNow account.
+    required_payment_fields = ("state", "postal_code")
     sensitive_fields = SENSITIVE_FIELDS
 
     course: GolfNowCourse
@@ -581,6 +584,7 @@ class GolfNowPlatform(BookingPlatform):
         self, tee_time: TeeTime, criteria: SearchCriteria, *, submit_payment: bool
     ) -> BookingResult:
         self._open_checkout_form()
+        self._check_saved_card()
         if not submit_payment:
             logger.warning(
                 "Payment submission is off — stopping at the checkout form (dry run)"
@@ -588,7 +592,7 @@ class GolfNowPlatform(BookingPlatform):
             self._check_checkout_fields()
             self.save_artifacts("dryrun")
             return BookingResult(tee_time=tee_time, submitted=False)
-        self._fill_payment_details()
+        self._fill_billing_details()
         confirmation = self._reserve()
         self.save_artifacts("confirmation")
         return BookingResult(
@@ -602,12 +606,41 @@ class GolfNowPlatform(BookingPlatform):
         self._accept_cookie_banner()
         self.page.locator(CHECKOUT_FORM).wait_for(state="visible")
 
+    def _check_saved_card(self) -> None:
+        """Confirm GolfNow has the account's saved card selected to pay with.
+
+        Stops the run, dry or not, when it hasn't: the alternative is typing a
+        card number, which this app deliberately doesn't hold. Checked on dry
+        runs too so a missing card is found before a real booking fails on it.
+        """
+        page = self.page
+        select = page.locator(SAVED_CARD_SELECT)
+        flag = page.locator(USE_SAVED_CARD_FLAG)
+        if not select.count() or not flag.count() or flag.input_value() != "true":
+            raise RuntimeError(
+                "GolfNow offered no saved card at checkout. Save a default "
+                "payment method on the GolfNow account; the app doesn't hold "
+                "card numbers"
+            )
+        option = select.first.locator("option:checked")
+        if not option.count():
+            raise RuntimeError("GolfNow's saved-card dropdown has nothing selected")
+        label = option.inner_text().strip()
+        if option.get_attribute("data-isexpired") == "true":
+            raise RuntimeError(f"The saved GolfNow card has expired: {label}")
+        if option.get_attribute("data-iscvvrequired") == "true":
+            raise RuntimeError(
+                f"GolfNow wants the CVV re-entered for saved card {label!r}, "
+                "which the app doesn't hold"
+            )
+        logger.info(f"Paying with the saved GolfNow card: {label}")
+
     def _check_checkout_fields(self) -> None:
         """Report which checkout inputs are on the page, without filling them.
 
-        A dry run stops before card entry, so this is how it still catches a
-        renamed field id before a real run fails at the same spot. A missing
-        field isn't an error: a saved card or profile removes some of them.
+        A dry run stops before filling anything, so this is how it still
+        catches a renamed field id before a real run fails at the same spot.
+        A missing field isn't an error: a complete profile removes some.
         """
         page = self.page
         missing = [
@@ -620,31 +653,34 @@ class GolfNowPlatform(BookingPlatform):
         else:
             logger.info("All expected checkout fields are present")
 
-    def _fill_payment_details(self) -> None:
-        """Fill whatever of the checkout form this account is asked for.
+    def _fill_billing_details(self) -> None:
+        """Fill what checkout still asks for with a saved card: state and postal code.
 
-        A saved card or profile means some of these fields simply aren't on the
-        page, so each is filled only when present rather than required.
+        Name, address and phone come from the profile and are left as GolfNow
+        rendered them. State and postal code are only filled when empty, so a
+        profile that does carry them wins over the environment.
         """
         page = self.page
-        card = self.card
-        for selector, value in (
-            (CARD_NUMBER_INPUT, card.number),
-            (CARD_CVC_INPUT, card.cvc),
-            (CARD_NAME_INPUT, card.name),
-            (BILLING_ADDRESS_INPUT, card.billing_address),
-            (BILLING_POSTAL_INPUT, card.postal_code),
-            (PHONE_INPUT, card.phone),
-        ):
-            self._fill_if_present(selector, value)
-        self._select_expiry(CARD_EXP_MONTH_SELECT, card.expiration_month)
-        self._select_expiry(CARD_EXP_YEAR_SELECT, card.expiration_year)
+        details = self.payment
         country = page.locator(BILLING_COUNTRY_SELECT)
         if country.count() and not country.first.input_value():
             country.first.select_option(value=BILLING_COUNTRY)
         state = page.locator(BILLING_STATE_SELECT)
-        if state.count() and card.state:
-            state.first.select_option(value=card.state.upper())
+        if state.count() and not state.first.input_value().strip() and details.state:
+            state.first.select_option(value=details.state.upper())
+            pause(0.2, 0.5)
+        # GolfNow renders the empty postal input holding whitespace, which its
+        # validation then rejects as part of the value, so clear it first.
+        postal = page.locator(BILLING_POSTAL_INPUT)
+        if postal.count() and not postal.first.input_value().strip() and details.postal_code:
+            postal.first.fill("")
+            postal.first.press_sequentially(details.postal_code, delay=40)
+            pause(0.2, 0.5)
+        # Ask GolfNow to keep the billing address, so the next checkout doesn't
+        # need the state and postal code again.
+        save = page.locator(SAVE_BILLING_CHECKBOX).filter(visible=True)
+        if save.count() and not save.first.is_checked():
+            save.first.check()
 
         # Terms appear above and below the form; ticking one ticks both, but
         # GolfNow only enables Reserve once its validation has run over the lot.
@@ -654,7 +690,7 @@ class GolfNowPlatform(BookingPlatform):
                 terms.nth(i).check()
         pause()
         self._wait_for_reserve_enabled()
-        logger.info("Filled payment details")
+        logger.info("Filled billing details")
 
     def _wait_for_reserve_enabled(self) -> None:
         """Reserve stays disabled until every field validates; make that loud.
@@ -676,37 +712,6 @@ class GolfNowPlatform(BookingPlatform):
                 "GolfNow's Reserve button never enabled; the checkout form "
                 f"didn't validate: {messages or 'no visible error message'}"
             ) from None
-
-    def _fill_if_present(self, selector: str, value: str | None) -> None:
-        field = self.page.locator(selector)
-        if not value or not field.count():
-            return
-        field.first.fill("")
-        field.first.press_sequentially(value, delay=40)
-        pause(0.2, 0.5)
-
-    def _select_expiry(self, selector: str, value: str) -> None:
-        """Pick an expiry month/year, whichever spelling the dropdown uses.
-
-        The year dropdown has shipped as both "26" and "2026", and the
-        environment may hold either too; the month one as both "3" and "03".
-        The options are read first, because `select_option` on a value that
-        isn't there waits out the whole step timeout.
-        """
-        field = self.page.locator(selector)
-        if not field.count():
-            return
-        options: list[str] = field.first.evaluate(
-            "el => Array.from(el.options).map(o => o.value)"
-        )
-        candidates = [value, value.lstrip("0"), f"20{value}", value[-2:]]
-        for candidate in dict.fromkeys(candidates):
-            if candidate in options:
-                field.first.select_option(value=candidate)
-                return
-        raise ValueError(
-            f"No option for expiry {value!r} in {selector}; options: {options}"
-        )
 
     def _reserve(self) -> str:
         """Click Reserve and wait for GolfNow to confirm the booking."""

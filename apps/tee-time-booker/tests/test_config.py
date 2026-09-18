@@ -1,5 +1,5 @@
 import pytest
-from tee_time_booker.config import Account, PaymentCard, Settings
+from tee_time_booker.config import Account, PaymentDetails, Settings
 from tee_time_booker.courses import SATICOY, SOULE_PARK
 
 CARD_ENV = {
@@ -14,7 +14,7 @@ CARD_ENV = {
 @pytest.fixture
 def env(monkeypatch):
     overrides = ("TEE_TIME_COURSE", "TEE_TIME_SUBMIT_PAYMENT", "TEE_TIME_HEADLESS")
-    for name in (*PaymentCard.ENV_VARS.values(), *overrides):
+    for name in (*PaymentDetails.ENV_VARS.values(), *overrides):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -34,21 +34,28 @@ def test_missing_login_names_the_variable(env):
         Account.from_env(SOULE_PARK)
 
 
-def test_card_only_insists_on_the_fields_its_site_asks_for(env):
+def test_payment_details_only_insist_on_the_fields_the_site_asks_for(env):
     for name, value in CARD_ENV.items():
         env.setenv(name, value)
-    card = PaymentCard.from_env(("number", "cvc"))
-    assert card.number == CARD_ENV["CREDIT_CARD_NUMBER"]
-    # GolfNow-only fields stay unset rather than failing a foreUP run.
-    assert card.name is None and card.billing_address is None
-    assert card.state is None and card.phone is None
+    details = PaymentDetails.from_env(("number", "cvc"))
+    assert details.number == CARD_ENV["CREDIT_CARD_NUMBER"]
+    # The GolfNow-only field stays unset rather than failing a foreUP run.
+    assert details.state is None
 
 
-def test_card_fails_when_a_required_field_is_missing(env):
+def test_a_golfnow_run_needs_no_card_number(env):
+    env.setenv("CREDIT_CARD_STATE", "CA")
+    env.setenv("CREDIT_CARD_POSTAL_CODE", "93023")
+    details = PaymentDetails.from_env(("state", "postal_code"))
+    assert (details.state, details.postal_code) == ("CA", "93023")
+    assert details.number is None and details.cvc is None
+
+
+def test_payment_details_fail_when_a_required_field_is_missing(env):
     for name, value in CARD_ENV.items():
         env.setenv(name, value)
-    with pytest.raises(RuntimeError, match="PHONE_NUMBER"):
-        PaymentCard.from_env(("number", "phone"))
+    with pytest.raises(RuntimeError, match="CREDIT_CARD_STATE"):
+        PaymentDetails.from_env(("number", "state"))
 
 
 def test_settings_default_to_the_default_course_and_a_dry_run(env):
