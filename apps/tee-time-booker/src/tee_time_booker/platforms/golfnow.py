@@ -33,6 +33,14 @@ GolfNow quirks the code works around:
   form until dismissed, so nothing is filled before that's gone.
 - Reserve stays disabled until every mandatory field (billing state included)
   validates, so the adapter waits for it to enable rather than assuming.
+- GolfID occasionally refuses a correct password ("There was an issue logging
+  into your account. Please click here to verify your account...") and a
+  fresh attempt goes through, so sign-in is retried once.
+- An account with an incomplete profile is sent to "Edit Profile" after
+  signing in instead of the page it asked for. The search API, the tee time
+  page and checkout all still work from there, so the adapter reports which
+  fields GolfNow wants and carries on rather than filling in personal details
+  it doesn't have.
 """
 
 import re
@@ -67,6 +75,14 @@ LOGIN_PASSWORD = "#password"
 LOGIN_SUBMIT = "#login"
 # GolfNow bounces anonymous visitors to this page.
 LOGIN_REDIRECT = re.compile(r"/account/login-redirect")
+# Where GolfNow sends a freshly signed-in account whose profile is incomplete.
+PROFILE_EDIT = re.compile(r"/my/profile/edit")
+# The profile form's mandatory fields (GolfNow marks them with its validation
+# attribute, not always `required`); the empty ones are what it's asking for.
+PROFILE_FORM = "#frmEditProfile"
+PROFILE_REQUIRED_FIELDS = (
+    f"{PROFILE_FORM} :is(input, select)[data-val-required]:not([type='checkbox'])"
+)
 
 # --- Tee time detail page ---------------------------------------------------------
 PLAYER_RADIO = "input[name='playerSelect'][value='{players}']"
@@ -149,6 +165,10 @@ CHECKOUT_FIELDS = {
 # "OneTwo", "TwoThreeFour", ...
 _PLAYER_WORDS = {"One": 1, "Two": 2, "Three": 3, "Four": 4}
 ALL_PLAYER_COUNTS = frozenset(_PLAYER_WORDS.values())
+
+
+class LoginRefusedError(RuntimeError):
+    """GolfID kept the login form up after the password was submitted."""
 
 
 def allowed_players(player_rule: Any) -> frozenset[int]:
@@ -243,6 +263,7 @@ def parse_tee_times(
         raise ValueError(f"Search response had no tee times: {payload!r}"[:300])
 
     tee_times: list[TeeTime] = []
+    dropped = {"holes": 0, "players": 0}
     for row in rows:
         start = _start_time(row)
         if start is None:
@@ -252,9 +273,11 @@ def parse_tee_times(
                 continue
             holes = rate.get("holeCount")
             if holes != criteria.holes:
+                dropped["holes"] += 1
                 continue
             players = allowed_players(rate.get("playerRule"))
             if criteria.players not in players:
+                dropped["players"] += 1
                 continue
             rate_id = rate.get("teeTimeRateId")
             if rate_id is None:
@@ -271,6 +294,21 @@ def parse_tee_times(
                     service_fee=_money(price, "transactionFeesTotal"),
                     ref=str(rate_id),
                 )
+            )
+    if not tee_times:
+        # The runner polls on an empty list, so say what "empty" meant this
+        # time: the day isn't open, or it is and nothing fits the criteria.
+        if rows:
+            logger.warning(
+                f"GolfNow listed {len(rows)} tee times on {criteria.target_date} "
+                f"but none for {criteria.players} golfers over {criteria.holes} "
+                f"holes ({dropped['holes']} rates wrong hole count, "
+                f"{dropped['players']} won't take that group size)"
+            )
+        else:
+            logger.debug(
+                f"GolfNow has no tee times listed on {criteria.target_date} "
+                f"(response total: {payload.get('total')!r})"
             )
     return tee_times
 
@@ -298,9 +336,30 @@ class GolfNowPlatform(BookingPlatform):
         page.goto(ACCOUNT_URL, wait_until="domcontentloaded")
         self._dismiss_marketing_popup()
         self._login()
+        # Signed in one way or another; see where GolfNow actually put us.
+        page.wait_for_load_state()
+        self._report_incomplete_profile()
 
     def _login(self) -> None:
-        """Sign in through the GolfID iframe: email, "Continue", then password.
+        """Sign in through the GolfID iframe, giving a refused attempt one retry.
+
+        GolfID now and then refuses a correct password and asks the account
+        holder to "verify your account" instead; the next attempt from a fresh
+        page load usually goes through, so one is made before giving up.
+        """
+        for attempt in (1, 2):
+            try:
+                self._sign_in()
+                return
+            except LoginRefusedError as e:
+                if attempt == 2:
+                    raise RuntimeError(f"GolfNow did not sign in: {e}") from None
+                logger.warning(f"GolfNow refused the sign-in ({e}); retrying once")
+                self.page.goto(ACCOUNT_URL, wait_until="domcontentloaded")
+                self._dismiss_marketing_popup()
+
+    def _sign_in(self) -> None:
+        """One pass through the GolfID iframe: email, "Continue", then password.
 
         GolfNow only shows the password field once it has accepted the email,
         so the two steps can't be filled in one go.
@@ -330,10 +389,44 @@ class GolfNowPlatform(BookingPlatform):
         pause()
         frame.locator(LOGIN_SUBMIT).click()
         # The iframe goes away and GolfNow reloads the page as the signed-in user.
-        page.wait_for_url(lambda url: not LOGIN_REDIRECT.search(url))
+        try:
+            page.wait_for_url(lambda url: not LOGIN_REDIRECT.search(url))
+        except PlaywrightTimeoutError:
+            # GolfID stays put and explains itself inside the iframe. The
+            # iframe is display:none to Playwright by then, so read the text
+            # content rather than the rendered text.
+            message = " ".join(frame.locator("body").text_content().split())
+            raise LoginRefusedError(message[:300] or "no message shown") from None
         page.locator(LOGIN_FRAME).wait_for(state="detached")
         logger.info("Logged in")
         pause()
+
+    def _report_incomplete_profile(self) -> None:
+        """Say so if GolfNow parked the signed-in session on "Edit Profile".
+
+        Booking works from there, so this only warns — with the fields GolfNow
+        is after, so the account holder can fill them in by hand and stop the
+        detour. The adapter doesn't fill them: they're personal details (last
+        name, home address, average score) it has no business inventing.
+        """
+        page = self.page
+        if not PROFILE_EDIT.search(page.url):
+            return
+        fields = page.locator(PROFILE_REQUIRED_FIELDS)
+        empty = []
+        for i in range(fields.count()):
+            field = fields.nth(i)
+            if field.input_value().strip():
+                continue
+            field_id = field.get_attribute("id")
+            label = page.locator(f"label[for='{field_id}']")
+            name = label.first.inner_text() if label.count() else field_id
+            empty.append((name or "?").strip(" *"))
+        logger.warning(
+            "GolfNow wants this account's profile completed (it redirected to "
+            f"{page.url}); booking continues, but fill in "
+            f"{', '.join(empty) or 'the required fields'} on the site to clear it"
+        )
 
     def _dismiss_marketing_popup(self, timeout: int = 2_000) -> None:
         """Close GolfNow's GolfPass interstitial if it's up.
