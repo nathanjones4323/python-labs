@@ -5,6 +5,7 @@ from datetime import date, datetime
 import pytest
 from sqlalchemy import select
 from tee_time_booker import main as cli
+from tee_time_booker import worker
 from tee_time_booker.db import BookingRequest, RequestStatus, Run, RunStatus
 from tee_time_booker.models import BookingResult, TeeTime
 from tee_time_booker.platforms import PaymentOutcomeUnknownError
@@ -26,13 +27,16 @@ def _only_run(db):
 
 
 def _fake_booking(outcome, seen=None):
-    def book_tee_time(course, criteria, settings, run_id, *, account_env_prefix):
+    def book_tee_time(
+        course, criteria, settings, run_id, *, account_env_prefix, wait_for_release
+    ):
         if seen is not None:
             seen.update(
                 course=course,
                 criteria=criteria,
                 run_id=run_id,
                 prefix=account_env_prefix,
+                wait=wait_for_release,
             )
         if isinstance(outcome, Exception):
             raise outcome
@@ -53,7 +57,7 @@ def test_successful_dry_run_records_the_slot_and_leaves_the_request_pending(
     )
     seen = {}
     monkeypatch.setattr(
-        cli,
+        worker,
         "book_tee_time",
         _fake_booking(BookingResult(tee_time=slot, submitted=False), seen),
     )
@@ -75,7 +79,7 @@ def test_a_paid_booking_marks_the_request_booked(db, env, monkeypatch):
         platform="foreup", course_name="Soule Park", start=datetime(2026, 10, 3, 8, 0)
     )
     monkeypatch.setattr(
-        cli,
+        worker,
         "book_tee_time",
         _fake_booking(BookingResult(tee_time=slot, submitted=True, confirmation="R1")),
     )
@@ -87,7 +91,7 @@ def test_a_paid_booking_marks_the_request_booked(db, env, monkeypatch):
 
 def test_unknown_payment_outcome_is_neither_success_nor_error(db, env, monkeypatch):
     monkeypatch.setattr(
-        cli,
+        worker,
         "book_tee_time",
         _fake_booking(PaymentOutcomeUnknownError("no confirmation within 30 s")),
     )
@@ -100,7 +104,7 @@ def test_unknown_payment_outcome_is_neither_success_nor_error(db, env, monkeypat
 
 def test_errors_record_a_short_message_not_a_traceback(db, env, monkeypatch):
     error = RuntimeError("Login failed (403): <html>" + "x" * 500 + "\nmore")
-    monkeypatch.setattr(cli, "book_tee_time", _fake_booking(error))
+    monkeypatch.setattr(worker, "book_tee_time", _fake_booking(error))
 
     assert cli.main(["--date", "2026-10-03"]) == 1
     run, request = _only_run(db)
@@ -114,7 +118,7 @@ def test_errors_record_a_short_message_not_a_traceback(db, env, monkeypatch):
 def test_a_failed_request_is_retried_by_the_next_run_for_that_date(
     db, env, monkeypatch
 ):
-    monkeypatch.setattr(cli, "book_tee_time", _fake_booking(RuntimeError("stop")))
+    monkeypatch.setattr(worker, "book_tee_time", _fake_booking(RuntimeError("stop")))
     cli.main(["--date", "2026-10-03"])
     cli.main(["--date", "2026-10-03"])
     with db() as session:
@@ -123,15 +127,19 @@ def test_a_failed_request_is_retried_by_the_next_run_for_that_date(
 
 
 def test_brief_handles_empty_messages():
-    assert cli._brief(ValueError()) == "ValueError"
-    assert cli._brief(ValueError("bad\nworse")) == "ValueError: bad"
+    assert worker.brief(ValueError()) == "ValueError"
+    assert worker.brief(ValueError("bad\nworse")) == "ValueError: bad"
 
 
-def test_date_flag_overrides_the_computed_target(db, env, monkeypatch):
+def test_date_flag_overrides_the_computed_target_and_skips_the_wait(
+    db, env, monkeypatch
+):
     seen = {}
-    monkeypatch.setattr(cli, "book_tee_time", _fake_booking(RuntimeError("stop"), seen))
+    fake = _fake_booking(RuntimeError("stop"), seen)
+    monkeypatch.setattr(worker, "book_tee_time", fake)
     cli.main(["--date", "2026-10-03"])
     assert seen["criteria"].target_date == date(2026, 10, 3)
+    assert seen["wait"] is False
 
 
 def test_request_flag_runs_that_request(db, env, monkeypatch):
@@ -142,10 +150,12 @@ def test_request_flag_runs_that_request(db, env, monkeypatch):
             session, get_plan(session, env["saticoy_plan"]), date(2026, 9, 26)
         ).id
     seen = {}
-    monkeypatch.setattr(cli, "book_tee_time", _fake_booking(RuntimeError("stop"), seen))
+    fake = _fake_booking(RuntimeError("stop"), seen)
+    monkeypatch.setattr(worker, "book_tee_time", fake)
     cli.main(["--request", str(request_id)])
     assert seen["course"].key == "saticoy" and seen["prefix"] == "GOLFNOW"
     assert seen["criteria"].target_date == date(2026, 9, 26)
+    assert seen["wait"] is True
 
 
 def test_without_a_plan_or_request_the_cli_says_so(db, env, monkeypatch):
