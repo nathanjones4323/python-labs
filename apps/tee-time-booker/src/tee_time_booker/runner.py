@@ -181,6 +181,7 @@ def book_tee_time(
     run_id: str,
     *,
     account_env_prefix: str,
+    wait_for_release: bool = True,
 ) -> BookingResult:
     """Book the best available slot at `course`, start to finish.
 
@@ -188,14 +189,16 @@ def book_tee_time(
     for the best slot in the window — falling back to the next-best whenever a
     hold is refused. A run with payment switched off stops before the final
     submit and leaves a screenshot behind.
+
+    `wait_for_release=False` says the target is a day that's already open, so
+    there's nothing to wait for even if a release is due tonight.
     """
     platform_type = get_platform(course.platform)
     # Check the date and load secrets before any wait, so a bad one fails now
     # rather than after sleeping up to the release.
     check_target_date(course, criteria.target_date)
     credentials = load_credentials(course, account_env_prefix, with_payment=True)
-    if settings.target_date_override is None:
-        # An override points at an already-open day; there's nothing to wait for.
+    if wait_for_release:
         sleep_until_release(course, platform_type.release_lead_seconds)
 
     with open_platform(

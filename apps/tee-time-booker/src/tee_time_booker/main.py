@@ -5,25 +5,20 @@ import uuid
 from dataclasses import replace
 from datetime import date, timezone
 
-from loguru import logger
-from sqlalchemy import select
-
-from tee_time_booker import dates
+from tee_time_booker import dates, worker
 from tee_time_booker.config import Settings
-from tee_time_booker.courses import CourseConfig
-from tee_time_booker.db import BookingPlan, Course, RunStatus, make_session_factory
+from tee_time_booker.db import RunStatus, make_session_factory
 from tee_time_booker.db.service import (
     claim_request,
     course_config,
-    finish_run,
     get_plan,
+    list_courses,
+    list_plans,
     plan_preferences,
     recent_runs,
     request_for_plan,
 )
-from tee_time_booker.models import BookingResult, SearchCriteria
-from tee_time_booker.platforms import PaymentOutcomeUnknownError
-from tee_time_booker.runner import book_tee_time, find_tee_times
+from tee_time_booker.runner import find_tee_times
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -69,17 +64,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Show the last N runs (default 20) and exit",
     )
     return parser.parse_args(argv)
-
-
-def _describe_plan(
-    course: CourseConfig, criteria: SearchCriteria, run_id: uuid.UUID
-) -> None:
-    logger.info(
-        f"Run {run_id}: booking {course.name} ({course.platform}) on "
-        f"{criteria.target_date:%A %Y-%m-%d} between "
-        f"{criteria.earliest:%I:%M %p} and {criteria.latest:%I:%M %p} "
-        f"for {criteria.players} players, {criteria.holes} holes"
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -132,55 +116,26 @@ def main(argv: list[str] | None = None) -> int:
     # hour waiting on a release, and must not hold a connection meanwhile.
     with sessions() as session, session.begin():
         claimed = claim_request(session, request_id)
-    _describe_plan(claimed.course, claimed.criteria, claimed.run_id)
-
-    result: BookingResult | None = None
-    status = RunStatus.ERROR
-    detail: str | None = None
-    try:
-        result = book_tee_time(
-            claimed.course,
-            claimed.criteria,
-            settings,
-            str(claimed.run_id),
-            account_env_prefix=claimed.account_env_prefix,
-        )
-        status = RunStatus.SUCCESS if result.submitted else RunStatus.DRY_RUN
-    except PaymentOutcomeUnknownError as e:
-        status = RunStatus.UNKNOWN
-        detail = str(e)
-        logger.exception(f"Unknown payment outcome: {detail}")
-    except Exception as e:
-        # Error messages can embed whole server responses; keep a short
-        # message in the database and the traceback in the job log.
-        status = RunStatus.ERROR
-        detail = _brief(e)
-        logger.exception(f"Error in booking process: {detail}")
-    finally:
-        with sessions() as session, session.begin():
-            finish_run(session, claimed.run_id, status, result=result, detail=detail)
-
+    status = worker.execute(
+        sessions,
+        claimed,
+        settings,
+        # An override points at an already-open day; there's nothing to wait for.
+        wait_for_release=settings.target_date_override is None,
+    )
     return 0 if status in (RunStatus.SUCCESS, RunStatus.DRY_RUN) else 1
-
-
-def _brief(e: Exception, limit: int = 200) -> str:
-    """`ExcType: first line of the message`, capped at `limit` characters."""
-    message = str(e).splitlines()[0] if str(e) else ""
-    text = f"{type(e).__name__}: {message}" if message else type(e).__name__
-    return text[:limit]
 
 
 def _list_courses(sessions) -> int:
     with sessions() as session:
-        for course in session.scalars(select(Course).order_by(Course.key)):
+        for course in list_courses(session):
             print(f"{course.key:<12} {course.name} ({course.platform})")
     return 0
 
 
 def _list_plans(sessions) -> int:
     with sessions() as session:
-        plans = session.scalars(select(BookingPlan).order_by(BookingPlan.created_at))
-        for plan in plans:
+        for plan in list_plans(session):
             prefs = plan_preferences(plan)
             weekday = date(2024, 1, 1 + prefs.target_weekday).strftime("%A")
             print(

@@ -1,7 +1,8 @@
 # Tee Time Booker
 
-Books a tee time on a schedule with Playwright. Who wants what booked, and
-what every run did, live in Postgres.
+Books a tee time with Playwright — on a schedule, from the command line, or
+over HTTP (and so as MCP tools). Who wants what booked, and what every run
+did, live in Postgres.
 
 Two booking sites are supported today, behind one interface:
 
@@ -28,9 +29,10 @@ Everything that should behave the same whichever site is being booked lives in
 `runner.py`: waiting for a release, polling until the day's sheet opens,
 choosing the best slot in the window, moving to the next-best when a hold is
 refused, and stopping before payment on a dry run. `runner.find_tee_times()`
-and `runner.book_tee_time()` are the app's real interface — the CLI calls them
-today and an HTTP layer should call them tomorrow, rather than reaching for an
-adapter directly.
+and `runner.book_tee_time()` are the app's real interface; `worker.py` wraps
+the latter with the run bookkeeping (drive the site, record the outcome, move
+the request on), and both the CLI and the HTTP API go through it rather than
+reaching for an adapter directly.
 
 | Module | Holds |
 | --- | --- |
@@ -42,6 +44,10 @@ adapter directly.
 | `platforms/base.py` | The adapter contract |
 | `platforms/{foreup,golfnow}.py` | One site each |
 | `runner.py` | The standard operations: find, book |
+| `worker.py` | Carrying out a claimed request and recording the run; `BookingWorker` does it on a background thread for the API |
+| `main.py` | The CLI |
+| `api/` | The FastAPI app: the same operations as routes (see "HTTP API") |
+| `mcp.py` | The API's routes as MCP tools, via FastMCP |
 | `selection.py` | Which of the available slots wins |
 | `dates.py` | Which date to book, and when the site releases it |
 | `browser.py` | The Chromium session and the failure artifacts |
@@ -100,8 +106,9 @@ confirmation or error appeared — check the account on the booking site before
 touching the request again). A request can't be claimed twice or booked twice,
 whatever the caller does.
 
-Card details are not in the database. Every run pays with the one card in the
-environment (`CREDIT_CARD_*`); per-user cards need an encryption story first.
+Card details are not in the database. A GolfNow run pays with the card saved on
+the account it signs in to; a foreUP run types the one card in the environment
+(`CREDIT_CARD_*`). Per-user cards need an encryption story first.
 
 Schema changes are Alembic migrations in `migrations/`, generated from the
 models:
@@ -145,6 +152,72 @@ request directly. It then:
 On any failure a full-page screenshot and the page HTML are written to
 `artifacts/`; the HTML is what you need to repair a selector. Card and personal inputs are
 hidden in every screenshot, since artifacts are uploaded to GitHub Actions.
+
+## HTTP API
+
+Everything the CLI does is also a route, so a booking can be started on
+demand — by a script, a UI, or an agent — instead of only by the cron:
+
+```bash
+# from apps/tee-time-booker, with .env filled in
+uv run --package tee-time-booker uvicorn --factory tee_time_booker.api:create_app --port 8000
+open http://localhost:8000/docs
+```
+
+| Route | Does |
+| --- | --- |
+| `GET /courses`, `GET /courses/{key}` | The bookable courses |
+| `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now |
+| `POST /plans` | Create a plan, or update the user's plan of that name (the user and their site account must exist — see the seed) |
+| `GET /plans/{id}/tee-times?date=` | Sign in and list what's bookable for the plan, without booking. Slow (a real browser); no card details needed |
+| `POST /plans/{id}/book` | Find or create the plan's request for its next date (or `target_date`), claim it and start a run → **202** with a `run_id` |
+| `POST /requests` | A one-off request: one date at one course, no plan behind it |
+| `GET /requests?status=&user_email=`, `GET /requests/{id}`, `GET /requests/{id}/runs` | Requests and their attempts |
+| `POST /requests/{id}/run` | Start a run on a pending or failed request → **202** |
+| `POST /requests/{id}/cancel` | Cancel a request that isn't running or booked |
+| `GET /runs?limit=`, `GET /runs/{id}` | Run history; poll `GET /runs/{id}` after a 202 |
+
+A booking is a **job, not a request**: it may sleep up to 95 min for a
+release and then drives a browser for minutes, so the booking routes claim
+the request in the database (an already running or booked request is a
+**409**, straight away), hand the run to a small thread pool and answer at
+once. The run's row is the record of what's happening; poll it until `status`
+leaves `running`. The service layer's errors map to one status each: unknown
+id → 404, a move the request's state machine forbids → 409, a bad date or
+mismatched account → 422, the booking site or a missing secret → 502.
+
+Paying needs **both** switches: the operator's `TEE_TIME_SUBMIT_PAYMENT` in
+the environment and `submit_payment: true` in the request body. Either off is
+a dry run, and the 202 says which (`dry_run`). Passing a `target_date` means
+"an already-open day" and turns `wait_for_release` off unless you say
+otherwise, like `--date` on the CLI.
+
+Two things to know before running it somewhere:
+
+- **There is no authentication.** Run it where only you can reach it.
+- **Runs live in the API process.** If it is killed mid-run the request stays
+  `running` until you fix it by hand; a run still queued at shutdown is
+  recorded as an error so its request can be retried. Stopping uvicorn waits
+  for in-flight runs.
+
+### MCP
+
+`tee_time_booker.mcp` turns the API into an MCP server with FastMCP's
+`from_fastapi`: it reads the OpenAPI schema and calls the routes in-process,
+so each route's `operation_id` is a tool name (`list_plans`, `find_tee_times`,
+`book_plan`, `get_run`, ...) and its docs are the tool description. Nothing
+in `mcp.py` knows what the tools do; change the API and the tools follow.
+
+```bash
+uv sync --package tee-time-booker --extra mcp
+uv run --package tee-time-booker python -m tee_time_booker.mcp          # stdio
+uv run --package tee-time-booker python -m tee_time_booker.mcp --http   # http://127.0.0.1:8001/mcp
+```
+
+For Claude Desktop / Claude Code (stdio), point the server command at that
+module with `DATABASE_URL` and the site logins in its environment; the
+agent then books with `book_plan` and polls `get_run`. The API's
+`/health` route is left out of the tools.
 
 ## foreUP (Soule Park)
 
@@ -275,13 +348,13 @@ uv run --package tee-time-booker python -m tee_time_booker \
 `--find-only` needs only the site login, not card details. `--plan` and
 `--date` override `TEE_TIME_PLAN` and `TEE_TIME_TARGET_DATE`; `--request <id>`
 runs one specific request instead. Set `TEE_TIME_HEADLESS=false` in `.env` to
-watch the browser.
+watch the browser. The same operations over HTTP: see "HTTP API" above.
 
 Tests cover the date logic, slot selection, both adapters' response parsing,
 the course/adapter wiring (no browser needed) and, with
-`TEE_TIME_TEST_DATABASE_URL` set, the migrations, the state machine and the
-CLI's bookkeeping against a real Postgres (the compose file creates
-`tee_time_booker_test` for this; it is wiped every run):
+`TEE_TIME_TEST_DATABASE_URL` set, the migrations, the state machine, and the
+CLI's and the API's bookkeeping against a real Postgres (the compose file
+creates `tee_time_booker_test` for this; it is wiped every run):
 
 ```bash
 uv run --package tee-time-booker pytest
