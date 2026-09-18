@@ -1,6 +1,7 @@
+import uuid
+
 import pytest
 from tee_time_booker.config import Account, PaymentCard, Settings
-from tee_time_booker.courses import SATICOY, SOULE_PARK
 
 CARD_ENV = {
     "CREDIT_CARD_NUMBER": "4111111111111111",
@@ -13,25 +14,30 @@ CARD_ENV = {
 
 @pytest.fixture
 def env(monkeypatch):
-    overrides = ("TEE_TIME_COURSE", "TEE_TIME_SUBMIT_PAYMENT", "TEE_TIME_HEADLESS")
+    overrides = (
+        "TEE_TIME_PLAN",
+        "TEE_TIME_SUBMIT_PAYMENT",
+        "TEE_TIME_HEADLESS",
+        "DATABASE_URL",
+    )
     for name in (*PaymentCard.ENV_VARS.values(), *overrides):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
 
-def test_each_course_reads_its_own_login(env):
+def test_each_site_account_reads_its_own_login(env):
     env.setenv("SOULE_EMAIL", "soule@example.com")
     env.setenv("SOULE_PASSWORD", "soule-pw")
     env.setenv("GOLFNOW_EMAIL", "gn@example.com")
     env.setenv("GOLFNOW_PASSWORD", "gn-pw")
-    assert Account.from_env(SOULE_PARK) == Account("soule@example.com", "soule-pw")
-    assert Account.from_env(SATICOY) == Account("gn@example.com", "gn-pw")
+    assert Account.from_env("SOULE") == Account("soule@example.com", "soule-pw")
+    assert Account.from_env("GOLFNOW") == Account("gn@example.com", "gn-pw")
 
 
 def test_missing_login_names_the_variable(env):
     env.delenv("SOULE_EMAIL", raising=False)
     with pytest.raises(RuntimeError, match="SOULE_EMAIL"):
-        Account.from_env(SOULE_PARK)
+        Account.from_env("SOULE")
 
 
 def test_card_only_insists_on_the_fields_its_site_asks_for(env):
@@ -51,8 +57,19 @@ def test_card_fails_when_a_required_field_is_missing(env):
         PaymentCard.from_env(("number", "phone"))
 
 
-def test_settings_default_to_the_default_course_and_a_dry_run(env):
+def test_settings_default_to_a_dry_run_with_no_plan(env):
     settings = Settings.from_env()
-    assert settings.course_key == SOULE_PARK.key
+    assert settings.plan_id is None
     assert settings.submit_payment is False
     assert settings.headless is True
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        settings.require_database_url()
+
+
+def test_settings_read_the_plan_and_database_from_the_environment(env):
+    plan = uuid.uuid4()
+    env.setenv("TEE_TIME_PLAN", str(plan))
+    env.setenv("DATABASE_URL", "postgresql://u:p@db/tee")
+    settings = Settings.from_env()
+    assert settings.plan_id == plan
+    assert settings.require_database_url() == "postgresql://u:p@db/tee"

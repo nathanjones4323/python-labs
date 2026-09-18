@@ -1,7 +1,7 @@
 # Tee Time Booker
 
-Books a tee time on a schedule with Playwright, and appends the outcome of
-every run to `log.csv`.
+Books a tee time on a schedule with Playwright. Who wants what booked, and
+what every run did, live in Postgres.
 
 Two booking sites are supported today, behind one interface:
 
@@ -34,8 +34,11 @@ adapter directly.
 
 | Module | Holds |
 | --- | --- |
-| `models.py` | `SearchCriteria`, `TeeTime`, `BookingResult` — the vocabulary adapters share |
-| `courses.py` | Every bookable course, its platform, and the preferences it's booked with |
+| `models.py` | `SearchCriteria`, `TeeTime`, `BookingResult`, `Preferences` — the vocabulary adapters share |
+| `courses.py` | The shape of a course (`CourseConfig` and its per-platform subclasses) and the seed data |
+| `db/models.py` | The tables, and the booking-request state machine |
+| `db/service.py` | Claiming a request, recording a run, seeding courses/users/plans |
+| `seed.py` | Loads the known courses (and optionally one user's plans) into the database |
 | `platforms/base.py` | The adapter contract |
 | `platforms/{foreup,golfnow}.py` | One site each |
 | `runner.py` | The standard operations: find, book |
@@ -43,7 +46,6 @@ adapter directly.
 | `dates.py` | Which date to book, and when the site releases it |
 | `browser.py` | The Chromium session and the failure artifacts |
 | `config.py` | Settings and secrets from the environment |
-| `run_log.py` | The CSV row per run |
 
 ### Adding a booking site
 
@@ -51,7 +53,8 @@ adapter directly.
    `CourseConfig` subclass it needs, the `PaymentCard` fields its checkout asks
    for, and the four methods.
 2. Add the class to `_ADAPTERS` in `platforms/__init__.py`.
-3. Add courses to `courses.py` with `platform="<site>"`.
+3. Add courses to `SEED_COURSES` in `courses.py` with `platform="<site>"` and
+   run the seed.
 
 Nothing else in the app needs to know the site exists. Keep the parsing of the
 site's own responses in module-level functions (as both adapters do) so they
@@ -59,15 +62,59 @@ can be tested without a browser.
 
 ### Adding a course
 
-One entry in `courses.py`: its platform, timezone, the identifiers that
-platform's adapter needs, the environment variables holding its login, and a
-`Preferences` block (which weekday, how far ahead, the acceptable tee-off
-window, holes and players). Courses on the same site can use different
-accounts.
+One row in the `courses` table: its platform, timezone, release schedule and
+the identifiers that platform's adapter needs (a JSONB blob, so a new site
+needs no schema change). The seed in `courses.py` is the easiest way to add
+one: append a `CourseConfig` to `SEED_COURSES` and run
+`python -m tee_time_booker.seed`, which upserts by key.
+
+## Database
+
+The database is the source of truth for who books what:
+
+| Table | Row |
+| --- | --- |
+| `users` | Someone with plans |
+| `courses` | A bookable course: platform, timezone, release schedule, adapter identifiers |
+| `site_accounts` | A user's login on one booking site. The secret stays in the environment: the row names an `env_prefix`, and the login is read from `<PREFIX>_EMAIL` / `<PREFIX>_PASSWORD` |
+| `booking_plans` | A standing wish: this course, with this account, the Nth upcoming weekday, this tee-off window, this group size |
+| `booking_requests` | A plan pinned to one date (one per plan per date), with the plan's search copied in so editing the plan doesn't change a request in flight |
+| `runs` | One attempt at a request: when, what it held, what it cost, how it ended |
+
+A request is the unit of work, and it moves through a state machine that the
+model enforces (`BookingRequest.transition`):
+
+```
+pending ──▶ running ──▶ booked
+   ▲          │  │
+   │          │  └────▶ failed ──▶ (running again, or cancelled)
+   └──────────┘  └────▶ unknown ──▶ (booked / failed / cancelled, by hand)
+   (dry run)
+```
+
+A worker claims a request with a row lock (`pending`/`failed` → `running`)
+and opens a run; when the run ends, its status decides the request's:
+`success` → `booked`, `dry_run` → back to `pending` (nothing was booked),
+`error` → `failed`, `unknown` → `unknown` (the final submit was clicked and no
+confirmation or error appeared — check the account on the booking site before
+touching the request again). A request can't be claimed twice or booked twice,
+whatever the caller does.
+
+Card details are not in the database. Every run pays with the one card in the
+environment (`CREDIT_CARD_*`); per-user cards need an encryption story first.
+
+Schema changes are Alembic migrations in `migrations/`, generated from the
+models:
+
+```bash
+# from apps/tee-time-booker, with DATABASE_URL set
+uv run --package tee-time-booker alembic upgrade head
+uv run --package tee-time-booker alembic revision --autogenerate -m "add foo"
+```
 
 ## How a run picks a tee time
 
-Preferences are per course in `courses.py`. Soule Park's, for example:
+Preferences are per booking plan. The seeded Soule Park plan, for example:
 
 | Setting | Value | Meaning |
 | --- | --- | --- |
@@ -75,9 +122,11 @@ Preferences are per course in `courses.py`. Soule Park's, for example:
 | `earliest` – `latest` | 8:00 AM – 2:00 PM | Acceptable tee-off window, inclusive |
 | `prefer_earlier` | `True` | Take the earliest slot in the window |
 | `holes` / `players` | 18 / 4 | Booking size |
-| `release` | 00:00, from 20:00 | foreUP opens a day's tee sheet at local midnight; a run started at or after 20:00 waits for the coming midnight and counts "today" as the new day |
+| `release` (on the course) | 00:00, from 20:00 | foreUP opens a day's tee sheet at local midnight; a run started at or after 20:00 waits for the coming midnight and counts "today" as the new day |
 
-A run then:
+A run started with `--plan` works out the plan's target date, finds or creates
+the plan's request for that date and claims it; `--request` claims an existing
+request directly. It then:
 
 1. refuses a target date the site can't book yet, when the window is known
    up front (foreUP's 20 days); then waits until 45 s before the release, if
@@ -89,8 +138,8 @@ A run then:
 4. takes the best slot in the window; if that fails because someone else got
    it, searches again and tries the next-best, up to 4 times
 5. reaches the checkout form. If `TEE_TIME_SUBMIT_PAYMENT` is not `true`
-   it stops here (a dry run), saves a screenshot to `artifacts/`, and logs
-   `Success (dry run)` — card details are never entered on a dry run
+   it stops here (a dry run), saves a screenshot to `artifacts/`, and records
+   the run as `dry_run` — card details are never entered on a dry run
 6. otherwise fills in the card and clicks the final submit
 
 On any failure a full-page screenshot and the page HTML are written to
@@ -189,24 +238,40 @@ uv run --package tee-time-booker playwright install chromium
 
 Create `apps/tee-time-booker/.env` from `.env.example` and fill in the login
 and card details for the site you're booking. Then, from
-`apps/tee-time-booker`:
+`apps/tee-time-booker`, start a Postgres, migrate it and seed it with the
+known courses plus your own accounts and plans:
 
 ```bash
-# book the default course (soule-park)
-uv run --package tee-time-booker python -m tee_time_booker
-
-# what's configured, and what's available without booking anything
-uv run --package tee-time-booker python -m tee_time_booker --list-courses
-uv run --package tee-time-booker python -m tee_time_booker \
-    --course saticoy --date 2026-09-19 --find-only
+docker compose up -d --wait
+uv run --package tee-time-booker alembic upgrade head
+uv run --package tee-time-booker python -m tee_time_booker.seed --user you@example.com
 ```
 
-`--find-only` needs only the site login, not card details. `--course` and
-`--date` override `TEE_TIME_COURSE` and `TEE_TIME_TARGET_DATE`; set
-`TEE_TIME_HEADLESS=false` in `.env` to watch the browser.
+The seed prints a plan id per course; put the one you want scheduled in
+`TEE_TIME_PLAN`. Then:
+
+```bash
+# book the plan in TEE_TIME_PLAN
+uv run --package tee-time-booker python -m tee_time_booker
+
+# what's configured, what's happened, and what's available without booking
+uv run --package tee-time-booker python -m tee_time_booker --list-courses
+uv run --package tee-time-booker python -m tee_time_booker --list-plans
+uv run --package tee-time-booker python -m tee_time_booker --runs 10
+uv run --package tee-time-booker python -m tee_time_booker \
+    --plan <saticoy plan id> --date 2026-09-19 --find-only
+```
+
+`--find-only` needs only the site login, not card details. `--plan` and
+`--date` override `TEE_TIME_PLAN` and `TEE_TIME_TARGET_DATE`; `--request <id>`
+runs one specific request instead. Set `TEE_TIME_HEADLESS=false` in `.env` to
+watch the browser.
 
 Tests cover the date logic, slot selection, both adapters' response parsing,
-the course/adapter wiring and the CSV log (no browser needed):
+the course/adapter wiring (no browser needed) and, with
+`TEE_TIME_TEST_DATABASE_URL` set, the migrations, the state machine and the
+CLI's bookkeeping against a real Postgres (the compose file creates
+`tee_time_booker_test` for this; it is wiped every run):
 
 ```bash
 uv run --package tee-time-booker pytest
@@ -216,14 +281,15 @@ uv run --package tee-time-booker pytest
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `SOULE_EMAIL`, `SOULE_PASSWORD` | for `soule-park` | | foreUP login |
-| `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD` | for `saticoy` | | GolfNow login |
+| `DATABASE_URL` | yes | | Postgres holding courses, plans, requests and runs (`postgresql://...`; the psycopg driver is added automatically) |
+| `TEE_TIME_PLAN` | to book | | Booking plan id (`--list-plans`); `--plan` / `--request` override it |
+| `SOULE_EMAIL`, `SOULE_PASSWORD` | for the seeded Soule Park account | | foreUP login (`env_prefix` `SOULE`) |
+| `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD` | for the seeded GolfNow account | | GolfNow login (`env_prefix` `GOLFNOW`) |
 | `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | to book | | Card entered at checkout |
 | `CREDIT_CARD_NAME`, `CREDIT_CARD_BILLING_ADDRESS`, `CREDIT_CARD_STATE` (two-letter code), `PHONE_NUMBER` | to book on GolfNow | | Extra fields GolfNow's checkout asks for |
-| `TEE_TIME_COURSE` | no | `soule-park` | Course to book |
-| `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final submit button |
+| `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final submit button. An operator kill switch: `false` makes every run a dry run |
 | `TEE_TIME_HEADLESS` | no | `true` | Run Chromium headless |
-| `TEE_TIME_LOG_PATH` | no | `log.csv` | Run log location |
+| `TEE_TIME_TEST_DATABASE_URL` | no | | A throwaway database for the test suite; DB tests are skipped without it |
 | `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |
 | `TEE_TIME_TARGET_DATE` | no | | Testing aid: book this `YYYY-MM-DD` instead of the computed date, without waiting for a release |
 
@@ -236,14 +302,17 @@ never fails over a GolfNow-only variable.
 (11:40 PM PDT / 10:40 PM PST Saturday) and on manual dispatch. The booker
 itself waits for course-local midnight, so the cron only has to land before
 it in both DST states; the job timeout (110 min) covers the longest wait. It
-commits `log.csv` back to the repo after every run and uploads screenshots as
-a workflow artifact.
+runs pending migrations first, records the run in the database, and uploads
+screenshots as a workflow artifact.
 
-The schedule books `TEE_TIME_COURSE` (repository variable; unset means
-`soule-park`, whose midnight release the cron is timed for). A manual run can
-pick any configured course with the "course" input.
+The schedule books the plan in the `TEE_TIME_PLAN` repository variable, which
+should be a Soule Park plan since the cron is timed for its midnight release.
+A manual run can pick any plan with the "plan" input. The hosted database
+needs the schema applied and the seed run once
+(`python -m tee_time_booker.seed --user ...` with `DATABASE_URL` pointing at
+it) — that prints the plan ids.
 
-Repository **secrets** needed: `SOULE_EMAIL`, `SOULE_PASSWORD`,
+Repository **secrets** needed: `DATABASE_URL`, `SOULE_EMAIL`, `SOULE_PASSWORD`,
 `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
 `CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE`,
 plus `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD`, `CREDIT_CARD_NAME`,
@@ -260,20 +329,18 @@ Suggested rollout for a new course:
 1. Manual run, dry run, no date: confirms secrets and the flow in CI.
 2. Manual run, **submit payment**, `target_date` = a cheap open weekday: the
    first real charge, on a slot you actually want. Check the
-   `confirmation-*.png` artifact and your account; the `Success` log row is
+   `confirmation-*.png` artifact and your account; the `success` run is
    based on the confirmation page appearing after payment.
 3. Set the `TEE_TIME_SUBMIT_PAYMENT=true` variable so scheduled runs book for
    real.
 
-## Run log
+## Run history
 
-`log.csv` has one row per run:
-
-`run_id, created_at, finished_at, course_name, tee_time_pst, cost_dollars, service_fee_dollars, status`
-
-`cost_dollars` is the per-player green fee reported for the chosen slot;
-`service_fee_dollars` is GolfNow's booking fee where the site reports one
-(foreUP doesn't). `status` is `Success`, `Success (dry run)`,
-`Error in booking process: <short message>` (the full traceback is in the job
-log), or `Unknown: ...` when the final submit was clicked but no confirmation
-or error appeared — check your account on the booking site before retrying.
+Every run is a row in `runs` (`python -m tee_time_booker --runs`, or query the
+table): when it started and finished, the request it served, the slot it held
+(`tee_time_local`, course-local, plus `side`), `green_fee` per player and
+`service_fee` where the site reports one (GolfNow does, foreUP doesn't), the
+site's `confirmation` after a real booking, and a `status`: `success`,
+`dry_run`, `error` (with a short `detail`; the traceback is in the job log)
+or `unknown` — the final submit was clicked but no confirmation or error
+appeared, so check your account on the booking site before retrying.

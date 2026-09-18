@@ -1,2 +1,0 @@
-run_id,created_at,finished_at,course_name,tee_time_pst,cost_dollars,service_fee_dollars,status
-20260918T002213Z,2026-09-18 00:22:13.107267+00:00,2026-09-18 00:22:25.933774+00:00,Soule Park,2026-10-03 13:50:00,56.0,,Success (dry run)

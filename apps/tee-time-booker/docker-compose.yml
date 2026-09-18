@@ -1,0 +1,33 @@
+# A Postgres for local development and the test suite.
+#
+#   docker compose up -d        # from apps/tee-time-booker
+#   docker compose down -v      # stop and wipe it
+#
+# Port 5433 so it doesn't collide with the meal-planner stack's database on
+# 5432. The URLs to put in .env:
+#   DATABASE_URL=postgresql://postgres:postgres@localhost:5433/tee_time_booker
+#   TEE_TIME_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/tee_time_booker_test
+
+name: tee-time-booker
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tee_time_booker
+    ports:
+      - "${TEE_TIME_DB_PORT:-5433}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Creates the test database alongside the dev one on first start.
+      - ./scripts/create-test-db.sh:/docker-entrypoint-initdb.d/create-test-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tee_time_booker"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
