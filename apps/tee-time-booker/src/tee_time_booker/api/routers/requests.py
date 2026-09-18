@@ -20,12 +20,11 @@ from tee_time_booker.api.schemas import (
     RunOut,
     RunStarted,
 )
-from tee_time_booker.db import RequestStatus, RunStatus
+from tee_time_booker.db import RequestStatus
 from tee_time_booker.db.service import (
     cancel_request,
     claim_request,
     create_request,
-    finish_run,
     get_course,
     get_request,
     get_site_account,
@@ -45,24 +44,17 @@ def start_run(
 ) -> RunStarted:
     with sessions() as session, session.begin():
         claimed = claim_request(session, request_id)
-    try:
-        worker.start(
-            claimed,
-            submit_payment=options.submit_payment,
-            wait_for_release=options.wait_for_release,
-        )
-    except RuntimeError as e:
-        # The pool is shut down (the API is stopping). Don't leave the
-        # request claimed with nothing driving it.
-        with sessions() as session, session.begin():
-            finish_run(session, claimed.run_id, RunStatus.ERROR, detail=str(e))
-        raise
+    worker.start(
+        claimed,
+        submit_payment=options.submit_payment,
+        wait_for_release=options.wait_for_release,
+    )
     return RunStarted(
         run_id=claimed.run_id,
         request_id=claimed.request_id,
         course=claimed.course.key,
         target_date=claimed.criteria.target_date,
-        dry_run=not (options.submit_payment and worker.settings.submit_payment),
+        dry_run=not worker.pays(options.submit_payment),
         wait_for_release=options.wait_for_release,
     )
 

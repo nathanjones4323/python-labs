@@ -11,8 +11,9 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from tee_time_booker import dates
 from tee_time_booker.courses import CourseConfig, ReleaseSchedule
 from tee_time_booker.db.models import (
     REQUEST_STATUS_AFTER_RUN,
@@ -135,6 +136,16 @@ def ensure_site_account(
     return account
 
 
+def require_same_platform(course: Course, site_account: SiteAccount) -> None:
+    """A login only signs in to the site it belongs to."""
+    if site_account.platform != course.platform:
+        raise ValueError(
+            f"Site account {site_account.env_prefix!r} is a "
+            f"{site_account.platform} login; {course.key} is booked through "
+            f"{course.platform}"
+        )
+
+
 def ensure_plan(
     session: Session,
     user: User,
@@ -145,6 +156,7 @@ def ensure_plan(
     preferences: Preferences,
 ) -> BookingPlan:
     """The user's plan called `name`, created or updated to `preferences`."""
+    require_same_platform(course, site_account)
     plan = session.scalar(
         select(BookingPlan).where(
             BookingPlan.user_id == user.id, BookingPlan.name == name
@@ -173,10 +185,24 @@ def get_plan(session: Session, plan_id: uuid.UUID) -> BookingPlan:
 
 
 def list_plans(session: Session, *, user: User | None = None) -> list[BookingPlan]:
-    query = select(BookingPlan).order_by(BookingPlan.created_at)
+    # Eager-load what a listing shows of each plan, not one query per row.
+    query = (
+        select(BookingPlan)
+        .options(
+            joinedload(BookingPlan.user),
+            joinedload(BookingPlan.course),
+            joinedload(BookingPlan.site_account),
+        )
+        .order_by(BookingPlan.created_at)
+    )
     if user is not None:
         query = query.where(BookingPlan.user_id == user.id)
     return list(session.scalars(query))
+
+
+def plan_target_date(plan: BookingPlan) -> date:
+    """The date this plan books if run now, in the course's local time."""
+    return dates.target_date(course_config(plan.course), plan_preferences(plan))
 
 
 def plan_preferences(plan: BookingPlan) -> Preferences:
@@ -240,6 +266,7 @@ def create_request(
     criteria: SearchCriteria,
 ) -> BookingRequest:
     """A one-off request with no plan behind it."""
+    require_same_platform(course, site_account)
     request = BookingRequest(
         user_id=user.id,
         course_id=course.id,
@@ -256,8 +283,11 @@ def create_request(
     return request
 
 
-def get_request(session: Session, request_id: uuid.UUID) -> BookingRequest:
-    request = session.get(BookingRequest, request_id)
+def get_request(
+    session: Session, request_id: uuid.UUID, *, for_update: bool = False
+) -> BookingRequest:
+    """One request; `for_update` locks its row for a status change."""
+    request = session.get(BookingRequest, request_id, with_for_update=for_update)
     if request is None:
         raise NotFound(f"No booking request {request_id}")
     return request
@@ -270,7 +300,11 @@ def list_requests(
     user: User | None = None,
     limit: int = 50,
 ) -> list[BookingRequest]:
-    query = select(BookingRequest).order_by(BookingRequest.created_at.desc())
+    query = (
+        select(BookingRequest)
+        .options(joinedload(BookingRequest.user), joinedload(BookingRequest.course))
+        .order_by(BookingRequest.created_at.desc())
+    )
     if status is not None:
         query = query.where(BookingRequest.status == status)
     if user is not None:
@@ -280,9 +314,7 @@ def list_requests(
 
 def cancel_request(session: Session, request_id: uuid.UUID) -> BookingRequest:
     """Cancel a request that isn't running; `InvalidTransition` if it can't be."""
-    request = session.get(BookingRequest, request_id, with_for_update=True)
-    if request is None:
-        raise NotFound(f"No booking request {request_id}")
+    request = get_request(session, request_id, for_update=True)
     request.transition(RequestStatus.CANCELLED)
     return request
 
@@ -305,9 +337,7 @@ def claim_request(session: Session, request_id: uuid.UUID) -> ClaimedRun:
     Two workers claiming the same request at once serialise on the lock; the
     second sees `running` and `transition` refuses it.
     """
-    request = session.get(BookingRequest, request_id, with_for_update=True)
-    if request is None:
-        raise NotFound(f"No booking request {request_id}")
+    request = get_request(session, request_id, for_update=True)
     request.transition(RequestStatus.RUNNING)
     run = Run(request=request)
     session.add(run)
@@ -331,8 +361,7 @@ def finish_run(
 ) -> Run:
     """Record how a run ended and move its request on accordingly."""
     run = get_run(session, run_id)
-    request = session.get(BookingRequest, run.request_id, with_for_update=True)
-    assert request is not None
+    request = get_request(session, run.request_id, for_update=True)
     run.status = status
     run.finished_at = datetime.now(timezone.utc)
     run.detail = detail

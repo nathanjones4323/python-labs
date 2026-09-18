@@ -5,7 +5,7 @@ import uuid
 from dataclasses import replace
 from datetime import date, timezone
 
-from tee_time_booker import dates, worker
+from tee_time_booker import worker
 from tee_time_booker.config import Settings
 from tee_time_booker.db import RunStatus, make_session_factory
 from tee_time_booker.db.service import (
@@ -15,6 +15,7 @@ from tee_time_booker.db.service import (
     list_courses,
     list_plans,
     plan_preferences,
+    plan_target_date,
     recent_runs,
     request_for_plan,
 )
@@ -92,11 +93,10 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("Pass --plan / TEE_TIME_PLAN or --request")
         with sessions() as session, session.begin():
             plan = get_plan(session, settings.plan_id)
-            course = course_config(plan.course)
-            prefs = plan_preferences(plan)
-            target = settings.target_date_override or dates.target_date(course, prefs)
+            target = settings.target_date_override or plan_target_date(plan)
             if args.find_only:
-                criteria = prefs.criteria(target)
+                course = course_config(plan.course)
+                criteria = plan_preferences(plan).criteria(target)
                 env_prefix = plan.site_account.env_prefix
             else:
                 request_id = request_for_plan(session, plan, target).id

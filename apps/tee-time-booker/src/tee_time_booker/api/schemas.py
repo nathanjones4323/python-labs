@@ -59,17 +59,9 @@ class CourseOut(BaseModel):
 # --- plans -----------------------------------------------------------------
 
 
-class PreferencesIn(BaseModel):
-    """A standing wish: which day, which window, how big a group."""
+class WindowIn(BaseModel):
+    """A time window and a group size: what a search and a plan have in common."""
 
-    target_weekday: int = Field(ge=0, le=6, description="Monday=0 ... Sunday=6")
-    weeks_ahead: int = Field(
-        ge=1,
-        description=(
-            "Book the Nth upcoming occurrence of the weekday; "
-            "today counts if it matches"
-        ),
-    )
     earliest: time = Field(
         description="Earliest acceptable tee-off, course-local, inclusive"
     )
@@ -84,10 +76,23 @@ class PreferencesIn(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _window_is_ordered(self) -> "PreferencesIn":
+    def _window_is_ordered(self) -> "WindowIn":
         if self.latest < self.earliest:
             raise ValueError("latest must not be before earliest")
         return self
+
+
+class PreferencesIn(WindowIn):
+    """A standing wish: which day, which window, how big a group."""
+
+    target_weekday: int = Field(ge=0, le=6, description="Monday=0 ... Sunday=6")
+    weeks_ahead: int = Field(
+        ge=1,
+        description=(
+            "Book the Nth upcoming occurrence of the weekday; "
+            "today counts if it matches"
+        ),
+    )
 
     def preferences(self) -> Preferences:
         # `include` so a subclass's extra fields (PlanIn) stay out.
@@ -168,21 +173,10 @@ class TeeTimeOut(BaseModel):
 # --- requests --------------------------------------------------------------
 
 
-class CriteriaIn(BaseModel):
+class CriteriaIn(WindowIn):
     """One day's search, for a one-off request with no plan behind it."""
 
     target_date: date
-    earliest: time
-    latest: time
-    holes: int = Field(ge=1)
-    players: int = Field(ge=1, le=4)
-    prefer_earlier: bool = True
-
-    @model_validator(mode="after")
-    def _window_is_ordered(self) -> "CriteriaIn":
-        if self.latest < self.earliest:
-            raise ValueError("latest must not be before earliest")
-        return self
 
     def criteria(self) -> SearchCriteria:
         return SearchCriteria(**self.model_dump(include=set(CriteriaIn.model_fields)))
