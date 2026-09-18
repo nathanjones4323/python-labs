@@ -28,6 +28,11 @@ from tee_time_booker.db.models import (
 from tee_time_booker.models import BookingResult, Preferences, SearchCriteria
 from tee_time_booker.platforms import get_platform
 
+
+class NotFound(LookupError):
+    """A lookup by id or key matched nothing."""
+
+
 # --- courses ---------------------------------------------------------------
 
 
@@ -73,8 +78,12 @@ def get_course(session: Session, key: str) -> Course:
     course = session.scalar(select(Course).where(Course.key == key))
     if course is None:
         known = ", ".join(sorted(session.scalars(select(Course.key))))
-        raise ValueError(f"Unknown course {key!r}. Known courses: {known}")
+        raise NotFound(f"Unknown course {key!r}. Known courses: {known}")
     return course
+
+
+def list_courses(session: Session) -> list[Course]:
+    return list(session.scalars(select(Course).order_by(Course.key)))
 
 
 # --- users, accounts, plans ------------------------------------------------
@@ -88,6 +97,26 @@ def ensure_user(session: Session, email: str, name: str | None = None) -> User:
     elif name:
         user.name = name
     return user
+
+
+def get_user(session: Session, email: str) -> User:
+    user = session.scalar(select(User).where(User.email == email))
+    if user is None:
+        raise NotFound(f"No user {email!r}")
+    return user
+
+
+def get_site_account(session: Session, user: User, env_prefix: str) -> SiteAccount:
+    account = session.scalar(
+        select(SiteAccount).where(
+            SiteAccount.user_id == user.id, SiteAccount.env_prefix == env_prefix
+        )
+    )
+    if account is None:
+        raise NotFound(
+            f"{user.email} has no site account with env prefix {env_prefix!r}"
+        )
+    return account
 
 
 def ensure_site_account(
@@ -139,8 +168,15 @@ def ensure_plan(
 def get_plan(session: Session, plan_id: uuid.UUID) -> BookingPlan:
     plan = session.get(BookingPlan, plan_id)
     if plan is None:
-        raise ValueError(f"No booking plan {plan_id}")
+        raise NotFound(f"No booking plan {plan_id}")
     return plan
+
+
+def list_plans(session: Session, *, user: User | None = None) -> list[BookingPlan]:
+    query = select(BookingPlan).order_by(BookingPlan.created_at)
+    if user is not None:
+        query = query.where(BookingPlan.user_id == user.id)
+    return list(session.scalars(query))
 
 
 def plan_preferences(plan: BookingPlan) -> Preferences:
@@ -196,10 +232,58 @@ def request_for_plan(
     return request
 
 
+def create_request(
+    session: Session,
+    user: User,
+    course: Course,
+    site_account: SiteAccount,
+    criteria: SearchCriteria,
+) -> BookingRequest:
+    """A one-off request with no plan behind it."""
+    request = BookingRequest(
+        user_id=user.id,
+        course_id=course.id,
+        site_account_id=site_account.id,
+        target_date=criteria.target_date,
+        earliest=criteria.earliest,
+        latest=criteria.latest,
+        holes=criteria.holes,
+        players=criteria.players,
+        prefer_earlier=criteria.prefer_earlier,
+    )
+    session.add(request)
+    session.flush()
+    return request
+
+
 def get_request(session: Session, request_id: uuid.UUID) -> BookingRequest:
     request = session.get(BookingRequest, request_id)
     if request is None:
-        raise ValueError(f"No booking request {request_id}")
+        raise NotFound(f"No booking request {request_id}")
+    return request
+
+
+def list_requests(
+    session: Session,
+    *,
+    status: RequestStatus | None = None,
+    user: User | None = None,
+    limit: int = 50,
+) -> list[BookingRequest]:
+    query = select(BookingRequest).order_by(BookingRequest.created_at.desc())
+    if status is not None:
+        query = query.where(BookingRequest.status == status)
+    if user is not None:
+        query = query.where(BookingRequest.user_id == user.id)
+    return list(session.scalars(query.limit(limit)))
+
+
+def cancel_request(session: Session, request_id: uuid.UUID) -> BookingRequest:
+    """Cancel a request that isn't running; `InvalidTransition` if it can't be."""
+    request = session.get(BookingRequest, request_id, with_for_update=True)
+    if request is None:
+        raise NotFound(f"No booking request {request_id}")
+    request.transition(RequestStatus.CANCELLED)
     return request
 
 
@@ -223,7 +307,7 @@ def claim_request(session: Session, request_id: uuid.UUID) -> ClaimedRun:
     """
     request = session.get(BookingRequest, request_id, with_for_update=True)
     if request is None:
-        raise ValueError(f"No booking request {request_id}")
+        raise NotFound(f"No booking request {request_id}")
     request.transition(RequestStatus.RUNNING)
     run = Run(request=request)
     session.add(run)
@@ -246,9 +330,7 @@ def finish_run(
     detail: str | None = None,
 ) -> Run:
     """Record how a run ended and move its request on accordingly."""
-    run = session.get(Run, run_id)
-    if run is None:
-        raise ValueError(f"No run {run_id}")
+    run = get_run(session, run_id)
     request = session.get(BookingRequest, run.request_id, with_for_update=True)
     assert request is not None
     run.status = status
@@ -267,6 +349,13 @@ def finish_run(
 
 def _money(value: float | None) -> Decimal | None:
     return None if value is None else Decimal(str(value))
+
+
+def get_run(session: Session, run_id: uuid.UUID) -> Run:
+    run = session.get(Run, run_id)
+    if run is None:
+        raise NotFound(f"No run {run_id}")
+    return run
 
 
 def recent_runs(session: Session, limit: int = 20) -> list[Run]:
