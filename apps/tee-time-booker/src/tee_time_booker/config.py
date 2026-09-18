@@ -93,7 +93,7 @@ class PaymentDetails:
                 if f.name in required
                 else os.environ.get(env_var, "").strip() or None
             )
-        return cls(**values)  # type: ignore[arg-type]
+        return cls(**values)
 
 
 @dataclass(frozen=True)

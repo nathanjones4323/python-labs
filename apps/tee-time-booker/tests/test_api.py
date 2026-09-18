@@ -45,27 +45,6 @@ def api(db, seeded, tmp_path):
         yield client
 
 
-def fake_booking(monkeypatch, outcome, seen=None):
-    """Make `book_tee_time` return / raise `outcome` without a browser."""
-
-    def book_tee_time(
-        course, criteria, settings, run_id, *, account_env_prefix, wait_for_release
-    ):
-        if seen is not None:
-            seen.update(
-                course=course,
-                criteria=criteria,
-                settings=settings,
-                prefix=account_env_prefix,
-                wait=wait_for_release,
-            )
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
-
-    monkeypatch.setattr(worker_module, "book_tee_time", book_tee_time)
-
-
 def wait_for(api, run_id: str):
     future = api.worker.futures.get(uuid.UUID(run_id))
     if future is not None:
@@ -188,9 +167,9 @@ def test_find_tee_times_maps_site_and_date_errors(api, monkeypatch):
 # --- booking ---------------------------------------------------------------
 
 
-def test_book_plan_starts_a_background_run_and_records_a_dry_run(api, monkeypatch):
+def test_book_plan_starts_a_background_run_and_records_a_dry_run(api, fake_booking):
     seen = {}
-    fake_booking(monkeypatch, BookingResult(tee_time=SLOT, submitted=False), seen)
+    fake_booking(BookingResult(tee_time=SLOT, submitted=False), seen)
 
     response = api.post(
         f"/plans/{api.ids['soule_plan']}/book", json={"target_date": "2026-10-03"}
@@ -215,9 +194,9 @@ def test_book_plan_starts_a_background_run_and_records_a_dry_run(api, monkeypatc
     assert seen["wait"] is False and seen["settings"].submit_payment is False
 
 
-def test_book_plan_without_a_date_uses_the_plans_target_and_waits(api, monkeypatch):
+def test_book_plan_without_a_date_uses_the_plans_target_and_waits(api, fake_booking):
     seen = {}
-    fake_booking(monkeypatch, RuntimeError("stop"), seen)
+    fake_booking(RuntimeError("stop"), seen)
     plan = api.get(f"/plans/{api.ids['soule_plan']}").json()
 
     started = api.post(f"/plans/{plan['id']}/book", json={}).json()
@@ -231,7 +210,7 @@ def test_book_plan_without_a_date_uses_the_plans_target_and_waits(api, monkeypat
 
 
 def test_payment_needs_both_the_operator_switch_and_the_caller(
-    db, seeded, tmp_path, monkeypatch
+    db, seeded, tmp_path, fake_booking
 ):
     settings = Settings(
         database_url=None,
@@ -244,7 +223,7 @@ def test_payment_needs_both_the_operator_switch_and_the_caller(
     worker = BookingWorker(db, settings, max_workers=1)
     seen = {}
     paid = BookingResult(tee_time=SLOT, submitted=True, confirmation="R1")
-    fake_booking(monkeypatch, paid, seen)
+    fake_booking(paid, seen)
     with TestClient(create_app(settings, sessions=db, worker=worker)) as api:
         url = f"/plans/{seeded['soule_plan']}/book"
         # Caller opted out: dry run even though the operator switch is on.
@@ -290,14 +269,14 @@ def test_a_request_already_running_is_a_conflict(api, monkeypatch):
         wait_for(api, started.json()["run_id"])
 
 
-def test_a_failed_request_can_be_run_again_or_cancelled(api, monkeypatch):
-    fake_booking(monkeypatch, RuntimeError("stop"))
+def test_a_failed_request_can_be_run_again_or_cancelled(api, fake_booking):
+    fake_booking(RuntimeError("stop"))
     url = f"/plans/{api.ids['soule_plan']}/book"
     first = api.post(url, json={"target_date": "2026-10-03"}).json()
     wait_for(api, first["run_id"])
     request_id = first["request_id"]
 
-    fake_booking(monkeypatch, BookingResult(tee_time=SLOT, submitted=False))
+    fake_booking(BookingResult(tee_time=SLOT, submitted=False))
     second = api.post(f"/requests/{request_id}/run", json={"wait_for_release": False})
     assert second.status_code == 202, second.text
     assert second.json()["request_id"] == request_id
@@ -313,9 +292,9 @@ def test_a_failed_request_can_be_run_again_or_cancelled(api, monkeypatch):
     assert api.post(f"/requests/{request_id}/run", json={}).status_code == 409
 
 
-def test_a_one_off_request_needs_no_plan(api, monkeypatch):
+def test_a_one_off_request_needs_no_plan(api, fake_booking):
     seen = {}
-    fake_booking(monkeypatch, BookingResult(tee_time=SLOT, submitted=False), seen)
+    fake_booking(BookingResult(tee_time=SLOT, submitted=False), seen)
     created = api.post(
         "/requests",
         json={

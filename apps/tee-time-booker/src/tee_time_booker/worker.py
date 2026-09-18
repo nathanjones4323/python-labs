@@ -18,25 +18,15 @@ from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
 
 from tee_time_booker.config import Settings
-from tee_time_booker.courses import CourseConfig
 from tee_time_booker.db import RunStatus
 from tee_time_booker.db.service import ClaimedRun, finish_run
-from tee_time_booker.models import BookingResult, SearchCriteria
+from tee_time_booker.models import BookingResult
 from tee_time_booker.platforms import PaymentOutcomeUnknownError
 from tee_time_booker.runner import book_tee_time
 
 # Browsers a single API process drives at once. Runs beyond this are already
 # claimed (`running`) and wait their turn in the pool's queue.
 MAX_CONCURRENT_RUNS = 4
-
-
-def describe(course: CourseConfig, criteria: SearchCriteria, run_id: uuid.UUID) -> None:
-    logger.info(
-        f"Run {run_id}: booking {course.name} ({course.platform}) on "
-        f"{criteria.target_date:%A %Y-%m-%d} between "
-        f"{criteria.earliest:%I:%M %p} and {criteria.latest:%I:%M %p} "
-        f"for {criteria.players} players, {criteria.holes} holes"
-    )
 
 
 def execute(
@@ -53,7 +43,13 @@ def execute(
     database is touched only at the end, so no connection is held while the
     run waits on a release.
     """
-    describe(claimed.course, claimed.criteria, claimed.run_id)
+    course, criteria = claimed.course, claimed.criteria
+    logger.info(
+        f"Run {claimed.run_id}: booking {course.name} ({course.platform}) on "
+        f"{criteria.target_date:%A %Y-%m-%d} between "
+        f"{criteria.earliest:%I:%M %p} and {criteria.latest:%I:%M %p} "
+        f"for {criteria.players} players, {criteria.holes} holes"
+    )
     result: BookingResult | None = None
     status = RunStatus.ERROR
     detail: str | None = None
@@ -110,25 +106,41 @@ class BookingWorker:
         self._pool = ThreadPoolExecutor(max_workers, thread_name_prefix="booking")
         self.futures: dict[uuid.UUID, Future[RunStatus]] = {}
 
+    def pays(self, submit_payment: bool) -> bool:
+        """Whether a run asked to pay really will.
+
+        Paying needs both switches on: the operator's `TEE_TIME_SUBMIT_PAYMENT`
+        and the caller's `submit_payment`. Either off makes it a dry run.
+        """
+        return submit_payment and self.settings.submit_payment
+
     def start(
         self, claimed: ClaimedRun, *, submit_payment: bool, wait_for_release: bool
     ) -> Future[RunStatus]:
         """Run `claimed` in the background.
 
-        Paying needs both switches on: the operator's `TEE_TIME_SUBMIT_PAYMENT`
-        and the caller's `submit_payment`. Either off makes it a dry run.
+        Raises `RuntimeError` if the pool is shut down (the API is stopping);
+        the claimed request is recorded as an error first, so it isn't left
+        claimed with nothing driving it.
         """
-        settings = self.settings
-        if not submit_payment:
-            settings = replace(settings, submit_payment=False)
-        future = self._pool.submit(
-            execute, self.sessions, claimed, settings, wait_for_release=wait_for_release
-        )
-        self.futures[claimed.run_id] = future
-        future.add_done_callback(lambda _: self.futures.pop(claimed.run_id, None))
+        settings = replace(self.settings, submit_payment=self.pays(submit_payment))
+        run_id = claimed.run_id
+        try:
+            future = self._pool.submit(
+                execute,
+                self.sessions,
+                claimed,
+                settings,
+                wait_for_release=wait_for_release,
+            )
+        except RuntimeError as e:
+            self._abandon(run_id, str(e))
+            raise
+        self.futures[run_id] = future
+        future.add_done_callback(lambda _: self.futures.pop(run_id, None))
         return future
 
-    def shutdown(self, wait: bool = False) -> None:
+    def shutdown(self) -> None:
         """Stop taking runs.
 
         Runs already on a thread finish and record themselves. Runs still in
@@ -136,13 +148,14 @@ class BookingWorker:
         are recorded as errors here rather than left claimed forever.
         """
         pending = list(self.futures.items())
-        self._pool.shutdown(wait=wait, cancel_futures=True)
+        self._pool.shutdown(wait=False, cancel_futures=True)
         for run_id, future in pending:
             if future.cancelled():
-                with self.sessions() as session, session.begin():
-                    finish_run(
-                        session,
-                        run_id,
-                        RunStatus.ERROR,
-                        detail="Cancelled: the API shut down before the run started",
-                    )
+                self._abandon(
+                    run_id, "Cancelled: the API shut down before the run started"
+                )
+
+    def _abandon(self, run_id: uuid.UUID, detail: str) -> None:
+        """Record a claimed run that will never start as an error."""
+        with self.sessions() as session, session.begin():
+            finish_run(session, run_id, RunStatus.ERROR, detail=detail)

@@ -5,7 +5,6 @@ from datetime import date
 
 from fastapi import APIRouter, Query, status
 
-from tee_time_booker import dates
 from tee_time_booker.api.deps import AppSettings, Sessions, Worker
 from tee_time_booker.api.routers.requests import start_run
 from tee_time_booker.api.schemas import (
@@ -25,6 +24,7 @@ from tee_time_booker.db.service import (
     get_user,
     list_plans,
     plan_preferences,
+    plan_target_date,
     request_for_plan,
 )
 from tee_time_booker.runner import find_tee_times
@@ -33,8 +33,7 @@ router = APIRouter(prefix="/plans", tags=["plans"])
 
 
 def _out(plan: BookingPlan) -> PlanOut:
-    course = course_config(plan.course)
-    return PlanOut.from_row(plan, dates.target_date(course, plan_preferences(plan)))
+    return PlanOut.from_row(plan, plan_target_date(plan))
 
 
 @router.get(
@@ -57,11 +56,6 @@ def create(body: PlanIn, sessions: Sessions) -> PlanOut:
         user = get_user(session, body.user_email)
         course = get_course(session, body.course)
         account = get_site_account(session, user, body.env_prefix)
-        if account.platform != course.platform:
-            raise ValueError(
-                f"Site account {body.env_prefix!r} is a {account.platform} login; "
-                f"{course.key} is booked through {course.platform}"
-            )
         plan = ensure_plan(
             session,
             user,
@@ -102,7 +96,7 @@ def tee_times(
         plan = get_plan(session, plan_id)
         course = course_config(plan.course)
         prefs = plan_preferences(plan)
-        target = date_ or dates.target_date(course, prefs)
+        target = date_ or plan_target_date(plan)
         criteria = prefs.criteria(target)
         env_prefix = plan.site_account.env_prefix
     found = find_tee_times(course, criteria, settings, account_env_prefix=env_prefix)
@@ -126,7 +120,6 @@ def book(
 ) -> RunStarted:
     with sessions() as session, session.begin():
         plan = get_plan(session, plan_id)
-        course = course_config(plan.course)
-        target = body.target_date or dates.target_date(course, plan_preferences(plan))
+        target = body.target_date or plan_target_date(plan)
         request_id = request_for_plan(session, plan, target).id
     return start_run(sessions, worker, request_id, body)

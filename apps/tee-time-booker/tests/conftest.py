@@ -15,6 +15,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from tee_time_booker import worker
 from tee_time_booker.courses import SATICOY, SOULE_PARK
 from tee_time_booker.db import Base, make_session_factory
 from tee_time_booker.db.service import (
@@ -111,3 +112,30 @@ def seeded(db):
             "saticoy_plan": saticoy_plan.id,
         }
     return ids
+
+
+@pytest.fixture
+def fake_booking(monkeypatch):
+    """`fake_booking(outcome, seen=None)` makes `worker.book_tee_time` return /
+    raise `outcome` without a browser; `seen` collects the arguments it got."""
+
+    def install(outcome, seen=None):
+        def book_tee_time(
+            course, criteria, settings, run_id, *, account_env_prefix, wait_for_release
+        ):
+            if seen is not None:
+                seen.update(
+                    course=course,
+                    criteria=criteria,
+                    settings=settings,
+                    run_id=run_id,
+                    prefix=account_env_prefix,
+                    wait=wait_for_release,
+                )
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(worker, "book_tee_time", book_tee_time)
+
+    return install
