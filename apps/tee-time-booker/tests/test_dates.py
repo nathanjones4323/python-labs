@@ -1,4 +1,5 @@
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,10 +13,22 @@ from tee_time_booker.dates import (
     sleep_until_release,
     target_date,
 )
+from tee_time_booker.models import Preferences
 
 LA = ZoneInfo("America/Los_Angeles")
 
 SATURDAY = 5
+
+# The Soule Park plan's preferences: the 3rd upcoming Saturday.
+THIRD_SATURDAY = Preferences(
+    target_weekday=SATURDAY,
+    weeks_ahead=3,
+    earliest=time(8, 0),
+    latest=time(14, 0),
+    holes=18,
+    players=4,
+)
+NEXT_SATURDAY = replace(THIRD_SATURDAY, weeks_ahead=1)
 
 
 def test_third_saturday_from_a_weekday():
@@ -43,9 +56,7 @@ def test_rejects_non_positive_n(n):
 def test_target_date_uses_course_local_day():
     # 20:30 UTC Sat 2026-09-19 is 13:30 PDT Saturday in Los Angeles.
     now = datetime(2026, 9, 19, 20, 30, tzinfo=ZoneInfo("UTC"))
-    prefs = SOULE_PARK.preferences
-    assert prefs.target_weekday == SATURDAY and prefs.weeks_ahead == 3
-    assert target_date(SOULE_PARK, now) == date(2026, 10, 3)
+    assert target_date(SOULE_PARK, THIRD_SATURDAY, now) == date(2026, 10, 3)
 
 
 def test_late_evening_run_belongs_to_the_coming_release():
@@ -53,7 +64,7 @@ def test_late_evening_run_belongs_to_the_coming_release():
     # midnight release, which opens Sat 2026-10-10 (20 days out).
     now = datetime(2026, 9, 20, 6, 30, tzinfo=ZoneInfo("UTC"))
     assert release_day(SOULE_PARK, now) == date(2026, 9, 20)
-    assert target_date(SOULE_PARK, now) == date(2026, 10, 10)
+    assert target_date(SOULE_PARK, THIRD_SATURDAY, now) == date(2026, 10, 10)
     assert next_release(SOULE_PARK, now) == datetime(2026, 9, 20, 0, 0, tzinfo=LA)
 
 
@@ -61,7 +72,7 @@ def test_run_after_midnight_needs_no_wait():
     now = datetime(2026, 9, 20, 0, 5, tzinfo=LA)
     assert release_day(SOULE_PARK, now) == date(2026, 9, 20)
     assert next_release(SOULE_PARK, now) is None
-    assert target_date(SOULE_PARK, now) == date(2026, 10, 10)
+    assert target_date(SOULE_PARK, THIRD_SATURDAY, now) == date(2026, 10, 10)
 
 
 def test_daytime_run_needs_no_wait():
@@ -75,7 +86,7 @@ def test_course_without_a_release_never_waits_or_rolls_over():
     assert SATICOY.release is None
     assert release_day(SATICOY, late) == date(2026, 9, 19)
     assert next_release(SATICOY, late) is None
-    assert target_date(SATICOY, late) == date(2026, 9, 19)
+    assert target_date(SATICOY, NEXT_SATURDAY, late) == date(2026, 9, 19)
 
 
 def test_release_too_far_away_fails_instead_of_sleeping_past_the_job_timeout():

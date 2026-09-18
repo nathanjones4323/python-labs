@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from loguru import logger
 
 from tee_time_booker.courses import CourseConfig
+from tee_time_booker.models import Preferences
 
 # Refuse to wait longer than this for a release. The GitHub job is killed at
 # 110 min (tee-time-booker.yml), which would skip logging the run entirely, so
@@ -62,9 +63,10 @@ def next_release(course: CourseConfig, now: datetime | None = None) -> datetime 
     return datetime.combine(day, course.release.opens_at, tzinfo=course.timezone)
 
 
-def target_date(course: CourseConfig, now: datetime | None = None) -> date:
-    """The date to book, per the course's preferences, in course-local time."""
-    prefs = course.preferences
+def target_date(
+    course: CourseConfig, prefs: Preferences, now: datetime | None = None
+) -> date:
+    """The date `prefs` asks for at `course`, in course-local time."""
     return nth_upcoming_weekday(
         release_day(course, now), prefs.target_weekday, prefs.weeks_ahead
     )

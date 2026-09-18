@@ -1,8 +1,9 @@
 """The vocabulary every booking platform speaks.
 
 A search is a `SearchCriteria`, a slot is a `TeeTime`, the outcome of booking
-one is a `BookingResult`. Adapters translate their site's own shapes into
-these; nothing platform-specific belongs here.
+one is a `BookingResult`; `Preferences` is a standing wish that turns into a
+`SearchCriteria` once a date is chosen. Adapters translate their site's own
+shapes into these; nothing platform-specific belongs here.
 """
 
 from dataclasses import dataclass
@@ -21,6 +22,37 @@ class SearchCriteria:
     holes: int
     # Within the window, take the earliest slot. False takes the latest.
     prefer_earlier: bool = True
+
+
+@dataclass(frozen=True, kw_only=True)
+class Preferences:
+    """Which day, which time window, how big a group — a user's standing wish.
+
+    Stored on a booking plan in the database; `criteria()` pins it to a date.
+    """
+
+    # Book the Nth upcoming occurrence of `target_weekday` (Monday=0 ...
+    # Sunday=6); "upcoming" includes today if today is that weekday.
+    target_weekday: int
+    weeks_ahead: int
+    # Acceptable tee-off window (course-local), inclusive on both ends.
+    earliest: time
+    latest: time
+    holes: int
+    players: int
+    # Within the window, take the earliest slot. False takes the latest.
+    prefer_earlier: bool = True
+
+    def criteria(self, target_date: date) -> SearchCriteria:
+        """The search these preferences describe for `target_date`."""
+        return SearchCriteria(
+            target_date=target_date,
+            earliest=self.earliest,
+            latest=self.latest,
+            players=self.players,
+            holes=self.holes,
+            prefer_earlier=self.prefer_earlier,
+        )
 
 
 @dataclass(frozen=True)
