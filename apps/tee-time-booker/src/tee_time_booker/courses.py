@@ -58,6 +58,11 @@ class CourseConfig:
     timezone: ZoneInfo
     preferences: Preferences
     release: ReleaseSchedule | None
+    # How far ahead the site takes bookings, when that's fixed and known: the
+    # last bookable day is this many days after the day a run books from
+    # (`dates.release_day`). None means the adapter asks the site instead
+    # (`BookingPlatform.last_bookable_day`).
+    booking_window_days: int | None
     # Environment variables holding this course's login. Separate courses on
     # the same platform can use separate accounts.
     email_env: str
@@ -118,6 +123,7 @@ SOULE_PARK = ForeUpCourse(
     # foreUP opens each day's tee sheet at course-local midnight, 20 days
     # ahead (its "21 day" window counts today).
     release=ReleaseSchedule(opens_at=time(0, 0), pre_release_start=time(20, 0)),
+    booking_window_days=20,
     email_env="SOULE_EMAIL",
     password_env="SOULE_PASSWORD",
     course_id="19620",
@@ -141,6 +147,10 @@ SATICOY = GolfNowCourse(
     ),
     # GolfNow releases on a rolling window rather than at a fixed local time.
     release=None,
+    # Each GolfNow facility sets its own window (Saticoy lists a week ahead,
+    # Sterling Hills three or more), and the site nowhere states it, so the
+    # adapter measures it at run time.
+    booking_window_days=None,
     email_env="GOLFNOW_EMAIL",
     password_env="GOLFNOW_PASSWORD",
     facility_id=1226,

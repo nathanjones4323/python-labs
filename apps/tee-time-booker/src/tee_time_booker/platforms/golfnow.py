@@ -36,6 +36,9 @@ GolfNow quirks the code works around:
 - GolfID occasionally refuses a correct password ("There was an issue logging
   into your account. Please click here to verify your account...") and a
   fresh attempt goes through, so sign-in is retried once.
+- Each facility sets its own booking window and GolfNow states it nowhere (a
+  day past it is just an empty search), so `last_bookable_day` measures it
+  with one search per day and the runner refuses a target beyond it.
 - An account with an incomplete profile is sent to "Edit Profile" after
   signing in instead of the page it asked for. The search API, the tee time
   page and checkout all still work from there, so the adapter reports which
@@ -44,7 +47,7 @@ GolfNow quirks the code works around:
 """
 
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from loguru import logger
@@ -66,6 +69,10 @@ DATE_FORMAT = "%b %d %Y"
 # GolfNow's holes filter: "1" = 9, "2" = 18, "3" = any. We ask for any and
 # match `holeCount` ourselves, so a course selling both is handled the same way.
 HOLES_ANY = "3"
+# Measuring a facility's booking window (see `last_bookable_day`): give up
+# after this many days, and treat this many empty days in a row as its end.
+WINDOW_PROBE_MAX_DAYS = 45
+WINDOW_PROBE_EMPTY_DAYS = 3
 
 # --- Login (GolfID iframe) --------------------------------------------------------
 LOGIN_FRAME = "#golfid-oauth-frame"
@@ -177,18 +184,19 @@ def allowed_players(player_rule: Any) -> frozenset[int]:
     return frozenset(_PLAYER_WORDS[w] for w in words) or ALL_PLAYER_COUNTS
 
 
-def search_payload(course: GolfNowCourse, criteria: SearchCriteria) -> dict[str, Any]:
+def search_payload(course: GolfNowCourse, day: date) -> dict[str, Any]:
     """The body GolfNow's search endpoint expects for one facility on one day.
 
-    The time window and hole count are left wide open here and applied to the
-    results instead: GolfNow reinterprets (and sometimes ignores) those filters
-    server-side, and we would rather see every slot than trust its filtering.
+    The time window, hole count and group size are left wide open here and
+    applied to the results instead: GolfNow reinterprets (and sometimes
+    ignores) those filters server-side, and we would rather see every slot
+    than trust its filtering.
     """
     return {
         "pageSize": 1000,
         "teeTimeCount": 20,
         "pageNumber": 0,
-        "date": criteria.target_date.strftime(DATE_FORMAT),
+        "date": day.strftime(DATE_FORMAT),
         "sortBy": "Date",
         "sortByRollup": "Date.MinDate",
         "sortDirection": 0,
@@ -246,6 +254,18 @@ def _start_time(row: Any) -> datetime | None:
         return None
 
 
+def _rows(payload: Any) -> list[Any]:
+    """The tee-time rows in a search response, every rate included."""
+    if not isinstance(payload, dict):
+        raise ValueError(f"Unexpected search payload: {payload!r}")
+    rows = (payload.get("ttResults") or {}).get("teeTimes")
+    if rows is None:
+        rows = payload.get("results")
+    if not isinstance(rows, list):
+        raise ValueError(f"Search response had no tee times: {payload!r}"[:300])
+    return rows
+
+
 def parse_tee_times(
     payload: Any, course: GolfNowCourse, criteria: SearchCriteria
 ) -> list[TeeTime]:
@@ -254,14 +274,7 @@ def parse_tee_times(
     Rates that don't match the requested hole count, or that won't take the
     requested group size, are dropped — they aren't bookable for this run.
     """
-    if not isinstance(payload, dict):
-        raise ValueError(f"Unexpected search payload: {payload!r}")
-    rows = (payload.get("ttResults") or {}).get("teeTimes")
-    if rows is None:
-        rows = payload.get("results")
-    if not isinstance(rows, list):
-        raise ValueError(f"Search response had no tee times: {payload!r}"[:300])
-
+    rows = _rows(payload)
     tee_times: list[TeeTime] = []
     dropped = {"holes": 0, "players": 0}
     for row in rows:
@@ -449,15 +462,56 @@ class GolfNowPlatform(BookingPlatform):
         except PlaywrightTimeoutError:
             pass
 
+    def last_bookable_day(self) -> date | None:
+        """Measure how far ahead this facility lists, since GolfNow never says.
+
+        Each facility sets its own window (a week at Saticoy, three or more at
+        Sterling Hills) and neither the facility page nor the search response
+        carries it: a day past the window is simply an empty search. So this
+        walks forward from today one search per day until the listings stop,
+        allowing a couple of empty days in a row for a course that's closed
+        (or sold out) mid-window. Two dozen small requests at most.
+        """
+        today = datetime.now(self.course.timezone).date()
+        last_listed: date | None = None
+        empty_run = 0
+        for offset in range(WINDOW_PROBE_MAX_DAYS + 1):
+            day = today + timedelta(days=offset)
+            if _rows(self._search(day)):
+                last_listed, empty_run = day, 0
+            else:
+                empty_run += 1
+                if empty_run >= WINDOW_PROBE_EMPTY_DAYS:
+                    break
+        if last_listed is None:
+            logger.warning(
+                f"GolfNow lists nothing at all for {self.course.name} in the next "
+                f"{WINDOW_PROBE_EMPTY_DAYS} days, so its booking window is unknown"
+            )
+            return None
+        if (last_listed - today).days >= WINDOW_PROBE_MAX_DAYS:
+            logger.info(
+                f"{self.course.name} lists at least {WINDOW_PROBE_MAX_DAYS} days "
+                "ahead on GolfNow; stopped measuring there"
+            )
+            return None
+        return last_listed
+
     def find_tee_times(self, criteria: SearchCriteria) -> list[TeeTime]:
         """Ask GolfNow's search API for the day's rates, through the signed-in session.
 
         GolfNow answers with an empty list (and a "no tee times" note) for a day
         it hasn't opened yet, which the runner treats as "not released".
         """
+        return parse_tee_times(
+            self._search(criteria.target_date), self.course, criteria
+        )
+
+    def _search(self, day: date) -> Any:
+        """One search-API call for `day`, wide open, as the parsed JSON body."""
         response = self.session.context.request.post(
             SEARCH_API_URL,
-            data=search_payload(self.course, criteria),
+            data=search_payload(self.course, day),
             headers={
                 "Content-Type": "application/json",
                 "X-Requested-With": "XMLHttpRequest",
@@ -469,7 +523,7 @@ class GolfNowPlatform(BookingPlatform):
             raise RuntimeError(
                 f"GolfNow search returned {response.status}: {response.text()[:500]}"
             )
-        return parse_tee_times(response.json(), self.course, criteria)
+        return response.json()
 
     def hold(self, tee_time: TeeTime, criteria: SearchCriteria) -> bool:
         """Open the rate's page, pick the group size and continue to its checkout.

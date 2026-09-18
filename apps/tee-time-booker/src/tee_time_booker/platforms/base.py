@@ -20,6 +20,7 @@ two steps are genuinely different states.
 """
 
 from abc import ABC, abstractmethod
+from datetime import date
 from typing import ClassVar
 
 from tee_time_booker.browser import BrowserSession
@@ -89,6 +90,16 @@ class BookingPlatform(ABC):
     @abstractmethod
     def start(self, criteria: SearchCriteria) -> None:
         """Open the booking site and sign in, ready to search."""
+
+    def last_bookable_day(self) -> date | None:
+        """The furthest day the site currently takes bookings for, asked of the site.
+
+        Called once, signed in, before the first search. Sites with a fixed,
+        known window leave this returning None and set
+        `CourseConfig.booking_window_days` instead, which needs no session and
+        so can be checked before a release wait.
+        """
+        return None
 
     @abstractmethod
     def find_tee_times(self, criteria: SearchCriteria) -> list[TeeTime]:

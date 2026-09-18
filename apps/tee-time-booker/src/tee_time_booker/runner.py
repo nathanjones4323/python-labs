@@ -18,7 +18,7 @@ from loguru import logger
 from tee_time_booker.browser import browser_session, pause
 from tee_time_booker.config import Account, Credentials, PaymentCard, Settings
 from tee_time_booker.courses import CourseConfig
-from tee_time_booker.dates import sleep_until_release
+from tee_time_booker.dates import check_target_date, release_day, sleep_until_release
 from tee_time_booker.models import BookingResult, SearchCriteria, TeeTime
 from tee_time_booker.platforms import BookingPlatform, build_platform, get_platform
 from tee_time_booker.selection import choose_tee_time
@@ -71,10 +71,30 @@ def open_platform(
         platform = build_platform(course, credentials, session)
         try:
             platform.start(criteria)
+            check_booking_window(platform, criteria)
             yield platform
         except Exception:
             platform.save_artifacts(f"failure-{course.key}-{criteria.target_date}")
             raise
+
+
+def check_booking_window(platform: BookingPlatform, criteria: SearchCriteria) -> None:
+    """Refuse a target the site can't book yet, once the adapter can ask it.
+
+    Sites without a fixed window (GolfNow) only reveal it on the site itself,
+    so this runs signed in, just before the first search. The measured window
+    is logged either way: it's the number to plan `weeks_ahead` around.
+    """
+    course = platform.course
+    last = platform.last_bookable_day()
+    if last is None:
+        return
+    today = release_day(course)
+    logger.info(
+        f"{course.name} takes bookings through {last:%A %Y-%m-%d} "
+        f"({(last - today).days} days ahead)"
+    )
+    check_target_date(course, criteria.target_date, last)
 
 
 def find_tee_times(
@@ -90,6 +110,7 @@ def find_tee_times(
     again. Booking uses `open_platform` directly so the search and the booking
     share one session.
     """
+    check_target_date(course, criteria.target_date)
     with open_platform(course, criteria, settings, with_card=False) as platform:
         return search(platform, criteria, poll_seconds=poll_seconds)
 
@@ -150,8 +171,9 @@ def book_tee_time(
     submit and leaves a screenshot behind.
     """
     platform_type = get_platform(course.platform)
-    # Load secrets before any wait, so a missing one fails now rather than
-    # after sleeping up to the release.
+    # Check the date and load secrets before any wait, so a bad one fails now
+    # rather than after sleeping up to the release.
+    check_target_date(course, criteria.target_date)
     credentials = load_credentials(course, with_card=True)
     if settings.target_date_override is None:
         # An override points at an already-open day; there's nothing to wait for.
