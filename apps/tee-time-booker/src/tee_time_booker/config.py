@@ -50,25 +50,25 @@ class Account:
 
 
 @dataclass(frozen=True)
-class PaymentCard:
-    """The card entered at checkout.
+class PaymentDetails:
+    """What a checkout asks for beyond the login.
 
-    Sites ask for different subsets of this: foreUP wants the number, expiry,
-    CVC and postal code; GolfNow also wants a cardholder name, billing address,
-    state and phone number. Each adapter declares the fields it needs
-    (`BookingPlatform.required_card_fields`) and `from_env` only insists on
-    those, so a run doesn't fail over a field its site never asks for.
+    Sites differ in how much that is. foreUP (Soule Park) has no card on file,
+    so it wants a card typed in every time: number, expiry, CVC and postal
+    code. GolfNow pays with the card saved on the account and only asks for
+    the billing state and postal code it doesn't keep on the profile — so a
+    GolfNow run never holds a card number. Each adapter declares the fields
+    it needs (`BookingPlatform.required_payment_fields`) and `from_env` only
+    insists on those, so a run doesn't fail over a field its site never asks
+    for.
     """
 
-    number: str
-    expiration_month: str  # MM
-    expiration_year: str  # YY
-    cvc: str
-    postal_code: str
-    name: str | None = None
-    billing_address: str | None = None
+    number: str | None = None
+    expiration_month: str | None = None  # MM
+    expiration_year: str | None = None  # YY
+    cvc: str | None = None
+    postal_code: str | None = None
     state: str | None = None  # two-letter code, e.g. CA
-    phone: str | None = None
 
     # Field name -> environment variable holding it.
     ENV_VARS = {
@@ -77,17 +77,14 @@ class PaymentCard:
         "expiration_year": "CREDIT_CARD_EXPIRATION_YEAR",
         "cvc": "CREDIT_CARD_CVC",
         "postal_code": "CREDIT_CARD_POSTAL_CODE",
-        "name": "CREDIT_CARD_NAME",
-        "billing_address": "CREDIT_CARD_BILLING_ADDRESS",
         "state": "CREDIT_CARD_STATE",
-        "phone": "PHONE_NUMBER",
     }
 
     @classmethod
-    def from_env(cls, required: tuple[str, ...]) -> "PaymentCard":
+    def from_env(cls, required: tuple[str, ...]) -> "PaymentDetails":
         unknown = set(required) - set(cls.ENV_VARS)
         if unknown:
-            raise ValueError(f"Not card fields: {', '.join(sorted(unknown))}")
+            raise ValueError(f"Not payment fields: {', '.join(sorted(unknown))}")
         values: dict[str, str | None] = {}
         for f in fields(cls):
             env_var = cls.ENV_VARS[f.name]
@@ -101,14 +98,14 @@ class PaymentCard:
 
 @dataclass(frozen=True)
 class Credentials:
-    """A login, and the card to pay with once there is something to pay for.
+    """A login, and what checkout will ask for once there is something to pay.
 
-    `card` is None for runs that only look (listing tee times), so a search
-    doesn't need card details in the environment.
+    `payment` is None for runs that only look (listing tee times), so a search
+    doesn't need payment details in the environment.
     """
 
     account: Account
-    card: PaymentCard | None = None
+    payment: PaymentDetails | None = None
 
 
 @dataclass(frozen=True)

@@ -168,7 +168,7 @@ def _exact(text: str) -> re.Pattern[str]:
 class ForeUpPlatform(BookingPlatform):
     name = "foreup"
     course_type = ForeUpCourse
-    required_card_fields = (
+    required_payment_fields = (
         "number",
         "expiration_month",
         "expiration_year",
@@ -356,7 +356,7 @@ class ForeUpPlatform(BookingPlatform):
     def _fill_payment_details(self) -> None:
         page = self.page
         card = page.frame_locator(CARD_IFRAME)
-        details = self.card
+        details = self.payment
         # Hosted inputs format as you type, so send keystrokes rather than fill().
         fields = [
             (card.locator(CARD_NUMBER_INPUT), details.number),

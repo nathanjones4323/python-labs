@@ -56,7 +56,7 @@ reaching for an adapter directly.
 ### Adding a booking site
 
 1. Write `platforms/<site>.py` with a `BookingPlatform` subclass: a `name`, the
-   `CourseConfig` subclass it needs, the `PaymentCard` fields its checkout asks
+   `CourseConfig` subclass it needs, the `PaymentDetails` fields its checkout asks
    for, and the four methods.
 2. Add the class to `_ADAPTERS` in `platforms/__init__.py`.
 3. Add courses to `SEED_COURSES` in `courses.py` with `platform="<site>"` and
@@ -106,8 +106,9 @@ confirmation or error appeared — check the account on the booking site before
 touching the request again). A request can't be claimed twice or booked twice,
 whatever the caller does.
 
-Card details are not in the database. Every run pays with the one card in the
-environment (`CREDIT_CARD_*`); per-user cards need an encryption story first.
+Card details are not in the database. A GolfNow run pays with the card saved on
+the account it signs in to; a foreUP run types the one card in the environment
+(`CREDIT_CARD_*`). Per-user cards need an encryption story first.
 
 Schema changes are Alembic migrations in `migrations/`, generated from the
 models:
@@ -145,11 +146,11 @@ request directly. It then:
    it, searches again and tries the next-best, up to 4 times
 5. reaches the checkout form. If `TEE_TIME_SUBMIT_PAYMENT` is not `true`
    it stops here (a dry run), saves a screenshot to `artifacts/`, and records
-   the run as `dry_run` — card details are never entered on a dry run
-6. otherwise fills in the card and clicks the final submit
+   the run as `dry_run` — nothing is filled in on a dry run
+6. otherwise fills in the payment form and clicks the final submit
 
 On any failure a full-page screenshot and the page HTML are written to
-`artifacts/`; the HTML is what you need to repair a selector. Card inputs are
+`artifacts/`; the HTML is what you need to repair a selector. Card and personal inputs are
 hidden in every screenshot, since artifacts are uploaded to GitHub Actions.
 
 ## HTTP API
@@ -286,12 +287,22 @@ Reserve.
   form (every field reports as not visible) until "Skip to checkout" is
   clicked, so the adapter dismisses it before filling anything. A OneTrust
   cookie banner is accepted too so it can't sit over the Reserve button.
-- Checkout also requires a **billing state** (`CREDIT_CARD_STATE`, two-letter
-  code) alongside the address and postal code; Reserve stays disabled until
-  every mandatory field validates, and the adapter waits for it to enable
-  before clicking. A dry run doesn't fill the form, so instead it logs which
-  of the expected checkout fields are on the page — the first place to look
-  when GolfNow renames an id.
+- **Payment is the card saved on the GolfNow account**, so a GolfNow run
+  never holds a card number. With a default payment method saved, checkout
+  renders a "Saved Cards" dropdown with it selected (`#selCreditCard`,
+  `UseSavedCreditCard=true`) and collapses the new-card form; the adapter
+  checks that's the case — on dry runs too — and stops if there's no saved
+  card, if it has expired, or if GolfNow wants its CVV re-entered
+  (`data-iscvvrequired`), rather than fall back to typing a card.
+- Even with a saved card, checkout wants a **billing state and postal code**
+  (`CREDIT_CARD_STATE`, two-letter code, and `CREDIT_CARD_POSTAL_CODE`): the
+  profile fills in name, address and phone but never those two. The adapter
+  fills them only when empty and ticks "Save billing address to your account
+  profile" so GolfNow keeps them. Reserve stays disabled until every
+  mandatory field validates, and the adapter waits for it to enable before
+  clicking. A dry run doesn't fill the form, so instead it logs which of the
+  expected checkout fields are on the page — the first place to look when
+  GolfNow renames an id.
 - GolfNow auto-opts the booking into a round-up **charitable donation**
   (cents to the next dollar); the adapter leaves that as the site sets it.
 - The whole flow up to Reserve — login, search, detail page, checkout — was
@@ -309,7 +320,7 @@ uv run --package tee-time-booker playwright install chromium
 ```
 
 Create `apps/tee-time-booker/.env` from `.env.example` and fill in the login
-and card details for the site you're booking. Then, from
+and payment details for the site you're booking. Then, from
 `apps/tee-time-booker`, start a Postgres, migrate it and seed it with the
 known courses plus your own accounts and plans:
 
@@ -357,16 +368,16 @@ uv run --package tee-time-booker pytest
 | `TEE_TIME_PLAN` | to book | | Booking plan id (`--list-plans`); `--plan` / `--request` override it |
 | `SOULE_EMAIL`, `SOULE_PASSWORD` | for the seeded Soule Park account | | foreUP login (`env_prefix` `SOULE`) |
 | `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD` | for the seeded GolfNow account | | GolfNow login (`env_prefix` `GOLFNOW`) |
-| `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | to book | | Card entered at checkout |
-| `CREDIT_CARD_NAME`, `CREDIT_CARD_BILLING_ADDRESS`, `CREDIT_CARD_STATE` (two-letter code), `PHONE_NUMBER` | to book on GolfNow | | Extra fields GolfNow's checkout asks for |
+| `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH` (MM), `CREDIT_CARD_EXPIRATION_YEAR` (YY), `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE` | to book on foreUP | | Card typed into Soule Park's checkout; it has no card on file |
+| `CREDIT_CARD_STATE` (two-letter code), `CREDIT_CARD_POSTAL_CODE` | to book on GolfNow | | Billing details GolfNow asks for alongside the card saved on the account |
 | `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final submit button. An operator kill switch: `false` makes every run a dry run |
 | `TEE_TIME_HEADLESS` | no | `true` | Run Chromium headless |
 | `TEE_TIME_TEST_DATABASE_URL` | no | | A throwaway database for the test suite; DB tests are skipped without it |
 | `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |
 | `TEE_TIME_TARGET_DATE` | no | | Testing aid: book this `YYYY-MM-DD` instead of the computed date, without waiting for a release |
 
-Each adapter declares the card fields its checkout needs, so a foreUP run
-never fails over a GolfNow-only variable.
+Each adapter declares the payment fields its checkout needs, so a foreUP run
+never fails over a GolfNow-only variable, and a GolfNow run never needs a card number.
 
 ## Deployment (GitHub Actions)
 
@@ -386,10 +397,10 @@ it) — that prints the plan ids.
 
 Repository **secrets** needed: `DATABASE_URL`, `SOULE_EMAIL`, `SOULE_PASSWORD`,
 `CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
-`CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC`, `CREDIT_CARD_POSTAL_CODE`,
-plus `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD`, `CREDIT_CARD_NAME`,
-`CREDIT_CARD_BILLING_ADDRESS`, `CREDIT_CARD_STATE` and `PHONE_NUMBER` for
-GolfNow runs.
+`CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC` and `CREDIT_CARD_POSTAL_CODE`
+for Soule Park; `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD`, `CREDIT_CARD_STATE` and
+`CREDIT_CARD_POSTAL_CODE` for GolfNow runs, which pay with the card saved on
+the GolfNow account.
 
 Scheduled runs are dry runs until you set the repository **variable**
 `TEE_TIME_SUBMIT_PAYMENT=true`. A manual run can also tick the

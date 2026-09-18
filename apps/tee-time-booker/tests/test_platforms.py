@@ -3,7 +3,7 @@
 from datetime import date, time
 
 import pytest
-from tee_time_booker.config import Account, Credentials, PaymentCard
+from tee_time_booker.config import Account, Credentials, PaymentDetails
 from tee_time_booker.courses import SATICOY, SEED_COURSES, SOULE_PARK
 from tee_time_booker.models import Preferences
 from tee_time_booker.platforms import PLATFORMS, build_platform, get_platform
@@ -13,7 +13,7 @@ from tee_time_booker.platforms.base import BookingPlatform
 def _credentials() -> Credentials:
     return Credentials(
         account=Account(email="a@example.com", password="pw"),
-        card=PaymentCard(
+        payment=PaymentDetails(
             number="4111111111111111",
             expiration_month="01",
             expiration_year="30",
@@ -31,8 +31,8 @@ def test_every_course_has_an_adapter_that_accepts_it(course):
 
 
 @pytest.mark.parametrize("platform", list(PLATFORMS.values()), ids=list(PLATFORMS))
-def test_adapters_declare_the_card_fields_their_checkout_needs(platform):
-    assert set(platform.required_card_fields) <= set(PaymentCard.ENV_VARS)
+def test_adapters_declare_the_payment_fields_their_checkout_needs(platform):
+    assert set(platform.required_payment_fields) <= set(PaymentDetails.ENV_VARS)
 
 
 def test_unknown_platform_names_the_known_ones():
@@ -52,13 +52,13 @@ def test_build_platform_picks_the_adapter_named_by_the_course():
     assert platform.course is SATICOY
 
 
-def test_an_adapter_without_a_card_says_which_variables_are_missing():
-    # Listing tee times needs no card, so the check happens at checkout time.
+def test_an_adapter_without_payment_details_says_which_variables_are_missing():
+    # Listing tee times needs no payment details; the check happens at checkout.
     platform = build_platform(
         SATICOY, Credentials(account=Account("a@example.com", "pw")), session=None
     )
-    with pytest.raises(RuntimeError, match="CREDIT_CARD_NUMBER"):
-        platform.card
+    with pytest.raises(RuntimeError, match="CREDIT_CARD_STATE"):
+        platform.payment
 
 
 def test_preferences_describe_their_own_search():
