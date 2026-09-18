@@ -79,8 +79,11 @@ Preferences are per course in `courses.py`. Soule Park's, for example:
 
 A run then:
 
-1. waits until 45 s before the release, if the course has one
-2. opens the site and signs in
+1. refuses a target date the site can't book yet, when the window is known
+   up front (foreUP's 20 days); then waits until 45 s before the release, if
+   the course has one
+2. opens the site and signs in; where the window is only visible on the site
+   (GolfNow), measures it now and refuses the target if it's past it
 3. searches for the target date, polling for up to 15 min while the day has
    not been released yet
 4. takes the best slot in the window; if that fails because someone else got
@@ -150,6 +153,14 @@ Reserve.
 - GolfNow releases availability on a rolling window rather than at a fixed
   local time, so `saticoy` has no `release` schedule and books whatever is
   already open.
+- **Each facility sets its own booking window** (Saticoy lists 7 days ahead,
+  Sterling Hills three weeks or more) and GolfNow states it nowhere — not on
+  the facility page, in its bundles, or in the search response; a day past
+  the window is just an empty search. So after signing in the adapter
+  measures it, one search per day from today until three empty days in a row
+  (capped at 45), logs `takes bookings through <date> (N days ahead)`, and
+  the run fails immediately if the target is past that instead of polling
+  an empty day for 15 minutes. Use the logged number to set `weeks_ahead`.
 - Checkout loads under a **GolfPass upsell interstitial** that hides the whole
   form (every field reports as not visible) until "Skip to checkout" is
   clicked, so the adapter dismisses it before filling anything. A OneTrust

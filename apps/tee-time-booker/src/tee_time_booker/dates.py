@@ -70,6 +70,45 @@ def target_date(course: CourseConfig, now: datetime | None = None) -> date:
     )
 
 
+def last_bookable_day(course: CourseConfig, now: datetime | None = None) -> date | None:
+    """The furthest day `course`'s site takes bookings for, if that's fixed.
+
+    None when the course's window isn't known up front and the adapter has to
+    ask the site (`BookingPlatform.last_bookable_day`).
+    """
+    if course.booking_window_days is None:
+        return None
+    return release_day(course, now) + timedelta(days=course.booking_window_days)
+
+
+def check_target_date(
+    course: CourseConfig,
+    target: date,
+    last: date | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Raise unless `target` is a day `course`'s site will take a booking for.
+
+    `last` is the last bookable day; it defaults to the course's fixed window
+    and is passed in when the adapter has measured it on the site. Sites
+    return an empty sheet for a day outside their window, which looks exactly
+    like "not released yet", so without this a run would poll for the full
+    release wait before failing.
+    """
+    first = release_day(course, now)
+    if last is None:
+        last = last_bookable_day(course, now)
+    if target < first:
+        raise ValueError(
+            f"{course.name} target date {target} is in the past (today is {first})"
+        )
+    if last is not None and target > last:
+        raise ValueError(
+            f"{course.name} target date {target} is beyond its booking window; "
+            f"{last} ({(last - first).days} days ahead) is the last bookable day"
+        )
+
+
 def sleep_until_release(
     course: CourseConfig,
     lead_seconds: float,

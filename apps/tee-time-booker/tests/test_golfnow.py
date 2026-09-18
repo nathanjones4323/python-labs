@@ -1,10 +1,15 @@
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 from loguru import logger
+from tee_time_booker.config import Account, Credentials
 from tee_time_booker.courses import SATICOY
 from tee_time_booker.models import SearchCriteria
+from tee_time_booker.platforms import golfnow
 from tee_time_booker.platforms.golfnow import (
+    WINDOW_PROBE_EMPTY_DAYS,
+    WINDOW_PROBE_MAX_DAYS,
+    GolfNowPlatform,
     allowed_players,
     parse_tee_times,
     search_payload,
@@ -135,7 +140,7 @@ def test_player_rules_map_to_group_sizes(rule, expected):
 
 
 def test_search_payload_identifies_the_facility_and_day():
-    payload = search_payload(SATICOY, _criteria())
+    payload = search_payload(SATICOY, date(2026, 10, 3))
     assert payload["date"] == "Oct 03 2026"
     assert payload["facilityId"] == SATICOY.facility_id
     assert (payload["latitude"], payload["longitude"]) == (
@@ -145,3 +150,57 @@ def test_search_payload_identifies_the_facility_and_day():
     # Filtering happens on the results, so the request stays wide open.
     assert (payload["timeMin"], payload["timeMax"]) == (0, 48)
     assert payload["players"] == 0
+
+
+TODAY = date(2026, 9, 17)
+
+
+def _probing_platform(monkeypatch, listed_offsets: set[int]):
+    """A GolfNowPlatform whose search API has tee times `listed_offsets` days out.
+
+    Returns it with the list of days it searches, in order.
+    """
+    platform = GolfNowPlatform(
+        SATICOY, Credentials(account=Account("a@example.com", "pw")), session=None
+    )
+    searched: list[date] = []
+
+    def fake_search(day: date) -> dict:
+        searched.append(day)
+        if (day - TODAY).days not in listed_offsets:
+            return _response()
+        return _response(_row(f"{day}T08:00:00+00:00", _rate(1)))
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.combine(TODAY, time(10, 0), tzinfo=tz)
+
+    monkeypatch.setattr(platform, "_search", fake_search)
+    monkeypatch.setattr(golfnow, "datetime", FrozenDateTime)
+    return platform, searched
+
+
+def test_window_ends_at_the_last_listed_day(monkeypatch):
+    platform, searched = _probing_platform(monkeypatch, set(range(8)))
+    assert platform.last_bookable_day() == date(2026, 9, 24)
+    # Stops after a few empty days rather than scanning to the cap.
+    assert searched[-1] == TODAY + timedelta(days=7 + WINDOW_PROBE_EMPTY_DAYS)
+
+
+def test_window_survives_closed_days_in_the_middle(monkeypatch):
+    listed = set(range(15)) - {3, 4}  # shut for two days mid-window
+    platform, _ = _probing_platform(monkeypatch, listed)
+    assert platform.last_bookable_day() == TODAY + timedelta(days=14)
+
+
+def test_window_is_unknown_when_nothing_is_listed(monkeypatch):
+    platform, searched = _probing_platform(monkeypatch, set())
+    assert platform.last_bookable_day() is None
+    assert len(searched) == WINDOW_PROBE_EMPTY_DAYS
+
+
+def test_window_wider_than_the_probe_cap_is_left_open(monkeypatch):
+    platform, searched = _probing_platform(monkeypatch, set(range(400)))
+    assert platform.last_bookable_day() is None
+    assert len(searched) == WINDOW_PROBE_MAX_DAYS + 1

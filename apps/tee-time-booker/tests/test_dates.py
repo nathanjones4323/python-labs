@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from tee_time_booker.courses import SATICOY, SOULE_PARK
 from tee_time_booker.dates import (
+    check_target_date,
+    last_bookable_day,
     next_release,
     nth_upcoming_weekday,
     release_day,
@@ -99,3 +101,38 @@ def test_no_release_pending_returns_without_sleeping(monkeypatch):
     )
     sleep_until_release(SOULE_PARK, 45, now=datetime(2026, 9, 16, 12, 0, tzinfo=LA))
     sleep_until_release(SATICOY, 45, now=datetime(2026, 9, 19, 23, 30, tzinfo=LA))
+
+
+def test_target_inside_a_fixed_window_passes():
+    now = datetime(2026, 9, 16, 12, 0, tzinfo=LA)
+    assert last_bookable_day(SOULE_PARK, now) == date(2026, 10, 6)
+    check_target_date(SOULE_PARK, date(2026, 10, 6), now=now)
+
+
+def test_target_past_a_fixed_window_is_refused_up_front():
+    now = datetime(2026, 9, 16, 12, 0, tzinfo=LA)
+    with pytest.raises(ValueError, match="2026-10-06 \\(20 days ahead\\) is the last"):
+        check_target_date(SOULE_PARK, date(2026, 10, 7), now=now)
+
+
+def test_fixed_window_counts_from_the_coming_release():
+    # 23:30 Saturday waits for Sunday's release, so the window runs from Sunday.
+    now = datetime(2026, 9, 19, 23, 30, tzinfo=LA)
+    assert last_bookable_day(SOULE_PARK, now) == date(2026, 10, 10)
+    check_target_date(SOULE_PARK, date(2026, 10, 10), now=now)
+
+
+def test_past_target_is_refused():
+    now = datetime(2026, 9, 16, 12, 0, tzinfo=LA)
+    with pytest.raises(ValueError, match="in the past"):
+        check_target_date(SOULE_PARK, date(2026, 9, 15), now=now)
+
+
+def test_course_without_a_fixed_window_defers_to_the_site():
+    now = datetime(2026, 9, 17, 12, 0, tzinfo=LA)
+    assert last_bookable_day(SATICOY, now) is None
+    # Nothing known up front: any future day passes...
+    check_target_date(SATICOY, date(2026, 10, 3), now=now)
+    # ...until the adapter has measured the window.
+    with pytest.raises(ValueError, match="2026-09-24 \\(7 days ahead\\) is the last"):
+        check_target_date(SATICOY, date(2026, 10, 3), last=date(2026, 9, 24), now=now)
