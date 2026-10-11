@@ -7,6 +7,7 @@ environment-specific knobs land here.
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,6 +18,12 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+
+CARTO_POSITRON = (
+    "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}@2x.png"
+)
+OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 
 class Settings(BaseSettings):
@@ -54,16 +61,22 @@ class Settings(BaseSettings):
     # The date preview page; see `preview`. Pages are written under
     # `preview_dir` (relative to where the server starts, which is the
     # Claude Code project) so the session can publish them as an Artifact.
-    # The basemap is OpenStreetMap's own tiles: free for light use like this
-    # (a handful of tiles per date, cached) with an identifying User-Agent
-    # and the credit on the map. OSM has no dark style; without
-    # `map_tiles_dark` the page darkens the light map itself. Any
-    # {z}/{x}/{y} template works, 256px or @2x. An empty light URL turns the
-    # basemap off and leaves the pins on a plain grid.
+    # The basemap is CARTO's Positron when `CARTO_API_KEY` is set (a free
+    # key, no account, from carto.com/basemaps/apikey; without one CARTO
+    # answers every tile with an "API key required" watermark), otherwise
+    # OpenStreetMap's own tiles. Both are free for light use like this (up
+    # to 200 tiles per date at zoom 16 and below, cached) with an
+    # identifying User-Agent and the credit on the map. Without
+    # `map_tiles_dark` the page darkens the light map itself, and the
+    # interactive map always does. `map_tiles_light` overrides the choice
+    # with any {z}/{x}/{y} template, 256px or @2x (set `map_attribution` to
+    # match); an empty one turns the basemap off and leaves the pins on a
+    # plain grid.
     preview_dir: Path = Path("previews")
-    map_tiles_light: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    carto_api_key: str | None = Field(default=None, alias="CARTO_API_KEY")
+    map_tiles_light: str | None = None
     map_tiles_dark: str = ""
-    map_attribution: str = "© OpenStreetMap contributors"
+    map_attribution: str | None = None
     # Tile servers ask for an honest client name, unlike restaurant sites.
     map_user_agent: str = "date-planner/0.1 (personal date preview)"
     map_tile_ttl_days: int = 30
@@ -73,6 +86,21 @@ class Settings(BaseSettings):
     http_token: str | None = None
     http_host: str = "127.0.0.1"
     http_port: int = 8002
+
+    def light_tiles(self) -> str:
+        """The light basemap's tile template; empty for no basemap."""
+        if self.map_tiles_light is not None:
+            return self.map_tiles_light
+        if self.carto_api_key:
+            return CARTO_POSITRON + "?key=" + quote(self.carto_api_key, safe="")
+        return OSM_TILES
+
+    def map_credit(self) -> str:
+        if self.map_attribution is not None:
+            return self.map_attribution
+        if self.map_tiles_light is None and self.carto_api_key:
+            return "© OpenStreetMap contributors © CARTO"
+        return "© OpenStreetMap contributors"
 
     def require_database_url(self) -> str:
         if not self.database_url:
