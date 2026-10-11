@@ -1,1 +1,8 @@
 .env
+# OSM extracts and the prepared OSRM graph (gigabytes).
+/data/
+
+# The root ignores every .claude/; this one is the project config (skill,
+# hooks, settings) and belongs in git. Personal overrides stay local.
+!/.claude/
+/.claude/settings.local.json

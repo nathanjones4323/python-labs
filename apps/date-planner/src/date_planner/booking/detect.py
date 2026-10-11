@@ -1,12 +1,18 @@
-"""Work out how a restaurant takes reservations by reading its own website.
+"""Work out how a venue takes reservations by reading its own website.
 
-Restaurants say this plainly on their site — a Resy widget, an OpenTable
-button, or a line of prose telling you to call. So: fetch the homepage, follow
-at most a few reservation-looking links, and look for the signals below in
-priority order. A platform link always beats prose, because a site that says
-"call us" in the footer and embeds Resy on /reservations takes Resy.
+Venues say this plainly on their site — a Resy widget, an OpenTable button,
+a "Reserve entry time" link to their own ticketing, or a line of prose
+telling you to call. So: fetch the homepage, follow at most a few
+reservation-looking links, and look for the signals below in priority order.
+A platform link always beats prose, because a site that says "call us" in the
+footer and embeds Resy on /reservations takes Resy. Timed-entry ticketing on
+the venue's own domain (the Getty Villa's `tickets.getty.edu`) comes next.
 
-Nothing here writes to the database; `tools.restaurants` decides what to
+Separately, a page saying reservations are *required* is noted at the end of
+the evidence (`REQUIRED_NOTE`), along with any party size the rule is limited
+to, and `required_from` reads it back for `suggest_reservation_need`.
+
+Nothing here writes to the database; `tools.venues` decides what to
 cache. Detection never raises on a 404 or a timeout for one page — only an
 unreachable site (`DetectionFailed`) stops it.
 """
@@ -28,7 +34,7 @@ from date_planner.errors import DetectionFailed
 # Paths worth trying even when nothing on the homepage links to them.
 GUESS_PATHS = ("/reservations", "/reserve", "/book")
 # Anchor text or href that looks like the way in to booking.
-RESERVATION_LINK = re.compile(r"reserv|book", re.I)
+RESERVATION_LINK = re.compile(r"reserv|book|ticket", re.I)
 
 # --- platform signals ------------------------------------------------------
 
@@ -74,6 +80,41 @@ WALK_IN_PROSE = re.compile(
     r"walk[\s-]?ins?\s+only|no\s+reservations|first[\s-]come", re.I
 )
 TEL_LINK = re.compile(r"tel:([+0-9().\s-]{7,})", re.I)
+
+# --- timed-entry signals ---------------------------------------------------
+
+# Link text that means "book a time slot here", as museums word it. Plain
+# "tickets" isn't enough: a restaurant's events page says that too.
+TICKET_LINK_TEXT = re.compile(
+    r"timed[\s-]?entry|reserve\s+(?:your\s+|an?\s+)?(?:entry|tickets?|time)"
+    r"|entry\s+time|(?:buy|get|book)\s+(?:your\s+)?tickets?|admission\s+tickets?",
+    re.I,
+)
+TIMED_ENTRY_PROSE = re.compile(r"timed[\s-]?entry", re.I)
+REQUIRED_PROSE = re.compile(
+    # Not "no reservations required", which says the opposite.
+    r"(?<!\bno\s)reservations?\s+(?:are\s+|is\s+)?required"
+    r"|requires?\s+(?:an?\s+)?(?:advance\s+)?(?:timed[\s-]?entry\s+)?reservations?",
+    re.I,
+)
+# Appended to the evidence when a page says booking is required.
+REQUIRED_NOTE = "reservations required"
+# The rule is often only for big groups: "Reservations are required for
+# parties of 6+", "Parties of 8 or more require a reservation". Read from the
+# sentence around the match. "Large parties" with no number is taken as six.
+PARTY_LIMIT = re.compile(
+    r"(?:parties|groups)\s+(?:of\s+)?"
+    r"(?:(?P<at_least>\d+)\s*(?:\+|or\s+(?:more|larger))"
+    r"|(?:larger\s+than|more\s+than|over)\s+(?P<over>\d+))"
+    r"|(?P<large>large\s+(?:parties|groups))",
+    re.I,
+)
+LARGE_PARTY = 6
+SENTENCE_END = re.compile(r"[.!?\n]")
+# The note as `classify` writes it, for `required_from`.
+REQUIRED_EVIDENCE = re.compile(
+    re.escape(REQUIRED_NOTE) + r"(?: for parties of (\d+)\+)?:", re.I
+)
 
 # --- booking-window signals ------------------------------------------------
 
@@ -317,6 +358,37 @@ def _platform_signal(pages: list[Page]) -> Detection | None:
     return None
 
 
+def _site_domain(netloc: str) -> str:
+    """`tickets.getty.edu` and `www.getty.edu` -> `getty.edu`."""
+    host = netloc.lower().split(":")[0]
+    return ".".join(host.split(".")[-2:])
+
+
+def _ticket_signal(pages: list[Page]) -> Detection | None:
+    """A timed-entry booking link to the venue's own domain."""
+    for page in pages:
+        home = _site_domain(urlparse(page.url).netloc)
+        for node in LexborHTMLParser(page.html).css("a[href]"):
+            label = node.text(strip=True) or ""
+            if not TICKET_LINK_TEXT.search(label):
+                continue
+            target = urljoin(page.url, node.attributes.get("href") or "")
+            parsed = urlparse(target)
+            if parsed.scheme not in ("http", "https"):
+                continue
+            if _site_domain(parsed.netloc) != home:
+                continue
+            timed = any(TIMED_ENTRY_PROSE.search(p.text) for p in pages)
+            return Detection(
+                channel=BookingChannel.TICKETED,
+                confidence=0.85 if timed else 0.7,
+                evidence=f'"{label}" link on {page.url} to {target}',
+                # Too long for the column is too long to be a booking page.
+                platform_slug=target if len(target) <= 200 else None,
+            )
+    return None
+
+
 def _prose_signal(pages: list[Page], phone: str | None) -> Detection | None:
     """Phone-only or walk-in, read from the words on the page."""
     for page in pages:
@@ -350,6 +422,41 @@ def _prose_signal(pages: list[Page], phone: str | None) -> Detection | None:
     return None
 
 
+def _sentence(text: str, match: re.Match[str]) -> str:
+    """The sentence `match` sits in. Page text runs block elements together,
+    so this can take in a heading before it; it's only searched, never
+    quoted."""
+    start = max(
+        (m.end() for m in SENTENCE_END.finditer(text, 0, match.start())), default=0
+    )
+    end = SENTENCE_END.search(text, match.end())
+    sentence = text[start : end.end() if end else len(text)]
+    return " ".join(sentence.split())
+
+
+def _party_minimum(sentence: str) -> int | None:
+    """The smallest party a "reservations required" sentence applies to,
+    or None when it applies to everyone."""
+    limit = PARTY_LIMIT.search(sentence)
+    if limit is None:
+        return None
+    if limit["at_least"]:
+        return int(limit["at_least"])
+    if limit["over"]:
+        return int(limit["over"]) + 1
+    return LARGE_PARTY
+
+
+def required_from(evidence: str | None) -> int | None:
+    """Read back the note `classify` adds: the smallest party that must
+    book (1 for everyone), or None when the site didn't say booking is
+    required."""
+    found = REQUIRED_EVIDENCE.search(evidence or "")
+    if found is None:
+        return None
+    return int(found[1]) if found[1] else 1
+
+
 def classify(pages: list[Page]) -> Detection:
     """The channel these pages point to, platform signals first."""
     phone = _find_phone(pages)
@@ -357,7 +464,9 @@ def classify(pages: list[Page]) -> Detection:
         (w for w in (parse_window(page.text) for page in pages) if w is not None),
         None,
     )
-    detection = _platform_signal(pages) or _prose_signal(pages, phone)
+    detection = (
+        _platform_signal(pages) or _ticket_signal(pages) or _prose_signal(pages, phone)
+    )
     if detection is None:
         detection = Detection(
             channel=BookingChannel.UNKNOWN,
@@ -366,6 +475,19 @@ def classify(pages: list[Page]) -> Detection:
                 "No platform link, phone instruction or walk-in note on "
                 + ", ".join(page.url for page in pages)
             ),
+        )
+    required = next(
+        ((page.text, m) for page in pages if (m := REQUIRED_PROSE.search(page.text))),
+        None,
+    )
+    if required is not None:
+        text, match = required
+        note = REQUIRED_NOTE
+        minimum = _party_minimum(_sentence(text, match))
+        if minimum is not None:
+            note = f"{note} for parties of {minimum}+"
+        detection = replace(
+            detection, evidence=f'{detection.evidence}; {note}: "{match.group(0)}"'
         )
     return replace(
         detection,

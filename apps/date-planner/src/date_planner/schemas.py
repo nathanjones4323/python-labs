@@ -7,8 +7,8 @@ because the skill fills a profile in over several turns.
 """
 
 import uuid
-from datetime import datetime, time
-from typing import Annotated
+from datetime import date, datetime, time
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,7 +17,15 @@ from date_planner.booking.channels import (
     WindowState,
     WindowUnit,
 )
-from date_planner.db.models import DateStatus
+from date_planner.db.models import (
+    Anchor,
+    DateStatus,
+    ReservationNeed,
+    StopBookingStatus,
+    StopKind,
+    TravelMode,
+    VenueType,
+)
 
 PartySize = Annotated[int, Field(ge=1, le=20)]
 Rating = Annotated[int, Field(ge=1, le=5)]
@@ -50,7 +58,8 @@ class CoupleProfileIn(BaseModel):
     """A profile to insert, or — with `id` — one to update.
 
     Only the fields present are written, so a correction to one preference
-    doesn't wipe the rest.
+    doesn't wipe the rest. A list given here replaces the stored one whole;
+    to add or drop single items use `PreferenceEdit`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -68,17 +77,40 @@ class CoupleProfileIn(BaseModel):
     max_travel_minutes: int | None = None
 
 
-# --- restaurants -----------------------------------------------------------
+class PreferenceEdit(BaseModel):
+    """Items to add to or drop from the couple's preference lists.
+
+    Matching ignores case and surrounding spaces. Liking something takes it
+    off `dislikes`, and disliking it takes it off `likes`, so "we've gone off
+    sushi" is one `add_dislikes`. Removals run before additions.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    add_likes: list[str] = Field(default_factory=list)
+    remove_likes: list[str] = Field(default_factory=list)
+    add_dislikes: list[str] = Field(default_factory=list)
+    remove_dislikes: list[str] = Field(default_factory=list)
+    add_dietary: list[str] = Field(default_factory=list)
+    remove_dietary: list[str] = Field(default_factory=list)
 
 
-class RestaurantOut(Out):
+# --- venues ----------------------------------------------------------------
+
+
+class VenueOut(Out):
     id: uuid.UUID
     name: str
     city: str
+    venue_type: VenueType
     address: str | None
     phone: str | None
     website: str | None
     timezone: str
+    lat: float | None
+    lng: float | None
+    external_url: str | None
+    default_duration_min: int | None
     booking_channel: BookingChannel
     platform_slug: str | None
     platform_city_slug: str | None
@@ -91,12 +123,12 @@ class RestaurantOut(Out):
     notes: str | None
 
 
-class RestaurantIn(BaseModel):
+class VenueIn(BaseModel):
     """A venue to insert, or — with `id` — one to update.
 
     Without an `id`, `name` and `city` identify the row: a second upsert of
     "Nobu Malibu" in "Malibu" updates the first one rather than duplicating
-    it.
+    it. A new venue needs `venue_type`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -104,10 +136,15 @@ class RestaurantIn(BaseModel):
     id: uuid.UUID | None = None
     name: str | None = None
     city: str | None = None
+    venue_type: VenueType | None = None
     address: str | None = None
     phone: str | None = None
     website: str | None = None
     timezone: str | None = None
+    lat: Annotated[float, Field(ge=-90, le=90)] | None = None
+    lng: Annotated[float, Field(ge=-180, le=180)] | None = None
+    external_url: str | None = None
+    default_duration_min: Annotated[int, Field(gt=0)] | None = None
     booking_channel: BookingChannel | None = None
     platform_slug: str | None = None
     platform_city_slug: str | None = None
@@ -118,9 +155,9 @@ class RestaurantIn(BaseModel):
 
 
 class DetectionOut(BaseModel):
-    """What reading the restaurant's website said about how it books."""
+    """What reading the venue's website said about how it books."""
 
-    restaurant_id: uuid.UUID | None = None
+    venue_id: uuid.UUID | None = None
     channel: BookingChannel
     platform_slug: str | None = None
     platform_city_slug: str | None = None
@@ -139,15 +176,15 @@ class BookingLinkOut(BaseModel):
     url: str
     platform: BookingChannel
     # False while this platform's URL template is still untested against a
-    # live venue. Say so when handing the link over.
+    # live venue — and always for `ticketed`, whose page doesn't prefill.
     verified: bool
-    # The date and time the link asks for, in the restaurant's timezone.
+    # The date and time the link asks for, in the venue's timezone.
     local_start: datetime
 
 
 class BookingWindowOut(BaseModel):
     state: WindowState
-    # Aware, in the restaurant's timezone. None when the state is unknown.
+    # Aware, in the venue's timezone. None when the state is unknown.
     opens_at: datetime | None
     # True when nobody recorded the hour the window opens and 09:00 local
     # stood in for it — worth saying out loud before setting a reminder.
@@ -156,45 +193,189 @@ class BookingWindowOut(BaseModel):
     window_unit: WindowUnit | None = None
 
 
-# --- dates -----------------------------------------------------------------
+class ReservationNeedOut(BaseModel):
+    """The default need for a stop, from how its venue books.
+
+    Raise it if you know better; don't lower it without a reason.
+    """
+
+    stop_id: uuid.UUID
+    channel: BookingChannel
+    suggested: ReservationNeed
+    reason: str
+
+
+# --- dates and stops -------------------------------------------------------
+
+
+class StopOut(Out):
+    id: uuid.UUID
+    position: int
+    title: str
+    kind: StopKind
+    venue_id: uuid.UUID | None
+    venue_name: str | None
+    party_size: int
+    start_at: datetime | None
+    end_at: datetime | None
+    est_duration_min: int | None
+    anchor: Anchor
+    sunset_offset_min: int
+    reservation_need: ReservationNeed
+    booking_status: StopBookingStatus
+    booking_url: str | None
+    confirmation_number: str | None
+    calendar_event_id: str | None
+    reminder_event_id: str | None
+    travel_min_from_prev: int | None
+    travel_mode: TravelMode
+    notes: str | None
 
 
 class DateOut(Out):
     id: uuid.UUID
     couple_id: uuid.UUID
-    restaurant_id: uuid.UUID | None
     title: str
-    start_at: datetime
-    end_at: datetime
-    party_size: int
+    day: date
+    max_leg_minutes: int
+    start_after: time | None
+    end_before: time | None
+    # Derived from the stops, except `completed` / `cancelled`.
     status: DateStatus
-    calendar_event_id: str | None
-    reminder_event_id: str | None
-    booking_url: str | None
-    confirmation_number: str | None
     rating: int | None
     notes: str | None
+    stops: list[StopOut]
 
 
-class DatePatch(BaseModel):
-    """The fields of a date the skill may change as a booking progresses.
+class StopIn(BaseModel):
+    """A stop to add to a date.
 
-    `status` moves are checked against the state machine in
-    `db.models.DATE_TRANSITIONS`; the rest are plain writes. Fields left out
-    are left alone.
+    `booking_status` defaults from `reservation_need`: `not_needed` when the
+    need is `none`, otherwise `needed` — an unknown need holds the date back
+    from `confirmed` until someone looks. Datetimes without an offset are read
+    as the couple's local time.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    status: DateStatus | None = None
-    title: str | None = None
+    title: str
+    kind: StopKind
+    venue_id: uuid.UUID | None = None
+    party_size: PartySize = 2
     start_at: datetime | None = None
     end_at: datetime | None = None
-    party_size: PartySize | None = None
-    restaurant_id: uuid.UUID | None = None
-    calendar_event_id: str | None = None
-    reminder_event_id: str | None = None
+    est_duration_min: Annotated[int, Field(gt=0)] | None = None
+    anchor: Anchor = Anchor.NONE
+    sunset_offset_min: int = -30
+    reservation_need: ReservationNeed = ReservationNeed.UNKNOWN
+    booking_status: StopBookingStatus | None = None
     booking_url: str | None = None
     confirmation_number: str | None = None
+    calendar_event_id: str | None = None
+    reminder_event_id: str | None = None
+    travel_mode: TravelMode = TravelMode.DRIVING
+    notes: str | None = None
+
+
+class StopPatch(BaseModel):
+    """The fields of a stop to change; those left out are left alone.
+
+    The date's status is worked out again after every change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = None
+    kind: StopKind | None = None
+    venue_id: uuid.UUID | None = None
+    party_size: PartySize | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    est_duration_min: Annotated[int, Field(gt=0)] | None = None
+    anchor: Anchor | None = None
+    sunset_offset_min: int | None = None
+    reservation_need: ReservationNeed | None = None
+    booking_status: StopBookingStatus | None = None
+    booking_url: str | None = None
+    confirmation_number: str | None = None
+    calendar_event_id: str | None = None
+    reminder_event_id: str | None = None
+    travel_mode: TravelMode | None = None
+    notes: str | None = None
+
+
+class DatePatch(BaseModel):
+    """The date's own fields; stops change through the stop tools.
+
+    `status` is derived from the stops, so the only values it takes here are
+    the two set by hand: `completed` and `cancelled`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["completed", "cancelled"] | None = None
+    title: str | None = None
+    day: date | None = None
+    max_leg_minutes: Annotated[int, Field(gt=0)] | None = None
+    start_after: time | None = None
+    end_before: time | None = None
     rating: Rating | None = None
     notes: str | None = None
+
+
+# --- planning --------------------------------------------------------------
+
+
+class SunsetOut(BaseModel):
+    """All in the venue's (or the given) timezone."""
+
+    sunset: datetime
+    civil_dusk: datetime
+    golden_hour_start: datetime
+
+
+class TravelOut(BaseModel):
+    """One leg. `minutes` includes the driving padding and is rounded up."""
+
+    minutes: int
+    meters: int
+    provider: str
+    # True for the haversine estimate; false for a routed answer.
+    is_estimate: bool
+    from_cache: bool = False
+
+
+class PlacedStopOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    start_at: datetime | None
+    end_at: datetime | None
+    travel_min_from_prev: int | None
+
+
+class LegOut(BaseModel):
+    from_stop_id: uuid.UUID
+    to_stop_id: uuid.UUID
+    # Null when either end has no venue or no coordinates.
+    minutes: int | None
+    meters: int | None
+    provider: str | None
+    is_estimate: bool | None
+    mode: TravelMode
+
+
+class ViolationOut(BaseModel):
+    type: str
+    message: str
+    stop_id: uuid.UUID | None = None
+
+
+class TimelineOut(BaseModel):
+    stops: list[PlacedStopOut]
+    legs: list[LegOut]
+    # At the first stop with coordinates; null if none has any.
+    sunset: datetime | None
+    max_leg_minutes: int
+    violations: list[ViolationOut]
+    # True when the times above were written to the stops.
+    applied: bool

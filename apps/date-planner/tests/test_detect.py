@@ -11,7 +11,12 @@ from datetime import time
 import pytest
 import respx
 from date_planner.booking.channels import BookingChannel, WindowUnit
-from date_planner.booking.detect import detect, parse_window
+from date_planner.booking.detect import (
+    REQUIRED_NOTE,
+    detect,
+    parse_window,
+    required_from,
+)
 from date_planner.config import Settings
 from date_planner.errors import DetectionFailed
 
@@ -237,3 +242,93 @@ def test_parse_window(
 
 def test_parse_window_finds_nothing_in_ordinary_copy() -> None:
     assert parse_window("Open Tuesday to Sunday, 5pm until late.") is None
+
+
+# --- timed entry -----------------------------------------------------------
+
+# Modelled on the Getty Villa's visit page (2026-10-11): a "Reserve entry
+# time" link to its own ticketing subdomain, and the requirement in prose.
+MUSEUM_BODY = (
+    "<h2>Free Admission</h2>"
+    "<p>Admission is free, and requires a timed-entry reservation.</p>"
+    '<a href="https://tickets.example.com/online/article/villa">'
+    "Reserve entry time</a>"
+)
+# "Tickets" for a one-off event, sold somewhere else: not timed entry.
+EVENT_HOME = page(
+    '<a href="https://www.eventbrite.com/e/jazz-night-123">Buy tickets</a>'
+    "<p>Walk-ins only for dinner.</p>"
+)
+
+
+async def test_timed_entry_on_the_venues_own_domain_is_ticketed() -> None:
+    with site({"/": page(MUSEUM_BODY)}):
+        found = await detect(BASE, settings=SETTINGS)
+    assert found.channel is BookingChannel.TICKETED
+    assert found.platform_slug == "https://tickets.example.com/online/article/villa"
+    assert found.confidence >= 0.8
+    assert found.evidence.startswith('"Reserve entry time" link')
+    # The page says booking is required, and the evidence records it.
+    assert 'reservations required: "requires a timed-entry reservation"' in (
+        found.evidence
+    )
+
+
+async def test_tickets_sold_elsewhere_are_not_timed_entry() -> None:
+    with site({"/": EVENT_HOME}):
+        found = await detect(BASE, settings=SETTINGS)
+    assert found.channel is BookingChannel.WALK_IN
+
+
+async def test_a_platform_beats_a_ticket_link() -> None:
+    with site({"/": RESY_HOME.replace("</body>", MUSEUM_BODY + "</body>")}):
+        found = await detect(BASE, settings=SETTINGS)
+    assert found.channel is BookingChannel.RESY
+
+
+async def test_reservations_required_is_noted_for_any_channel() -> None:
+    home = RESY_HOME.replace(
+        "</body>", "<p>Reservations are required for parties of 6+.</p></body>"
+    )
+    with site({"/": home}):
+        found = await detect(BASE, settings=SETTINGS)
+    assert found.channel is BookingChannel.RESY
+    assert found.evidence.endswith(
+        'reservations required for parties of 6+: "Reservations are required"'
+    )
+
+
+@pytest.mark.parametrize(
+    ("prose", "note"),
+    [
+        ("Reservations are required.", 'reservations required: "'),
+        ("Reservations required for groups larger than 6.", "for parties of 7+:"),
+        ("Parties of 8 or more require a reservation.", "for parties of 8+:"),
+        ("Reservations are required for large parties.", "for parties of 6+:"),
+        ("No reservations required, just walk in.", None),
+    ],
+)
+async def test_the_required_note_keeps_the_party_size_it_applies_to(
+    prose: str, note: str | None
+) -> None:
+    with site({"/": RESY_HOME.replace("</body>", f"<p>{prose}</p></body>")}):
+        found = await detect(BASE, settings=SETTINGS)
+    if note is None:
+        assert REQUIRED_NOTE not in found.evidence
+    else:
+        assert note in found.evidence
+
+
+@pytest.mark.parametrize(
+    ("evidence", "minimum"),
+    [
+        (None, None),
+        ("Resy link", None),
+        ('Resy link; reservations required: "Reservations required"', 1),
+        ('Resy link; reservations required for parties of 6+: "..."', 6),
+    ],
+)
+def test_required_from_reads_the_note_back(
+    evidence: str | None, minimum: int | None
+) -> None:
+    assert required_from(evidence) == minimum

@@ -5,6 +5,7 @@ environment-specific knobs land here.
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,19 @@ class Settings(BaseSettings):
     max_pages: int = 4
     # A cached booking channel older than this is looked up again.
     detection_ttl_days: int = 30
+
+    # Travel between stops; see `planning.travel`. Unprefixed, like
+    # DATABASE_URL, because they name outside services. The default needs no
+    # network and no key.
+    travel_provider: Literal["haversine", "osrm", "ors", "google"] = Field(
+        default="haversine", alias="TRAVEL_PROVIDER"
+    )
+    osrm_url: str = Field(default="http://localhost:5000", alias="OSRM_URL")
+    ors_api_key: str | None = Field(default=None, alias="ORS_API_KEY")
+    # Added to every driving time: neither OSM provider knows about traffic,
+    # and PCH on a weekend is not free-flow.
+    travel_padding_pct: float = Field(default=20.0, alias="TRAVEL_PADDING_PCT")
+    travel_cache_ttl_days: int = 30
 
     # `--http` only. Without a token the HTTP transport refuses to start, so
     # a stray `--http` can't expose the database unauthenticated.

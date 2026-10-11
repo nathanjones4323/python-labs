@@ -15,11 +15,12 @@ class NotFound(DatePlannerError):
 
 
 class InvalidTransition(DatePlannerError):
-    """A date was asked to move somewhere its state machine forbids."""
+    """A date was asked for a status that isn't set by hand, or to leave
+    `completed` / `cancelled`."""
 
 
 class DetectionFailed(DatePlannerError):
-    """A restaurant's booking channel couldn't be worked out — no website, or
+    """A venue's booking channel couldn't be worked out — no website, or
     nothing fetchable."""
 
 
@@ -29,4 +30,19 @@ class UnsupportedChannel(DatePlannerError):
 
 
 class MissingPlatformSlug(DatePlannerError):
-    """The channel supports deep links but the restaurant has no slug for it."""
+    """The channel supports deep links but the venue has no slug for it."""
+
+
+class MissingCoordinates(DatePlannerError):
+    """A venue has no lat/lng, so nothing can be timed to or from it. Look
+    the coordinates up and save them with `upsert_venue`."""
+
+
+class IncompleteStop(DatePlannerError):
+    """A stop lacks what the call needs — a venue, a start time — or a fixed
+    stop has no time to anchor the day on."""
+
+
+class TravelFailed(DatePlannerError):
+    """The routing provider couldn't time a leg: unreachable, no route, or
+    not configured."""

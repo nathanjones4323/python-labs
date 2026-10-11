@@ -29,5 +29,20 @@ services:
       timeout: 3s
       retries: 10
 
+  # Optional self-hosted road routing for TRAVEL_PROVIDER=osrm. Off unless
+  # asked for:  docker compose --profile routing up -d
+  # Needs the Southern California extract prepared first — see the README
+  # ("Road routing with OSRM"). Car profile only: walking legs fall back to
+  # whatever this one instance serves, so keep TRAVEL_PROVIDER=haversine if
+  # a day is mostly on foot.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    profiles: ["routing"]
+    command: osrm-routed --algorithm mld /data/socal-latest.osrm
+    ports:
+      - "${OSRM_PORT:-5000}:5000"
+    volumes:
+      - ./data/osrm:/data
+
 volumes:
   db_data:

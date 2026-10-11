@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "date-planner": {
+      "command": "uv",
+      "args": ["run", "date-planner-mcp"],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL:-postgresql://postgres:postgres@localhost:5434/date_planner}"
+      }
+    }
+  }
+}

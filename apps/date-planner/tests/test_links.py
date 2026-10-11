@@ -116,3 +116,24 @@ def test_verified_reflects_the_registry() -> None:
     assert build(OPENTABLE, SATURDAY_7PM, 2).verified is True
     assert build(TOCK, SATURDAY_7PM, 2).verified is True
     assert build(SEVENROOMS, SATURDAY_7PM, 2).verified is True
+
+
+def test_a_ticketed_venue_gets_its_own_page_unverified() -> None:
+    target = LinkTarget(
+        channel=BookingChannel.TICKETED,
+        timezone=LA,
+        platform_slug="https://tickets.getty.edu/online/article/villa",
+    )
+    link = build(target, datetime(2026, 10, 24, 16, 0, tzinfo=NY), 2)
+    assert link.url == "https://tickets.getty.edu/online/article/villa"
+    assert link.verified is False
+    assert link.local_start == datetime(2026, 10, 24, 13, 0, tzinfo=LA)
+
+
+@pytest.mark.parametrize("slug", [None, "javascript:alert(1)"])
+def test_a_ticketed_venue_needs_a_web_address(slug: str | None) -> None:
+    target = LinkTarget(
+        channel=BookingChannel.TICKETED, timezone=LA, platform_slug=slug
+    )
+    with pytest.raises(MissingPlatformSlug):
+        build(target, SATURDAY_7PM, 2)

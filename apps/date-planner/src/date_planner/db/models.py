@@ -1,28 +1,37 @@
-"""The tables, and the state machine a planned date moves through.
+"""The tables, and how a date's status follows from its stops.
 
-    couples ──── dates ──── restaurants
+    couples ──── dates ──── date_stops ──── venues
+                                              │
+                                        travel_cache
 
-A `PlannedDate` starts `proposed` (an idea on the table). It becomes
-`tentative` once a hold is on the calendar, `booking_pending` once the user
-has a link to tap or a reminder to call, `confirmed` when a confirmation
-turns up, and `completed` after it happens — or `cancelled` from anywhere
-short of done. `PlannedDate.transition` refuses any other move, so a date
-can't be confirmed before anyone tried to book it.
+A `PlannedDate` is a day: a title, a window, and how far apart its stops may
+be (`max_leg_minutes`). Everything bookable lives on its ordered
+`DateStop`s — a hike, a timed museum entry, a sunset dinner — each with its
+own times, booking state and calendar event.
 
-Restaurants carry both how they book (`booking_channel` and the slugs a deep
-link needs) and when they book (`window_amount` / `window_unit` /
-`window_open_time`). Detection results are cached with `channel_checked_at`
-so the server doesn't re-read a website on every question.
+The date's `status` is *derived* from its stops (`derive_status`) and stored
+after every stop change, so a query can filter on it: any stop still waiting
+on a booking makes the date `booking_pending`; every stop booked or not
+needing it, with times set, makes it `confirmed`; anything else is
+`planning`. `completed` and `cancelled` are set by hand and stick.
+
+Venues carry both how they book (`booking_channel` and the slugs a deep link
+needs) and when they book (`window_amount` / `window_unit` /
+`window_open_time`), plus where they are (`lat` / `lng`) so legs between
+stops can be timed. Detection results are cached with `channel_checked_at`,
+travel times in `travel_cache`.
 """
 
 import enum
 import uuid
-from datetime import datetime, time
+from collections.abc import Iterable
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -30,6 +39,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    UniqueConstraint,
     func,
     text,
 )
@@ -39,7 +49,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.booking.links import LinkTarget
 from date_planner.booking.window import BookingWindow
-from date_planner.errors import InvalidTransition
 
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 
@@ -56,32 +65,70 @@ def _enum(py_enum: type[enum.Enum], name: str) -> Enum:
     return Enum(py_enum, name=name, values_callable=lambda e: [m.value for m in e])
 
 
+class VenueType(enum.StrEnum):
+    RESTAURANT = "restaurant"
+    TRAIL = "trail"
+    MUSEUM = "museum"
+    BAR = "bar"
+    PARK = "park"
+    VIEWPOINT = "viewpoint"
+    OTHER = "other"
+
+
 class DateStatus(enum.StrEnum):
-    PROPOSED = "proposed"  # an idea, nothing on a calendar
-    TENTATIVE = "tentative"  # a hold is on the shared calendar
-    BOOKING_PENDING = "booking_pending"  # the user has a link or a call to make
-    CONFIRMED = "confirmed"  # the restaurant has us down
-    COMPLETED = "completed"  # it happened; maybe rated
-    CANCELLED = "cancelled"
+    PLANNING = "planning"  # stops still being chosen or timed
+    BOOKING_PENDING = "booking_pending"  # a stop is waiting on a booking
+    CONFIRMED = "confirmed"  # every stop booked or needing none, all timed
+    COMPLETED = "completed"  # it happened; maybe rated (set by hand)
+    CANCELLED = "cancelled"  # (set by hand)
 
 
-# Every move a date may make. Terminal states have no entry.
-DATE_TRANSITIONS: dict[DateStatus, frozenset[DateStatus]] = {
-    DateStatus.PROPOSED: frozenset(
-        {DateStatus.TENTATIVE, DateStatus.BOOKING_PENDING, DateStatus.CANCELLED}
-    ),
-    DateStatus.TENTATIVE: frozenset(
-        {DateStatus.BOOKING_PENDING, DateStatus.CONFIRMED, DateStatus.CANCELLED}
-    ),
-    DateStatus.BOOKING_PENDING: frozenset(
-        # Back to tentative when a booking attempt came to nothing and the
-        # hold is all that's left.
-        {DateStatus.TENTATIVE, DateStatus.CONFIRMED, DateStatus.CANCELLED}
-    ),
-    DateStatus.CONFIRMED: frozenset({DateStatus.COMPLETED, DateStatus.CANCELLED}),
-    DateStatus.COMPLETED: frozenset(),
-    DateStatus.CANCELLED: frozenset(),
-}
+# Set by hand and never overwritten by `derive_status`.
+STICKY_STATUSES = frozenset({DateStatus.COMPLETED, DateStatus.CANCELLED})
+
+
+class StopKind(enum.StrEnum):
+    ACTIVITY = "activity"
+    MEAL = "meal"
+    TICKETED = "ticketed"
+
+
+class Anchor(enum.StrEnum):
+    NONE = "none"  # flexible: `plan_timeline` places it
+    FIXED = "fixed"  # time set by a reservation or timed entry
+    SUNSET = "sunset"  # sunset + `sunset_offset_min`
+
+
+class ReservationNeed(enum.StrEnum):
+    REQUIRED = "required"
+    RECOMMENDED = "recommended"
+    NONE = "none"
+    UNKNOWN = "unknown"
+
+
+class StopBookingStatus(enum.StrEnum):
+    NOT_NEEDED = "not_needed"
+    NEEDED = "needed"
+    LINK_SENT = "link_sent"
+    REMINDER_SET = "reminder_set"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"  # dropped from the day; ignored by the status
+
+
+# A stop in one of these is still waiting on somebody to book it.
+PENDING_BOOKING = frozenset(
+    {
+        StopBookingStatus.NEEDED,
+        StopBookingStatus.LINK_SENT,
+        StopBookingStatus.REMINDER_SET,
+    }
+)
+SETTLED_BOOKING = frozenset({StopBookingStatus.NOT_NEEDED, StopBookingStatus.CONFIRMED})
+
+
+class TravelMode(enum.StrEnum):
+    DRIVING = "driving"
+    WALKING = "walking"
 
 
 class Couple(Base):
@@ -117,16 +164,16 @@ class Couple(Base):
         return ZoneInfo(self.timezone)
 
 
-class Restaurant(Base):
-    """A venue, how it takes reservations, and how far ahead it takes them."""
+class Venue(Base):
+    """A place a stop happens: how it books, how far ahead, and where it is."""
 
-    __tablename__ = "restaurants"
+    __tablename__ = "venues"
     __table_args__ = (
         # One row per venue per city, however it was capitalised on the way
         # in. A functional index rather than a plain unique constraint, so
         # "Nobu Malibu" and "nobu malibu" are the same venue.
         Index(
-            "ix_restaurants_name_city",
+            "ix_venues_name_city",
             text("lower(name)"),
             text("lower(city)"),
             unique=True,
@@ -136,14 +183,21 @@ class Restaurant(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200))
     city: Mapped[str] = mapped_column(String(120))
+    venue_type: Mapped[VenueType] = mapped_column(_enum(VenueType, "venue_type"))
     address: Mapped[str | None] = mapped_column(String(300))
     phone: Mapped[str | None] = mapped_column(String(20))  # E.164
     website: Mapped[str | None] = mapped_column(String(500))
     timezone: Mapped[str] = mapped_column(String(64), default=DEFAULT_TIMEZONE)
+    lat: Mapped[float | None] = mapped_column(Float)
+    lng: Mapped[float | None] = mapped_column(Float)
+    # A page about the place that isn't its own site, e.g. on AllTrails.
+    external_url: Mapped[str | None] = mapped_column(Text)
+    default_duration_min: Mapped[int | None] = mapped_column(Integer)
 
     booking_channel: Mapped[BookingChannel] = mapped_column(
         _enum(BookingChannel, "booking_channel"), default=BookingChannel.UNKNOWN
     )
+    # The platform's venue slug; for `ticketed`, the venue's booking page URL.
     platform_slug: Mapped[str | None] = mapped_column(String(200))
     # Resy scopes venues by city, e.g. `los-angeles-ca`.
     platform_city_slug: Mapped[str | None] = mapped_column(String(120))
@@ -169,6 +223,10 @@ class Restaurant(Base):
         return ZoneInfo(self.timezone)
 
     @property
+    def has_coordinates(self) -> bool:
+        return self.lat is not None and self.lng is not None
+
+    @property
     def booking_window(self) -> BookingWindow | None:
         """The window as `booking.window` wants it, or None if unrecorded."""
         if self.window_amount is None or self.window_unit is None:
@@ -191,7 +249,7 @@ class Restaurant(Base):
 
 
 class PlannedDate(Base):
-    """One date: the idea, when it is, and how far along the booking got."""
+    """One date: a day, its window, and the stops in order."""
 
     __tablename__ = "dates"
 
@@ -199,23 +257,16 @@ class PlannedDate(Base):
     couple_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("couples.id", ondelete="CASCADE"), index=True
     )
-    # Null for a date that isn't a restaurant (a hike, a show).
-    restaurant_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("restaurants.id", ondelete="SET NULL")
-    )
     title: Mapped[str] = mapped_column(String(300))
-    start_at: Mapped[datetime]
-    end_at: Mapped[datetime]
-    party_size: Mapped[int] = mapped_column(SmallInteger, default=2)
+    day: Mapped[date]
+    # The agent's "nearby" for this date: no leg between stops longer.
+    max_leg_minutes: Mapped[int] = mapped_column(SmallInteger, default=25)
+    # The whole day's window, local to the couple, if the user gave one.
+    start_after: Mapped[time | None] = mapped_column(Time)
+    end_before: Mapped[time | None] = mapped_column(Time)
     status: Mapped[DateStatus] = mapped_column(
-        _enum(DateStatus, "date_status"), default=DateStatus.PROPOSED, index=True
+        _enum(DateStatus, "date_status"), default=DateStatus.PLANNING, index=True
     )
-    # The `[TENTATIVE]` hold, and (for phone bookings) the "call at 10am"
-    # event. Both belong to the Google Calendar connector, not to us.
-    calendar_event_id: Mapped[str | None] = mapped_column(String(300))
-    reminder_event_id: Mapped[str | None] = mapped_column(String(300))
-    booking_url: Mapped[str | None] = mapped_column(Text)
-    confirmation_number: Mapped[str | None] = mapped_column(String(120))
     rating: Mapped[int | None] = mapped_column(SmallInteger)  # 1-5, after the date
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -224,14 +275,120 @@ class PlannedDate(Base):
     )
 
     couple: Mapped[Couple] = relationship(back_populates="dates")
-    restaurant: Mapped[Restaurant | None] = relationship()
+    # selectin: the tools always want the stops, and an async session can't
+    # lazy-load them on attribute access.
+    stops: Mapped[list["DateStop"]] = relationship(
+        back_populates="date",
+        order_by="DateStop.position",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
-    def transition(self, to: DateStatus) -> None:
-        """Move to `to`, or raise if the state machine doesn't allow it."""
-        if to == self.status:
-            return
-        if to not in DATE_TRANSITIONS[self.status]:
-            raise InvalidTransition(
-                f"Date {self.id} cannot go from {self.status} to {to}"
-            )
-        self.status = to
+
+class DateStop(Base):
+    """One thing in the day: where, when, and how far its booking got."""
+
+    __tablename__ = "date_stops"
+    __table_args__ = (
+        # Deferred, so `reorder_stops` can swap two positions in one
+        # transaction without tripping over itself mid-way.
+        UniqueConstraint(
+            "date_id",
+            "position",
+            name="uq_date_stops_date_position",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    date_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dates.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(SmallInteger)
+    title: Mapped[str] = mapped_column(String(300))
+    kind: Mapped[StopKind] = mapped_column(_enum(StopKind, "stop_kind"))
+    # Null while the stop is an open slot ("a sunset dinner somewhere").
+    venue_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("venues.id", ondelete="SET NULL")
+    )
+    party_size: Mapped[int] = mapped_column(SmallInteger, default=2)
+    start_at: Mapped[datetime | None]
+    end_at: Mapped[datetime | None]
+    est_duration_min: Mapped[int | None] = mapped_column(Integer)
+    anchor: Mapped[Anchor] = mapped_column(_enum(Anchor, "stop_anchor"))
+    sunset_offset_min: Mapped[int] = mapped_column(SmallInteger, default=-30)
+    reservation_need: Mapped[ReservationNeed] = mapped_column(
+        _enum(ReservationNeed, "reservation_need")
+    )
+    booking_status: Mapped[StopBookingStatus] = mapped_column(
+        _enum(StopBookingStatus, "stop_booking_status")
+    )
+    booking_url: Mapped[str | None] = mapped_column(Text)
+    confirmation_number: Mapped[str | None] = mapped_column(String(120))
+    # This stop's event on the shared calendar, and (for phone bookings) the
+    # "call at 10am" reminder. Both belong to the Google Calendar connector.
+    calendar_event_id: Mapped[str | None] = mapped_column(String(300))
+    reminder_event_id: Mapped[str | None] = mapped_column(String(300))
+    # Written by `plan_timeline`: the leg from the previous stop to this one.
+    travel_min_from_prev: Mapped[int | None] = mapped_column(SmallInteger)
+    travel_mode: Mapped[TravelMode] = mapped_column(
+        _enum(TravelMode, "travel_mode"), default=TravelMode.DRIVING
+    )
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now()
+    )
+
+    date: Mapped[PlannedDate] = relationship(back_populates="stops")
+    venue: Mapped[Venue | None] = relationship(lazy="selectin")
+
+    @property
+    def venue_name(self) -> str | None:
+        return self.venue.name if self.venue is not None else None
+
+
+class TravelCache(Base):
+    """A leg between two venues as one provider timed it, unpadded.
+
+    Directional: A→B and B→A are separate rows, since one-way streets and
+    freeway ramps make them differ.
+    """
+
+    __tablename__ = "travel_cache"
+
+    from_venue_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("venues.id", ondelete="CASCADE"), primary_key=True
+    )
+    to_venue_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("venues.id", ondelete="CASCADE"), primary_key=True
+    )
+    mode: Mapped[TravelMode] = mapped_column(
+        _enum(TravelMode, "travel_mode"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    minutes: Mapped[float]
+    meters: Mapped[float]
+    computed_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+def derive_status(current: DateStatus, stops: Iterable[DateStop]) -> DateStatus:
+    """The status a date's stops add up to; see the module docstring.
+
+    Cancelled stops are out of the day, so they count for nothing. A date
+    with no stops yet is still `planning`.
+    """
+    if current in STICKY_STATUSES:
+        return current
+    live = [s for s in stops if s.booking_status is not StopBookingStatus.CANCELLED]
+    if any(s.booking_status in PENDING_BOOKING for s in live):
+        return DateStatus.BOOKING_PENDING
+    if live and all(
+        s.booking_status in SETTLED_BOOKING
+        and s.start_at is not None
+        and s.end_at is not None
+        for s in live
+    ):
+        return DateStatus.CONFIRMED
+    return DateStatus.PLANNING

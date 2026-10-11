@@ -10,7 +10,7 @@ the date, time and party size already set. When one does, add its platform to
 about it.
 
 The sample slugs are real venues, chosen because they're well known enough to
-still exist. `--from-db` uses the restaurants on file instead.
+still exist. `--from-db` uses the venues on file instead.
 
 A 404 or "not found" from the platform itself doesn't necessarily mean the
 *template* is wrong — it can mean the sample slug is stale, or that the venue
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from date_planner.booking.channels import ONLINE_CHANNELS, BookingChannel
 from date_planner.booking.links import VERIFIED, LinkTarget, build
 from date_planner.db import open_session, repo
-from date_planner.db.models import Restaurant
+from date_planner.db.models import Venue
 from date_planner.errors import DatePlannerError
 
 LA = ZoneInfo("America/Los_Angeles")
@@ -71,7 +71,7 @@ SAMPLES: list[tuple[str, LinkTarget]] = [
 ]
 
 
-def _targets_from_rows(rows: list[Restaurant]) -> list[tuple[str, LinkTarget]]:
+def _targets_from_rows(rows: list[Venue]) -> list[tuple[str, LinkTarget]]:
     return [
         (f"{row.name} ({row.booking_channel}, {row.city})", row.link_target)
         for row in rows
@@ -81,7 +81,7 @@ def _targets_from_rows(rows: list[Restaurant]) -> list[tuple[str, LinkTarget]]:
 
 async def _from_db() -> list[tuple[str, LinkTarget]]:
     async with open_session() as session:
-        return _targets_from_rows(await repo.list_restaurants(session))
+        return _targets_from_rows(await repo.list_venues(session))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--from-db",
         action="store_true",
-        help="use the restaurants on file instead of the sample venues",
+        help="use the venues on file instead of the sample venues",
     )
     parser.add_argument(
         "--party-size", type=int, default=2, help="seats to ask for (default 2)"
