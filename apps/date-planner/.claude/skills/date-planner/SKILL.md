@@ -244,12 +244,16 @@ The call script covers: party size, date, preferred time, two backup times
 ### 8. Show the day
 
 Once the holds are up and the bookings handed over, show the plan as a page:
-a map with the stops numbered in order and the route between them, then
-each stop's time, the drive before it, where sunset falls, and its booking
-state. It's what the user looks at on the phone; the reply stays short.
+a map with the stops numbered in order and the route between them, which
+can be panned and zoomed, then each stop's time, the drive before it, where
+sunset falls, any booking still to make, and Apple Maps links. It's what the
+user looks at on the phone; the reply stays short.
 
-1. `render_date_preview(date_id)` writes the page and its map images.
-2. `Read` `page_path` and every file in `files` before publishing them.
+1. `render_date_preview(date_id)` writes the page, its map pictures and the
+   map's tiles (`files` holds up to ~200 `tiles/…` entries; pass them all).
+2. `Read` `page_path`, the map pictures (`map-light.jpg`, `map-dark.jpg`)
+   and `tiles_overview`, which shows every tile in `files` on one sheet,
+   before publishing.
 3. Publish with the **Artifact** tool:
    - `preview_url` empty → `file_path=page_path`, `files` as returned,
      `icon="map"`, a one-line `description` ("Malibu day, Oct 24: hike,
@@ -265,7 +269,8 @@ Render and republish after anything that changes what the page shows: a
 stop added, removed, swapped or retimed, a booking confirmed, the date
 moved. If `missing_coordinates` lists a stop, it's off the map: save the
 venue's lat/lng if you can. `basemap: false` means the map tiles couldn't be
-fetched; the pins still show, on a plain grid — say so in a few words.
+fetched; the pins still show, on a plain grid, and the map doesn't pan or
+zoom — say so in a few words.
 
 ### 9. Confirm
 

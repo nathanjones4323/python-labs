@@ -106,7 +106,7 @@ not ready for public hosting.
 | `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
 | `estimate_travel` | One leg's time and distance, cached |
 | `plan_timeline` | Place every stop in the current order and report what's wrong |
-| `render_date_preview` | Write the day as a phone-sized page: a map of the stops and the route, then the timeline with drives, sunset and bookings |
+| `render_date_preview` | Write the day as a phone-sized page: a map of the stops and the route you can pan and zoom, then the timeline with drives, sunset, bookings still to make and Apple Maps links |
 
 ### Status
 
@@ -168,19 +168,41 @@ tool, so it opens as a card in the chat — on a phone, through Remote
 Control, too. The Artifact's link is saved on the date (`preview_url`) and
 every later change republishes to the same link.
 
-An Artifact page can't load map tiles from another host, so the server
-fetches the few tiles that cover the stops and stitches them into one
-image; the pins and the route are drawn by the page on top. The tiles are
-OpenStreetMap's own, which its tile policy allows for light use like this:
-a handful per date, an identifying User-Agent, two requests at a time,
-cached under `previews/.tiles` for 30 days, and the credit on the map. OSM
-has no dark style, so in dark mode the page darkens the light map itself.
+An Artifact page can load scripts from cdnjs but no map tiles from another
+host, so the server ships the tiles with the page. It stitches the few that
+cover the stops into one picture, which shows first, with the pins and the
+route drawn on top; then Leaflet (1.9.4, pinned, from cdnjs) takes over
+with a small pyramid of tiles published next to the page as
+`tiles/{z}/{x}/{y}.webp`: the stops' area plus a margin from one zoom out
+to two in, and closer still (to zoom 16 at most) just around each
+stop, at most 200 tiles and around 2.5 MB. Panning and zooming are held to
+what was fetched, so the map never shows a blank tile; zoomed past the
+whole-area levels away from a stop, it's the closest whole-area level
+scaled up. If Leaflet doesn't load, the picture stays.
+
+The tiles are CARTO's Positron when `CARTO_API_KEY` is set in `.env`, and
+OpenStreetMap's own otherwise. CARTO needs a key since September 2026: it's
+free, without an account, from <https://carto.com/basemaps/apikey>, for
+non-commercial use up to 5M tiles a month; without one (or with a wrong
+one) it answers every tile with an "API key required" watermark, which the
+server refuses rather than put on the map. Either way it's light use: a
+couple of hundred tiles per date at zoom 16 and below (OSM's policy forbids
+bulk fetching at 17+), an identifying User-Agent, two requests at a time,
+cached under `previews/.tiles` for 30 days, and the credit on the map. In
+dark mode the page darkens the light tiles itself.
 
 `DATE_PLANNER_MAP_TILES_LIGHT` / `_DARK` take any `{z}/{x}/{y}` template,
 256px or @2x (set `DATE_PLANNER_MAP_ATTRIBUTION` to match), or an empty
 light URL for no basemap: the pins then sit on a plain grid, still to
-scale. CARTO's basemaps now need an API key and answer without one with a
-placeholder tile, so they aren't the default.
+scale. The dark template only changes the picture; the interactive map
+always uses the light tiles, darkened.
+
+Map links open Apple Maps (its unified `maps.apple.com` URLs, iOS 18.4+):
+each stop's place card, and the route through every stop in order, walking
+when every leg walks and driving otherwise. "Open in Google Calendar" opens
+the day on the web calendar: the iPhone app takes no https links, and a
+`googlecalendar://` link can't be relied on from the Artifact's sandboxed
+frame.
 
 The session needs `Artifact` and `Read(./previews/**)` in its allowlist —
 see `.claude/settings.local.json` for Remote Control.

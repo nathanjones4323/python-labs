@@ -21,14 +21,17 @@ def register(mcp: FastMCP) -> None:
     @as_tool_error
     async def render_date_preview(date_id: uuid.UUID) -> PreviewOut:
         """Write the date's preview page: a map of the stops with the route
-        between them, then each stop's time, drive or walk, booking state, and
-        where sunset falls. Made for a phone.
+        between them, which can be panned and zoomed, then each stop's time,
+        drive or walk, any booking still to make, and where sunset falls,
+        with Apple Maps links. Made for a phone.
 
         Nothing is published here. Publish `page_path` with the Artifact
-        tool, passing `files` as its supporting files, and `preview_url` as
-        its `url` when it's set (read that artifact first). After a first
-        publish, save the link with `update_date(preview_url=...)`. Run it
-        again after any change to the stops; it overwrites the same files.
+        tool, passing `files` as its supporting files (the map pictures and
+        its tiles), and `preview_url` as its `url` when it's set (read that
+        artifact first). `tiles_overview` shows every tile on one sheet. After
+        a first publish, save the link with `update_date(preview_url=...)`.
+        Run it again after any change to the stops; it overwrites the same
+        files.
         """
         settings = get_settings()
         # Read the date and let the connection go before fetching tiles: the
@@ -45,6 +48,9 @@ def register(mcp: FastMCP) -> None:
         return PreviewOut(
             page_path=str(written.page),
             files={name: str(path) for name, path in written.files.items()},
+            tiles_overview=(
+                str(written.tiles_overview) if written.tiles_overview else None
+            ),
             preview_url=planned.preview_url,
             stops_on_map=written.stops_on_map,
             missing_coordinates=written.missing_coordinates,
