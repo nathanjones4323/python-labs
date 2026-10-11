@@ -10,7 +10,7 @@ import uuid
 from datetime import date, datetime, time
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
 
 from date_planner.booking.channels import (
     BookingChannel,
@@ -29,6 +29,19 @@ from date_planner.db.models import (
 
 PartySize = Annotated[int, Field(ge=1, le=20)]
 Rating = Annotated[int, Field(ge=1, le=5)]
+# A wall-clock time in the couple's or venue's own timezone, kept naive.
+# JSON Schema's `format: time` is RFC 3339 full-time, which needs a UTC
+# offset these never carry, so a strict client rejected "09:00:00".
+LocalTime = Annotated[
+    time,
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": r"^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?$",
+            "description": "Local wall-clock time, HH:MM[:SS]",
+        }
+    ),
+]
 
 
 class Out(BaseModel):
@@ -116,7 +129,7 @@ class VenueOut(Out):
     platform_city_slug: str | None
     window_amount: int | None
     window_unit: WindowUnit | None
-    window_open_time: time | None
+    window_open_time: LocalTime | None
     channel_evidence: str | None
     channel_confidence: float | None
     channel_checked_at: datetime | None
@@ -150,7 +163,7 @@ class VenueIn(BaseModel):
     platform_city_slug: str | None = None
     window_amount: int | None = None
     window_unit: WindowUnit | None = None
-    window_open_time: time | None = None
+    window_open_time: LocalTime | None = None
     notes: str | None = None
 
 
@@ -166,7 +179,7 @@ class DetectionOut(BaseModel):
     evidence: str
     window_amount: int | None = None
     window_unit: WindowUnit | None = None
-    window_open_time: time | None = None
+    window_open_time: LocalTime | None = None
     # True when this came from `channel_checked_at`, not a fresh fetch.
     from_cache: bool = False
     pages_fetched: list[str] = Field(default_factory=list)
@@ -238,8 +251,8 @@ class DateOut(Out):
     title: str
     day: date
     max_leg_minutes: int
-    start_after: time | None
-    end_before: time | None
+    start_after: LocalTime | None
+    end_before: LocalTime | None
     # Derived from the stops, except `completed` / `cancelled`.
     status: DateStatus
     rating: int | None
@@ -319,8 +332,8 @@ class DatePatch(BaseModel):
     title: str | None = None
     day: date | None = None
     max_leg_minutes: Annotated[int, Field(gt=0)] | None = None
-    start_after: time | None = None
-    end_before: time | None = None
+    start_after: LocalTime | None = None
+    end_before: LocalTime | None = None
     rating: Rating | None = None
     notes: str | None = None
     # The Artifact link the preview page was published to.

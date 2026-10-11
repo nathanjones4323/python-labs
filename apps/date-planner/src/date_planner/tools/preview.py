@@ -22,8 +22,8 @@ def register(mcp: FastMCP) -> None:
     async def render_date_preview(date_id: uuid.UUID) -> PreviewOut:
         """Write the date's preview page: a map of the stops with the route
         between them, which can be panned and zoomed, then each stop's time,
-        drive, any booking still to make, and where sunset falls, with Apple
-        Maps links. Made for a phone.
+        drive or walk, any booking still to make, and where sunset falls,
+        with Apple Maps links. Made for a phone.
 
         Nothing is published here. Publish `page_path` with the Artifact
         tool, passing `files` as its supporting files (the map pictures and
@@ -34,22 +34,25 @@ def register(mcp: FastMCP) -> None:
         files.
         """
         settings = get_settings()
+        # Read the date and let the connection go before fetching tiles: the
+        # stops and venues load eagerly and nothing expires on commit, so the
+        # rows stay readable once the session has closed.
         async with open_session() as session:
             planned = await repo.get_date(session, date_id)
             tz = (await repo.get_couple(session, planned.couple_id)).tz
-            async with httpx.AsyncClient(
-                timeout=settings.fetch_timeout,
-                headers={"User-Agent": settings.map_user_agent},
-            ) as client:
-                written = await preview.write(planned, tz, settings, client)
-            return PreviewOut(
-                page_path=str(written.page),
-                files={name: str(path) for name, path in written.files.items()},
-                tiles_overview=(
-                    str(written.tiles_overview) if written.tiles_overview else None
-                ),
-                preview_url=planned.preview_url,
-                stops_on_map=written.stops_on_map,
-                missing_coordinates=written.missing_coordinates,
-                basemap=written.basemap,
-            )
+        async with httpx.AsyncClient(
+            timeout=settings.fetch_timeout,
+            headers={"User-Agent": settings.map_user_agent},
+        ) as client:
+            written = await preview.write(planned, tz, settings, client)
+        return PreviewOut(
+            page_path=str(written.page),
+            files={name: str(path) for name, path in written.files.items()},
+            tiles_overview=(
+                str(written.tiles_overview) if written.tiles_overview else None
+            ),
+            preview_url=planned.preview_url,
+            stops_on_map=written.stops_on_map,
+            missing_coordinates=written.missing_coordinates,
+            basemap=written.basemap,
+        )

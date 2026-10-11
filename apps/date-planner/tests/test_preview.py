@@ -610,6 +610,28 @@ def test_without_tiles_there_is_no_leaflet() -> None:
     assert 'src="map-light.jpg"' in html
 
 
+def test_a_walking_leg_reads_as_a_walk() -> None:
+    html = page.render(
+        _data(
+            [
+                _stop(1, start_at=at(17)),
+                _stop(
+                    2,
+                    start_at=at(18),
+                    travel_min_from_prev=12,
+                    travel_mode=TravelMode.WALKING,
+                ),
+            ]
+        )
+    )
+    assert "12 min walk" in html
+    assert "12 min drive" not in html
+    assert page.WALK in html and page.CAR not in html
+    # The limit covers walks as well, so the footer doesn't call it a drive.
+    assert "Drives are kept" not in html
+    assert "Legs between stops are kept under 45 min." in html
+
+
 def test_without_dark_tiles_the_light_map_is_darkened() -> None:
     html = page.render(_data([_stop(1, place=(0.5, 0.5))], has_dark_map=False))
     assert 'class="tiles light dimmed"' in html

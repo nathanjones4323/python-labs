@@ -7,11 +7,13 @@ that won't serialise.
 """
 
 import contextlib
+import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import jsonschema
 import pytest
 import respx
 from date_planner.db import repo
@@ -398,6 +400,24 @@ async def test_dates_and_stops_through_the_tools(
 
     listed = await call("list_dates", couple_id=str(seeded["couple_id"]), day_from=DAY)
     assert [d.id for d in listed] == [planned.id]
+
+
+async def test_local_times_pass_a_strict_output_schema(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    planned = await new_date(seeded, start_after="09:00", end_before="22:00")
+    async with client() as connected:
+        tools = {t.name: t for t in await connected.list_tools()}
+        result = await connected.call_tool("get_date", {"date_id": str(planned.id)})
+    schema = tools["get_date"].output_schema
+    assert schema is not None
+    # FormatChecker only checks `time` with rfc3339-validator installed, so
+    # look for the format itself too.
+    assert '"format": "time"' not in json.dumps(schema)
+    assert result.structured_content is not None
+    jsonschema.validate(
+        result.structured_content, schema, format_checker=jsonschema.FormatChecker()
+    )
 
 
 async def test_status_can_only_be_set_to_completed_or_cancelled(
