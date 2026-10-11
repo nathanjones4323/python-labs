@@ -117,7 +117,7 @@ async def test_ors_response_is_parsed() -> None:
 
 
 async def test_google_is_a_stub() -> None:
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(TravelFailed):
         await travel.GoogleProvider().route(NOBU, GETTY, TravelMode.DRIVING)
 
 

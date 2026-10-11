@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && uv run python .claude/hooks/calendar_guard.py"
+            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && python3 .claude/hooks/calendar_guard.py"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && uv run python .claude/hooks/deny.py 'Date Planner never sends email.'"
+            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && python3 .claude/hooks/deny.py 'Date Planner never sends email.'"
           }
         ]
       }

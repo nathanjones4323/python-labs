@@ -91,7 +91,8 @@ TICKET_LINK_TEXT = re.compile(
 )
 TIMED_ENTRY_PROSE = re.compile(r"timed[\s-]?entry", re.I)
 REQUIRED_PROSE = re.compile(
-    r"reservations?\s+(?:are\s+|is\s+)?required"
+    # Not "no reservations required", which says the opposite.
+    r"(?<!\bno\s)reservations?\s+(?:are\s+|is\s+)?required"
     r"|requires?\s+(?:an?\s+)?(?:advance\s+)?(?:timed[\s-]?entry\s+)?reservations?",
     re.I,
 )

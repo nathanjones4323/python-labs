@@ -149,7 +149,7 @@ class GoogleProvider:
     is_estimate = False
 
     async def route(self, origin: LatLng, dest: LatLng, mode: TravelMode) -> Route:
-        raise NotImplementedError("The Google Routes provider isn't implemented")
+        raise TravelFailed("The Google Routes provider isn't implemented yet")
 
 
 async def _get_json(
@@ -164,9 +164,13 @@ async def _get_json(
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise TravelFailed(f"Routing request failed: {exc}") from exc
-    data = response.json()
+    not_json = "Routing service returned something other than a JSON object"
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise TravelFailed(not_json) from exc
     if not isinstance(data, dict):
-        raise TravelFailed("Routing service returned something other than JSON")
+        raise TravelFailed(not_json)
     return data
 
 

@@ -1,6 +1,6 @@
 """PreToolUse hook that refuses the call, with the reason given as argv[1].
 
-    uv run python .claude/hooks/deny.py 'Date Planner never sends email.'
+    python3 .claude/hooks/deny.py 'Date Planner never sends email.'
 
 Reads (and ignores) the payload on stdin so Claude Code's pipe is drained.
 """

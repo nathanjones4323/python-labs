@@ -424,6 +424,16 @@ async def update_stop(
     values = patch.model_dump(exclude_unset=True)
     if values.get("venue_id") is not None:
         await get_venue(session, values["venue_id"])
+    # A new need moves a booking_status that was only ever the old need's
+    # default; otherwise a stop added as `unknown` and later found to need
+    # nothing would hold the date at `booking_pending` for good.
+    new_need = values.get("reservation_need")
+    if (
+        new_need is not None
+        and "booking_status" not in values
+        and stop.booking_status is default_booking_status(stop.reservation_need)
+    ):
+        values["booking_status"] = default_booking_status(new_need)
     _assign(stop, values, STOP_REQUIRED)
     _check_times(stop)
     return await _settle(session, await get_date(session, stop.date_id))

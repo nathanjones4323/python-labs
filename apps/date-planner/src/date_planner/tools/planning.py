@@ -9,6 +9,7 @@ import uuid
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastmcp import FastMCP
 
 from date_planner.config import get_settings
@@ -125,7 +126,11 @@ def register(mcp: FastMCP) -> None:
         approved the timeline.
         """
         settings = get_settings()
-        async with open_session() as session:
+        # One HTTP client for every leg, rather than one per routing call.
+        async with (
+            httpx.AsyncClient(timeout=10.0) as client,
+            open_session() as session,
+        ):
             planned = await repo.get_date(session, date_id)
             tz = (await repo.get_couple(session, planned.couple_id)).tz
             stops = list(planned.stops)
@@ -167,7 +172,12 @@ def register(mcp: FastMCP) -> None:
                 if origin is not None and dest is not None:
                     if origin.has_coordinates and dest.has_coordinates:
                         found = await travel.estimate(
-                            session, origin, dest, stop.travel_mode, settings
+                            session,
+                            origin,
+                            dest,
+                            stop.travel_mode,
+                            settings,
+                            client=client,
                         )
                 leg_minutes.append(found.minutes if found else None)
                 legs.append(
@@ -191,12 +201,22 @@ def register(mcp: FastMCP) -> None:
                         f'"{stop.title}" is anchored on sunset, but no stop has '
                         "coordinates to work sunset out from.",
                     )
+                # A stop with no estimate but both times set (a booked dinner,
+                # 19:00-20:30) lasts as long as those say, so applying the
+                # timeline doesn't wipe its end_at.
+                duration = stop.est_duration_min
+                if (
+                    duration is None
+                    and stop.start_at is not None
+                    and stop.end_at is not None
+                ):
+                    duration = int((stop.end_at - stop.start_at).total_seconds() // 60)
                 inputs.append(
                     timeline.StopInput(
                         id=stop.id,
                         title=stop.title,
                         anchor=stop.anchor,
-                        duration_min=stop.est_duration_min,
+                        duration_min=duration,
                         start_at=stop.start_at,
                         sunset_offset_min=stop.sunset_offset_min,
                         sunset=stop_sunset,
