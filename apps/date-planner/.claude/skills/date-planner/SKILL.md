@@ -191,6 +191,21 @@ the details.
 to drop `[TENTATIVE]` from every event and invite the partner to each —
 and only do that on a yes.
 
+### Moving the date to another day
+
+`update_date(day=...)` moves every stop to the same times on the new day,
+and puts any stop that was booked (or had a link or reminder out) back to
+`needed`. Then:
+
+- check the new day with `plan_timeline(date_id)`: sunset moves, and a
+  `daylight` violation can appear;
+- move each stop's calendar event to its new time and put `[TENTATIVE]`
+  back on any that lose their booking. A call reminder for the old day is
+  moved to the new day's `compute_booking_window`, not deleted;
+- tell the user which bookings to cancel, by confirmation number. Never
+  cancel one yourself;
+- go through step 7 again for every stop that's `needed`.
+
 ### 9. After the date
 
 If asked, `update_date(status="completed", rating=...)`. That rating is what

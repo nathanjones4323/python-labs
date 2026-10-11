@@ -29,6 +29,7 @@ from date_planner.schemas import (
     VenueIn,
 )
 from pydantic import ValidationError
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 Factory = async_sessionmaker[AsyncSession]
@@ -453,6 +454,128 @@ async def test_a_cancelled_stop_counts_for_nothing(
             StopPatch(booking_status=StopBookingStatus.CANCELLED),
         )
         assert planned.status is DateStatus.CONFIRMED
+
+
+async def test_a_new_need_moves_a_defaulted_booking_status(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        planned = await repo.add_stop(session, date_id, _stop("Hike"))
+        hike = planned.stops[0]
+        assert hike.booking_status is StopBookingStatus.NEEDED  # unknown waits
+        planned = await repo.update_stop(
+            session, hike.id, StopPatch(reservation_need=ReservationNeed.NONE)
+        )
+        assert hike.booking_status is StopBookingStatus.NOT_NEEDED
+
+        # A status somebody set isn't a default, so it stays.
+        planned = await repo.add_stop(
+            session, date_id, _stop("Dinner", reservation_need=ReservationNeed.REQUIRED)
+        )
+        dinner = planned.stops[1]
+        await repo.update_stop(
+            session, dinner.id, StopPatch(booking_status=StopBookingStatus.LINK_SENT)
+        )
+        await repo.update_stop(
+            session, dinner.id, StopPatch(reservation_need=ReservationNeed.NONE)
+        )
+        assert dinner.booking_status is StopBookingStatus.LINK_SENT
+
+
+async def test_a_new_day_takes_the_stops_with_it(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    """Wall-clock times carry over, across the DST change on Nov 1; a
+    booking made for the old day goes back to `needed`."""
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        await repo.add_stop(
+            session,
+            date_id,
+            _stop(
+                "Hike",
+                reservation_need=ReservationNeed.NONE,
+                start_at=_at(9),
+                end_at=_at(10, 30),
+            ),
+        )
+        planned = await repo.add_stop(
+            session,
+            date_id,
+            _stop(
+                "Dinner",
+                kind=StopKind.MEAL,
+                reservation_need=ReservationNeed.REQUIRED,
+                booking_status=StopBookingStatus.CONFIRMED,
+                booking_url="https://resy.com/cities/la/venues/nobu?date=2026-10-24",
+                confirmation_number="NOBU-1",
+                start_at=_at(19),
+                end_at=_at(20, 30),
+            ),
+        )
+        assert planned.status is DateStatus.CONFIRMED
+
+        moved = date(2026, 11, 7)
+        planned = await repo.update_date(session, date_id, DatePatch(day=moved))
+        hike, dinner = planned.stops
+        assert hike.start_at == datetime.combine(moved, time(9), LA)
+        assert hike.end_at == datetime.combine(moved, time(10, 30), LA)
+        assert dinner.start_at == datetime.combine(moved, time(19), LA)
+        assert hike.booking_status is StopBookingStatus.NOT_NEEDED
+        assert dinner.booking_status is StopBookingStatus.NEEDED
+        assert dinner.booking_url is None
+        assert dinner.confirmation_number == "NOBU-1"
+        assert planned.status is DateStatus.BOOKING_PENDING
+
+
+async def test_the_same_day_moves_nothing(db: Factory, seeded: dict[str, Any]) -> None:
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        await repo.add_stop(
+            session,
+            date_id,
+            _stop(
+                "Dinner",
+                reservation_need=ReservationNeed.REQUIRED,
+                booking_status=StopBookingStatus.CONFIRMED,
+                start_at=_at(19),
+                end_at=_at(20),
+            ),
+        )
+        planned = await repo.update_date(
+            session, date_id, DatePatch(day=DAY, notes="same day")
+        )
+        assert planned.stops[0].start_at == _at(19)
+        assert planned.stops[0].booking_status is StopBookingStatus.CONFIRMED
+
+
+async def test_a_stop_change_costs_the_same_queries_however_many_stops(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async def queries_to_rename(stops: int) -> int:
+        async with db() as session, session.begin():
+            date_id = await _date(session, seeded["couple_id"])
+            for n in range(stops):
+                planned = await repo.add_stop(
+                    session, date_id, _stop(f"Stop {n}", venue_id=seeded["nobu_id"])
+                )
+            statements: list[str] = []
+            engine = session.bind.sync_engine  # type: ignore[union-attr]
+
+            def count(*args: Any) -> None:
+                statements.append(args[2])
+
+            event.listen(engine, "before_cursor_execute", count)
+            try:
+                await repo.update_stop(
+                    session, planned.stops[0].id, StopPatch(title="Renamed")
+                )
+            finally:
+                event.remove(engine, "before_cursor_execute", count)
+            return len(statements)
+
+    assert await queries_to_rename(2) == await queries_to_rename(6)
 
 
 async def test_completed_and_cancelled_stick(

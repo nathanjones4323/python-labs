@@ -56,6 +56,13 @@ def register(mcp: FastMCP) -> None:
         """Change the date's own fields: title, day, window, nearby limit,
         rating, notes.
 
+        A new `day` moves every stop to the same clock times that day. A
+        booking was for the old day, so a stop that was `link_sent`,
+        `reminder_set` or `confirmed` goes back to `needed` with its
+        `booking_url` cleared; its `confirmation_number` stays, for
+        cancelling the old one. The calendar events don't move by
+        themselves.
+
         Stops change through `add_stop` / `update_stop` / `reorder_stops` /
         `remove_stop`. `status` is derived from the stops, so here it only
         takes `completed` (with a `rating`, afterwards) or `cancelled` — and

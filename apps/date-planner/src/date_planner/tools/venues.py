@@ -6,7 +6,6 @@ is free. The booking tools take a stop, not a venue: the stop says when and
 for how many.
 """
 
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -28,8 +27,6 @@ from date_planner.schemas import (
     VenueOut,
 )
 from date_planner.tools import as_tool_error, localize
-
-REQUIRED_EVIDENCE = re.compile(re.escape(detection_mod.REQUIRED_NOTE), re.I)
 
 
 def _from_row(
@@ -80,18 +77,26 @@ def _stop_start(stop: DateStop) -> datetime:
 
 
 def suggest_need(
-    channel: BookingChannel, evidence: str | None
+    channel: BookingChannel, evidence: str | None, party_size: int
 ) -> tuple[ReservationNeed, str]:
-    """The default reservation need for a venue that books through `channel`."""
+    """The default reservation need for a party of `party_size` at a venue
+    that books through `channel`."""
     if channel is BookingChannel.WALK_IN:
         return ReservationNeed.NONE, "Walk-in only: nothing to book."
     if channel is BookingChannel.TICKETED:
         return ReservationNeed.REQUIRED, "Timed entry: no ticket, no entry."
     if channel in ONLINE_CHANNELS or channel is BookingChannel.PHONE:
-        if evidence and REQUIRED_EVIDENCE.search(evidence):
+        minimum = detection_mod.required_from(evidence)
+        if minimum is not None and party_size >= minimum:
             return (
                 ReservationNeed.REQUIRED,
                 f"Books by {channel}, and the site says reservations are required.",
+            )
+        if minimum is not None:
+            return (
+                ReservationNeed.RECOMMENDED,
+                f"Takes reservations by {channel}; the site requires them only "
+                f"for parties of {minimum}+.",
             )
         return ReservationNeed.RECOMMENDED, f"Takes reservations by {channel}."
     return ReservationNeed.UNKNOWN, "How it books isn't known; detect or ask."
@@ -193,14 +198,18 @@ def register(mcp: FastMCP) -> None:
 
         walk_in → none; ticketed → required; resy / opentable / tock /
         sevenrooms / phone → recommended, or required when detection saw
-        "reservations required"; unknown → unknown. You may raise it; don't
+        "reservations required" for a party this stop's size (a rule only
+        for parties of 6+ doesn't make a table for two required);
+        unknown → unknown. You may raise it; don't
         lower it without a reason. Nothing is written — save it with
         `update_stop`.
         """
         async with open_session() as session:
             stop = await repo.get_stop(session, stop_id)
             venue = _stop_venue(stop)
-            need, reason = suggest_need(venue.booking_channel, venue.channel_evidence)
+            need, reason = suggest_need(
+                venue.booking_channel, venue.channel_evidence, stop.party_size
+            )
             return ReservationNeedOut(
                 stop_id=stop.id,
                 channel=venue.booking_channel,

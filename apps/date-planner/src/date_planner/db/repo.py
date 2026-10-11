@@ -12,13 +12,16 @@ and stores the status they add up to (`models.derive_status`).
 
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from date_planner.booking.detect import Detection
 from date_planner.db.models import (
+    PENDING_BOOKING,
     STICKY_STATUSES,
     Couple,
     DateStatus,
@@ -229,14 +232,19 @@ async def get_date(session: AsyncSession, date_id: uuid.UUID) -> PlannedDate:
 async def _settle(session: AsyncSession, planned: PlannedDate) -> PlannedDate:
     """Reload the stops in order and store the status they add up to.
 
-    Each stop's venue is reloaded too: a new stop, or one whose `venue_id`
-    just changed, would otherwise leave `venue` unloaded or stale — and an
-    async session can't lazy-load it when the output reads `venue_name`.
+    The stops' venues are reloaded too, in one query: a new stop, or one
+    whose `venue_id` just changed, would otherwise leave `venue` unloaded or
+    stale — and an async session can't lazy-load it when the output reads
+    `venue_name`.
     """
     await session.flush()
     await session.refresh(planned, ["stops"])
-    for stop in planned.stops:
-        await session.refresh(stop, ["venue"])
+    await session.scalars(
+        select(DateStop)
+        .where(DateStop.date_id == planned.id)
+        .options(selectinload(DateStop.venue))
+        .execution_options(populate_existing=True)
+    )
     planned.status = derive_status(planned.status, planned.stops)
     await session.flush()
     return planned
@@ -274,10 +282,40 @@ async def create_date(
     return await _settle(session, planned)
 
 
+# Booking progress made for a particular day; it doesn't carry to another.
+DAY_BOUND_BOOKING = PENDING_BOOKING | {StopBookingStatus.CONFIRMED}
+
+
+def _shift(at: datetime | None, by: timedelta, tz: ZoneInfo) -> datetime | None:
+    """`at` moved `by` whole days on the wall clock, so 7pm stays 7pm
+    across a DST change."""
+    if at is None:
+        return None
+    local = at.astimezone(tz).replace(tzinfo=None)
+    return (local + by).replace(tzinfo=tz)
+
+
+def _move_stops(stops: list[DateStop], by: timedelta, tz: ZoneInfo) -> None:
+    """Move the stops' times `by` days, in the couple's timezone.
+
+    A booking was made for the old day, so a stop that had one in hand or
+    under way goes back to `needed` and loses its prefilled link. The
+    confirmation number stays: it's what cancels the old booking.
+    """
+    for stop in stops:
+        stop.start_at = _shift(stop.start_at, by, tz)
+        stop.end_at = _shift(stop.end_at, by, tz)
+        if stop.booking_status in DAY_BOUND_BOOKING:
+            stop.booking_status = StopBookingStatus.NEEDED
+            stop.booking_url = None
+
+
 async def update_date(
     session: AsyncSession, date_id: uuid.UUID, patch: DatePatch
 ) -> PlannedDate:
     """Apply `patch` to the date's own fields.
+
+    A new `day` takes the stops with it; see `_move_stops`.
 
     `status` only takes `completed` or `cancelled`, and once a date is in
     either it stays there.
@@ -285,6 +323,10 @@ async def update_date(
     planned = await get_date(session, date_id)
     values = patch.model_dump(exclude_unset=True)
     status = values.pop("status", None)
+    new_day = values.get("day")
+    if new_day is not None and new_day != planned.day:
+        couple = await get_couple(session, planned.couple_id)
+        _move_stops(planned.stops, new_day - planned.day, couple.tz)
     _assign(planned, values, DATE_REQUIRED)
     _check_window(planned.start_after, planned.end_before)
     if status is not None:

@@ -343,6 +343,29 @@ async def test_reservation_need_follows_the_channel(
     assert suggestion.suggested == need
 
 
+@pytest.mark.parametrize(("party_size", "need"), [(2, "recommended"), (6, "required")])
+async def test_a_large_party_rule_only_binds_a_large_party(
+    db: Factory, seeded: dict[str, Any], party_size: int, need: str
+) -> None:
+    async with db() as session, session.begin():
+        row = await repo.get_venue(session, seeded["bestia_id"])
+        row.channel_evidence = (
+            'Resy link; reservations required for parties of 6+: "required"'
+        )
+    planned = await new_date(seeded)
+    planned = await add(
+        planned.id,
+        title="Pasta",
+        kind="meal",
+        venue_id=str(seeded["bestia_id"]),
+        party_size=party_size,
+    )
+    suggestion = await call(
+        "suggest_reservation_need", stop_id=str(planned.stops[0].id)
+    )
+    assert suggestion.suggested == need
+
+
 # --- dates and stops -------------------------------------------------------
 
 
@@ -595,3 +618,26 @@ async def test_a_fixed_stop_without_a_time_is_an_error(
     planned = await add(planned.id, title="Getty", kind="ticketed", anchor="fixed")
     with pytest.raises(ToolError, match="IncompleteStop"):
         await call("plan_timeline", date_id=str(planned.id))
+
+
+async def test_applying_keeps_a_booked_stops_end_without_a_duration(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    planned = await new_date(seeded)
+    planned = await add(
+        planned.id,
+        title="Dinner",
+        kind="meal",
+        venue_id=str(seeded["nobu_id"]),
+        anchor="fixed",
+        reservation_need="required",
+        booking_status="confirmed",
+        start_at="2026-10-24T19:00:00-07:00",
+        end_at="2026-10-24T20:30:00-07:00",
+    )
+    assert planned.status == "confirmed"
+    result = await call("plan_timeline", date_id=str(planned.id), apply=True)
+    assert result.violations == []
+    stored = await call("get_date", date_id=str(planned.id))
+    assert stored.stops[0].end_at == datetime.fromisoformat("2026-10-24T20:30:00-07:00")
+    assert stored.status == "confirmed"

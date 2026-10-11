@@ -9,7 +9,8 @@ footer and embeds Resy on /reservations takes Resy. Timed-entry ticketing on
 the venue's own domain (the Getty Villa's `tickets.getty.edu`) comes next.
 
 Separately, a page saying reservations are *required* is noted at the end of
-the evidence (`REQUIRED_NOTE`), which `suggest_reservation_need` reads.
+the evidence (`REQUIRED_NOTE`), along with any party size the rule is limited
+to, and `required_from` reads it back for `suggest_reservation_need`.
 
 Nothing here writes to the database; `tools.venues` decides what to
 cache. Detection never raises on a 404 or a timeout for one page — only an
@@ -98,6 +99,22 @@ REQUIRED_PROSE = re.compile(
 )
 # Appended to the evidence when a page says booking is required.
 REQUIRED_NOTE = "reservations required"
+# The rule is often only for big groups: "Reservations are required for
+# parties of 6+", "Parties of 8 or more require a reservation". Read from the
+# sentence around the match. "Large parties" with no number is taken as six.
+PARTY_LIMIT = re.compile(
+    r"(?:parties|groups)\s+(?:of\s+)?"
+    r"(?:(?P<at_least>\d+)\s*(?:\+|or\s+(?:more|larger))"
+    r"|(?:larger\s+than|more\s+than|over)\s+(?P<over>\d+))"
+    r"|(?P<large>large\s+(?:parties|groups))",
+    re.I,
+)
+LARGE_PARTY = 6
+SENTENCE_END = re.compile(r"[.!?\n]")
+# The note as `classify` writes it, for `required_from`.
+REQUIRED_EVIDENCE = re.compile(
+    re.escape(REQUIRED_NOTE) + r"(?: for parties of (\d+)\+)?:", re.I
+)
 
 # --- booking-window signals ------------------------------------------------
 
@@ -405,6 +422,41 @@ def _prose_signal(pages: list[Page], phone: str | None) -> Detection | None:
     return None
 
 
+def _sentence(text: str, match: re.Match[str]) -> str:
+    """The sentence `match` sits in. Page text runs block elements together,
+    so this can take in a heading before it; it's only searched, never
+    quoted."""
+    start = max(
+        (m.end() for m in SENTENCE_END.finditer(text, 0, match.start())), default=0
+    )
+    end = SENTENCE_END.search(text, match.end())
+    sentence = text[start : end.end() if end else len(text)]
+    return " ".join(sentence.split())
+
+
+def _party_minimum(sentence: str) -> int | None:
+    """The smallest party a "reservations required" sentence applies to,
+    or None when it applies to everyone."""
+    limit = PARTY_LIMIT.search(sentence)
+    if limit is None:
+        return None
+    if limit["at_least"]:
+        return int(limit["at_least"])
+    if limit["over"]:
+        return int(limit["over"]) + 1
+    return LARGE_PARTY
+
+
+def required_from(evidence: str | None) -> int | None:
+    """Read back the note `classify` adds: the smallest party that must
+    book (1 for everyone), or None when the site didn't say booking is
+    required."""
+    found = REQUIRED_EVIDENCE.search(evidence or "")
+    if found is None:
+        return None
+    return int(found[1]) if found[1] else 1
+
+
 def classify(pages: list[Page]) -> Detection:
     """The channel these pages point to, platform signals first."""
     phone = _find_phone(pages)
@@ -425,12 +477,17 @@ def classify(pages: list[Page]) -> Detection:
             ),
         )
     required = next(
-        (m for m in (REQUIRED_PROSE.search(page.text) for page in pages) if m), None
+        ((page.text, m) for page in pages if (m := REQUIRED_PROSE.search(page.text))),
+        None,
     )
     if required is not None:
+        text, match = required
+        note = REQUIRED_NOTE
+        minimum = _party_minimum(_sentence(text, match))
+        if minimum is not None:
+            note = f"{note} for parties of {minimum}+"
         detection = replace(
-            detection,
-            evidence=f'{detection.evidence}; {REQUIRED_NOTE}: "{required.group(0)}"',
+            detection, evidence=f'{detection.evidence}; {note}: "{match.group(0)}"'
         )
     return replace(
         detection,
