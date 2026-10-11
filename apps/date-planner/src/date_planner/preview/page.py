@@ -1,26 +1,41 @@
 """The preview page: the day at a glance, made to be read on a phone.
 
-One self-contained HTML file, published as an Artifact next to the basemap
-images: a header with the day, status and sunset, the map with numbered pins
-and the route between them, then the stops in order with their times, the
-drive between them, where sunset falls, and how each one's booking stands.
+One HTML file, published as an Artifact next to the map's images: a header
+with the day, its hours and sunset, the map with numbered pins and the route
+between them, then the stops in order with their times, the drive between
+them, where sunset falls, and any booking still to make.
 
 The Artifact host wraps the file in its own document skeleton, so there's
-no <html>/<head>/<body> here, and its CSP allows Google Fonts and nothing
-else from outside: no scripts at all are needed.
+no <html>/<head>/<body> here. Its CSP allows Google Fonts, scripts from a
+few CDNs, and nothing else from outside: Leaflet comes from cdnjs at a
+pinned version, its stylesheet is inlined, and its tiles ship next to the
+page (see `basemap`). The map is drawn without it first, as a picture with
+the pins on top, and Leaflet takes over once it has loaded.
 """
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from date_planner.db.models import DateStatus, StopBookingStatus, VenueType
+from date_planner.db.models import DateStatus, StopBookingStatus, TravelMode
+from date_planner.preview.basemap import TILE_FORMAT, Pyramid
 
 LIGHT_MAP = "map-light.jpg"
 DARK_MAP = "map-dark.jpg"
-CSS = (Path(__file__).with_name("page.css")).read_text(encoding="utf-8")
+TILE_URL = "tiles/{z}/{x}/{y}." + TILE_FORMAT
+_HERE = Path(__file__).parent
+CSS = (_HERE / "page.css").read_text(encoding="utf-8")
+# leaflet.css 1.9.4 as cdnjs serves it, inlined: the CSP takes stylesheets
+# from Google Fonts only.
+LEAFLET_CSS = (_HERE / "leaflet.css").read_text(encoding="utf-8")
+LEAFLET_JS = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"
+LEAFLET_SRI = (
+    "sha512-BwHfrr4c9kmRkLw6iXFdzcdWV/PGkVgiIyIWLLlTSXzWQzxuSg4DiQUCpauz"
+    "/EWjgk5TYQqX/kvn9pG1NpYfqg=="
+)
 FONTS = (
     "https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght"
     "@12..96,500;12..96,650&family=Figtree:wght@400;500;600&display=swap"
@@ -47,7 +62,6 @@ class PreviewStop:
     number: int
     title: str
     venue_name: str | None
-    venue_type: VenueType | None
     address: str | None
     phone: str | None
     lat: float | None
@@ -55,6 +69,7 @@ class PreviewStop:
     start_at: datetime | None  # already in the couple's timezone
     end_at: datetime | None
     travel_min_from_prev: int | None
+    travel_mode: TravelMode  # how this stop is reached from the one before
     booking_status: StopBookingStatus
     booking_url: str | None
     confirmation_number: str | None
@@ -77,30 +92,17 @@ class PreviewData:
     map_height: int
     has_light_map: bool
     has_dark_map: bool
+    # Tiles for the interactive map; None leaves the picture as it is.
+    tiles: Pyramid | None = None
+    # The zoom the picture is framed at, which the interactive map opens at
+    # or above.
+    map_zoom: int = 0
 
 
-STATUS_LABEL = {
-    DateStatus.PLANNING: "Planning",
-    DateStatus.BOOKING_PENDING: "Bookings pending",
-    DateStatus.CONFIRMED: "All booked",
-    DateStatus.COMPLETED: "Done",
-    DateStatus.CANCELLED: "Cancelled",
-}
-STATUS_TONE = {
-    DateStatus.PLANNING: "quiet",
-    DateStatus.BOOKING_PENDING: "todo",
-    DateStatus.CONFIRMED: "ok",
-    DateStatus.COMPLETED: "quiet",
-    DateStatus.CANCELLED: "off",
-}
-VENUE_LABEL = {
-    VenueType.RESTAURANT: "Restaurant",
-    VenueType.TRAIL: "Trail",
-    VenueType.MUSEUM: "Museum",
-    VenueType.BAR: "Bar",
-    VenueType.PARK: "Park",
-    VenueType.VIEWPOINT: "Viewpoint",
-    VenueType.OTHER: "",
+# The header only carries a status when there's something to do about it.
+STATUS_CHIP = {
+    DateStatus.BOOKING_PENDING: '<span class="chip todo">Bookings pending</span>',
+    DateStatus.CANCELLED: '<span class="chip off">Cancelled</span>',
 }
 
 
@@ -113,29 +115,53 @@ def _e(value: object) -> str:
     return escape(str(value), quote=True)
 
 
-def _maps_search(stop: PreviewStop) -> str | None:
+# Apple Maps' unified URLs (iOS 18.4+, macOS 15.4+): https links that open
+# the Maps app on an iPhone and maps.apple.com anywhere else.
+# https://developer.apple.com/documentation/mapkit/unified-map-urls
+APPLE_MAPS = "https://maps.apple.com"
+
+
+def _query(params: list[tuple[str, str]]) -> str:
+    # Spaces as %20 and commas left alone, as Apple's own examples have them.
+    return urlencode(params, quote_via=quote, safe=",")
+
+
+def apple_place(stop: PreviewStop) -> str | None:
+    """The stop's place card: a pin at its coordinates under its name, or
+    its address when it has no coordinates."""
+    name = stop.venue_name or stop.title
     if stop.lat is not None and stop.lng is not None:
-        query = f"{stop.lat},{stop.lng}"
+        params = [("coordinate", f"{stop.lat},{stop.lng}"), ("name", name)]
     elif stop.address:
-        query = stop.address
+        params = [("address", stop.address)]
     else:
         return None
-    return "https://www.google.com/maps/search/?" + urlencode(
-        {"api": 1, "query": query}
-    )
+    return f"{APPLE_MAPS}/place?{_query(params)}"
 
 
-def _maps_route(stops: list[PreviewStop]) -> str | None:
-    points = [
-        f"{s.lat},{s.lng}" for s in stops if s.lat is not None and s.lng is not None
-    ]
-    if len(points) < 2:
+def apple_route(stops: list[PreviewStop]) -> str | None:
+    """Directions through every stop with coordinates, in order: the first
+    is the start, the last the destination, the rest repeated `waypoint`s.
+    One mode covers the whole route, so it's walking only when every leg
+    is."""
+    located = [s for s in stops if s.lat is not None and s.lng is not None]
+    if len(located) < 2:
         return None
-    params = {"api": 1, "origin": points[0], "destination": points[-1]}
-    if len(points) > 2:
-        params["waypoints"] = "|".join(points[1:-1])
-    params["travelmode"] = "driving"
-    return "https://www.google.com/maps/dir/?" + urlencode(params)
+    points = [f"{s.lat},{s.lng}" for s in located]
+    walking = all(s.travel_mode is TravelMode.WALKING for s in located[1:])
+    params = [("source", points[0]), ("destination", points[-1])]
+    params += [("waypoint", point) for point in points[1:-1]]
+    params.append(("mode", "walking" if walking else "driving"))
+    return f"{APPLE_MAPS}/directions?{_query(params)}"
+
+
+def google_calendar_day(day: date) -> str:
+    """The day in Google Calendar. It's the web calendar: the iPhone app
+    claims no https links, and a custom scheme can't be relied on from
+    inside the Artifact's sandboxed frame."""
+    return (
+        f"https://calendar.google.com/calendar/r/day/{day.year}/{day.month}/{day.day}"
+    )
 
 
 def _booking(stop: PreviewStop) -> str:
@@ -162,7 +188,7 @@ def _booking(stop: PreviewStop) -> str:
         return '<span class="chip todo">Needs booking</span>'
     if status is StopBookingStatus.CANCELLED:
         return '<span class="chip off">Cancelled</span>'
-    return '<span class="chip quiet">No booking needed</span>'
+    return ""
 
 
 def _stop(stop: PreviewStop) -> str:
@@ -171,20 +197,11 @@ def _stop(stop: PreviewStop) -> str:
         when = f"<time>{clock(stop.start_at)}</time>{end}"
     else:
         when = "<time>Time TBD</time>"
-    kind = VENUE_LABEL.get(stop.venue_type, "") if stop.venue_type else ""
-    where_bits = [b for b in (stop.venue_name, kind) if b]
-    if stop.venue_name is None:
-        where_bits = ["Venue still to choose"]
-    where = " · ".join(_e(b) for b in where_bits)
-    directions = _maps_search(stop)
-    links = []
-    if directions:
-        links.append(
-            f'<a href="{_e(directions)}" target="_blank" rel="noopener">Map</a>'
-        )
-    if stop.on_calendar:
-        links.append('<span class="cal">On calendar</span>')
-    address = f'<p class="addr">{_e(stop.address)}</p>' if stop.address else ""
+    place = apple_place(stop)
+    row = _booking(stop)
+    if place:
+        row += f'<a href="{_e(place)}" target="_blank" rel="noopener">Apple Maps</a>'
+    row = f'<div class="row">{row}</div>' if row else ""
     cancelled = (
         " cancelled" if stop.booking_status is StopBookingStatus.CANCELLED else ""
     )
@@ -196,9 +213,7 @@ def _stop(stop: PreviewStop) -> str:
       <span class="num" aria-hidden="true">{stop.number}</span>
       <h2>{_e(stop.title)}</h2>
     </div>
-    <p class="where">{where}</p>
-    {address}
-    <div class="row">{_booking(stop)}{"".join(links)}</div>
+    {row}
   </div>
 </li>"""
 
@@ -265,10 +280,10 @@ def _map(data: PreviewData) -> str:
         if data.has_light_map
         else "Map tiles unavailable; pins are to scale"
     )
-    route_link = _maps_route(data.stops)
+    route_link = apple_route(data.stops)
     open_route = (
         f'<a class="route-link" href="{_e(route_link)}" target="_blank"'
-        ' rel="noopener">Open the route in Google Maps</a>'
+        ' rel="noopener">Route in Apple Maps</a>'
         if route_link
         else ""
     )
@@ -278,23 +293,151 @@ def _map(data: PreviewData) -> str:
   <div class="frame{"" if data.has_light_map else " bare"}"
        style="aspect-ratio:{w}/{h}" role="img"
        aria-label="Map of the stops. {_e(labels)}">
-    {images}{line}{pins}
+    {images}{line}{pins}{_live(data)}
   </div>
   <figcaption><span>{credit}</span>{open_route}</figcaption>
 </figure>"""
 
 
+# Builds the Leaflet map over the picture and shows it once its first tiles
+# are in. Anything going wrong leaves the picture where it is.
+LIVE_JS = """
+(() => {
+  const live = document.getElementById("live-map");
+  const data = document.getElementById("live-map-data");
+  if (!live || !data || !window.L) return;
+  try {
+    const cfg = JSON.parse(data.textContent);
+    const box = (b) => [[b[0], b[1]], [b[2], b[3]]];
+    const map = L.map(live, {
+      minZoom: cfg.minZoom, maxZoom: cfg.maxZoom,
+      maxBounds: box(cfg.bounds), maxBoundsViscosity: 1,
+      attributionControl: false, scrollWheelZoom: false,
+    });
+    const base = L.tileLayer(cfg.url, {
+      minZoom: cfg.minZoom, maxZoom: cfg.maxZoom, maxNativeZoom: cfg.fullZoom,
+    }).addTo(map);
+    for (const p of cfg.patches) {
+      L.tileLayer(cfg.url, {
+        minZoom: p.zoom, maxZoom: p.zoom, bounds: box(p.bounds), zIndex: 2,
+      }).addTo(map);
+    }
+    const points = cfg.stops.map((s) => [s.lat, s.lng]);
+    if (points.length > 1) {
+      L.polyline(points, { className: "live-route", interactive: false }).addTo(map);
+    }
+    for (const s of cfg.stops) {
+      const pop = document.createElement("div");
+      pop.className = "pop";
+      const name = document.createElement("strong");
+      name.textContent = s.number + ". " + s.title;
+      pop.append(name);
+      if (s.when) {
+        const when = document.createElement("span");
+        when.textContent = s.when;
+        pop.append(when);
+      }
+      if (s.maps) {
+        const a = document.createElement("a");
+        a.href = s.maps;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "Apple Maps";
+        pop.append(a);
+      }
+      const icon = L.divIcon({
+        className: "live-pin", html: String(s.number), iconSize: [26, 26],
+      });
+      L.marker([s.lat, s.lng], { icon, title: s.title, keyboard: true })
+        .bindPopup(pop, { closeButton: false, offset: [0, -8] })
+        .addTo(map);
+    }
+    map.fitBounds(points, { padding: [36, 36], maxZoom: cfg.zoom });
+    base.once("load", () => {
+      const frame = live.closest(".frame");
+      frame.classList.add("is-live");
+      // No longer a picture: let the pins and the zoom buttons through.
+      frame.removeAttribute("role");
+      frame.removeAttribute("aria-label");
+    });
+  } catch {
+    live.remove();
+  }
+})();
+"""
+
+
+def _live(data: PreviewData) -> str:
+    """The interactive map's container, settings and script."""
+    stops = [
+        s
+        for s in data.stops
+        if s.place is not None and s.lat is not None and s.lng is not None
+    ]
+    if data.tiles is None or not stops:
+        return ""
+    tiles = data.tiles
+    config = {
+        "url": TILE_URL,
+        "minZoom": tiles.min_zoom,
+        "fullZoom": tiles.full_zoom,
+        "maxZoom": tiles.max_zoom,
+        "zoom": min(max(data.map_zoom, tiles.min_zoom), tiles.max_zoom),
+        "bounds": [round(v, 6) for v in tiles.bounds],
+        "patches": [
+            {"zoom": p.zoom, "bounds": [round(v, 6) for v in p.bounds]}
+            for p in tiles.patches
+        ],
+        "stops": [
+            {
+                "number": s.number,
+                "title": s.title,
+                "lat": s.lat,
+                "lng": s.lng,
+                "when": _hours(s),
+                "maps": apple_place(s),
+            }
+            for s in stops
+        ],
+    }
+    # No "<" at all inside <script>, so no title can end the block early.
+    payload = json.dumps(config, ensure_ascii=False).replace("<", "\\u003c")
+    return f"""
+    <div class="live" id="live-map"></div>
+    <script type="application/json" id="live-map-data">{payload}</script>
+    <script src="{LEAFLET_JS}" integrity="{LEAFLET_SRI}"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>{LIVE_JS}</script>"""
+
+
+def _hours(stop: PreviewStop) -> str:
+    if stop.start_at is None:
+        return ""
+    if stop.end_at is None:
+        return clock(stop.start_at)
+    return f"{clock(stop.start_at)}–{clock(stop.end_at)}"
+
+
 def _summary(data: PreviewData) -> str:
+    """Sat, Oct 17 · 9:30 AM–3:15 PM · sunset 6:16 PM"""
+    bits = [data.day.strftime("%a, %b ") + str(data.day.day)]
     timed = [s for s in data.stops if s.start_at is not None]
-    bits = [f"{len(data.stops)} stop{'s' if len(data.stops) != 1 else ''}"]
     if timed:
-        first = timed[0].start_at
+        first = min(s.start_at for s in timed if s.start_at)
         last = max((s.end_at or s.start_at) for s in timed if s.start_at)
-        if first and last:
-            bits.append(f"{clock(first)} – {clock(last)}")
+        bits.append(f"{clock(first)}–{clock(last)}")
     if data.sunset is not None:
         bits.append(f"sunset {clock(data.sunset)}")
     return " · ".join(_e(b) for b in bits)
+
+
+def _calendar(data: PreviewData) -> str:
+    if not any(s.on_calendar for s in data.stops):
+        return ""
+    return (
+        f'<a class="button" href="{_e(google_calendar_day(data.day))}"'
+        ' target="_blank" rel="noopener">Open in Google Calendar</a>'
+    )
 
 
 def render(data: PreviewData) -> str:
@@ -306,21 +449,21 @@ def render(data: PreviewData) -> str:
         if missing and len(missing) < len(data.stops)
         else ""
     )
-    day = data.day.strftime("%A, %B ") + str(data.day.day)
+    leaflet = f"<style>\n{LEAFLET_CSS}</style>\n" if data.tiles else ""
     return f"""<title>{_e(data.title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="{FONTS}">
-<style>
+{leaflet}<style>
 {CSS}</style>
 <main class="wrap">
   <header>
-    <p class="eyebrow">{_e(day)}</p>
     <h1>{_e(data.title)}</h1>
     <div class="meta">
-      <span class="chip {STATUS_TONE[data.status]}">{STATUS_LABEL[data.status]}</span>
+      {STATUS_CHIP.get(data.status, "")}
       <span>{_summary(data)}</span>
     </div>
+    {_calendar(data)}
   </header>
   {_map(data)}
   {off_map}
@@ -329,7 +472,6 @@ def render(data: PreviewData) -> str:
   </ol>
   <footer>
     Times in {_e(data.tz_label)}. Drives are kept under {data.max_leg_minutes} min.
-    Nothing is booked from this page: tentative holds stay that way until you book.
   </footer>
 </main>
 """

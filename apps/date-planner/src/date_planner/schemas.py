@@ -380,14 +380,20 @@ class PreviewOut(BaseModel):
     # Publish this with the Artifact tool as `file_path`...
     page_path: str
     # ...and these as its `files` ({published path: local path}): the
-    # basemap, one image per theme. Empty when the tiles couldn't be had.
+    # basemap, one image per theme, and the interactive map's tiles,
+    # `tiles/{z}/{x}/{y}.webp` (up to 200 of them). Empty when the tiles
+    # couldn't be had.
     files: dict[str, str]
+    # Every tile in `files` on one sheet, to look over instead of opening
+    # each; not published. None when there are no tiles.
+    tiles_overview: str | None
     # Set once the page has been published: pass it as the Artifact `url`.
     preview_url: str | None
     stops_on_map: int
     # Stops left off the map: no venue yet, or a venue with no lat/lng.
     missing_coordinates: list[str]
-    # False when the tiles couldn't be fetched; the pins sit on a plain grid.
+    # False when the tiles couldn't be fetched; the pins sit on a plain grid,
+    # and the map can't be panned or zoomed.
     basemap: bool
 
 

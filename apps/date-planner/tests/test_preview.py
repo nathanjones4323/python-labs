@@ -1,16 +1,32 @@
 """The date preview: framing the map, stitching tiles, and the page itself."""
 
 import io
+import json
+import re
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 import respx
-from date_planner.config import get_settings
-from date_planner.db.models import DateStatus, StopBookingStatus, VenueType
+from date_planner import preview
+from date_planner.config import Settings, get_settings
+from date_planner.db.models import (
+    Anchor,
+    DateStatus,
+    DateStop,
+    PlannedDate,
+    ReservationNeed,
+    StopBookingStatus,
+    StopKind,
+    TravelMode,
+    Venue,
+    VenueType,
+)
 from date_planner.preview import basemap, page
 from date_planner.server import create_server
 from fastmcp import Client
@@ -22,6 +38,10 @@ SOLSTICE = (34.0378, -118.7468)
 GETTY = (34.0459, -118.5648)
 NOBU = (34.0389596, -118.6696041)
 TILES = "https://tiles.example.com/{z}/{x}/{y}@2x.png"
+# The Griffith day: a trailhead, and two stops a block apart downtown.
+GRIFFITH = (34.1195, -118.3001)
+MARKET = (34.0508, -118.2489)
+ANGELS = (34.0513, -118.2497)
 
 
 # --- framing ---------------------------------------------------------------
@@ -101,6 +121,177 @@ async def test_a_failed_tile_means_no_basemap(tmp_path: Path) -> None:
         assert await basemap.render(frame, cache, client) is None
 
 
+@respx.mock
+async def test_a_watermark_tile_means_no_basemap(tmp_path: Path) -> None:
+    # What CARTO sends for a missing or wrong API key: a 200 and a picture.
+    respx.get(url__regex=r"https://tiles\.example\.com/.*").mock(
+        return_value=httpx.Response(
+            200, content=_png("#eeeeee"), headers={"etag": '"wm-da89c20e77c1-light"'}
+        )
+    )
+    frame = basemap.fit([GETTY], 400, 260)
+    cache = basemap.TileCache(tmp_path, TILES, ttl_days=30)
+    async with httpx.AsyncClient() as client:
+        assert await basemap.render(frame, cache, client) is None
+    assert not cache.path(frame.zoom, *frame.tiles()[0]).exists()
+
+
+def test_positron_with_a_carto_key_else_openstreetmap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("CARTO_API_KEY", "DATE_PLANNER_MAP_TILES_LIGHT"):
+        monkeypatch.delenv(name, raising=False)
+    plain = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert plain.light_tiles() == "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    assert plain.map_credit() == "© OpenStreetMap contributors"
+
+    keyed = Settings(_env_file=None, CARTO_API_KEY="k/1&2")  # type: ignore[call-arg]
+    assert keyed.light_tiles() == (
+        "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}@2x.png"
+        "?key=k%2F1%262"
+    )
+    assert (
+        keyed.light_tiles()
+        .format(z=1, x=2, y=3)
+        .endswith("/1/2/3@2x.png?key=k%2F1%262")
+    )
+    assert keyed.map_credit() == "© OpenStreetMap contributors © CARTO"
+
+    # An explicit template wins, and empty still means no basemap.
+    own = Settings(_env_file=None, CARTO_API_KEY="k", map_tiles_light=TILES)  # type: ignore[call-arg]
+    assert own.light_tiles() == TILES
+    assert own.map_credit() == "© OpenStreetMap contributors"
+    off = Settings(_env_file=None, CARTO_API_KEY="k", map_tiles_light="")  # type: ignore[call-arg]
+    assert off.light_tiles() == ""
+
+
+# --- the interactive map's tiles -------------------------------------------
+
+DAYS = {
+    "griffith": [GRIFFITH, MARKET, ANGELS],
+    "malibu": [SOLSTICE, GETTY, NOBU],
+    "one stop": [GETTY],
+    # Far apart: the frame zooms right out.
+    "la to sf": [GETTY, (37.7749, -122.4194)],
+}
+
+
+@pytest.mark.parametrize("points", DAYS.values(), ids=DAYS.keys())
+def test_the_pyramid_stays_within_budget(points: list[tuple[float, float]]) -> None:
+    frame = basemap.fit(points, 400, 260)
+    pyramid = basemap.plan(frame, points)
+    assert len(pyramid.tiles) <= basemap.TILE_BUDGET
+    assert len(set(pyramid.tiles)) == len(pyramid.tiles)
+    assert pyramid.min_zoom == frame.zoom - 1
+    assert frame.zoom <= pyramid.full_zoom <= pyramid.max_zoom <= basemap.DEEPEST
+    assert pyramid.max_zoom - pyramid.full_zoom <= basemap.MAX_UPSCALE
+    zooms = {z for z, _, _ in pyramid.tiles}
+    assert zooms == set(range(pyramid.min_zoom, pyramid.max_zoom + 1))
+
+
+def _tile_bounds(zoom: int, x: int, y: int) -> basemap.Bounds:
+    north, west = basemap.lat_lng(x * 256, y * 256, zoom)
+    south, east = basemap.lat_lng((x + 1) * 256, (y + 1) * 256, zoom)
+    return south, west, north, east
+
+
+def _overlaps(a: basemap.Bounds, b: basemap.Bounds) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+@pytest.mark.parametrize("points", DAYS.values(), ids=DAYS.keys())
+def test_every_view_the_map_allows_is_tiled(points: list[tuple[float, float]]) -> None:
+    """Up to `full_zoom`, every tile touching the bounds is there, and the
+    view zoomed right out (wider than the bounds) is too."""
+    frame = basemap.fit(points, 400, 260)
+    pyramid = basemap.plan(frame, points)
+    have = set(pyramid.tiles)
+    for zoom in range(pyramid.min_zoom, pyramid.full_zoom + 1):
+        size = 2**zoom
+        south, west, north, east = pyramid.bounds
+        x0, y0 = basemap.world_px(north, west, zoom)
+        x1, y1 = basemap.world_px(south, east, zoom)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        half_w = max(x1 - x0, basemap.VIEW_W) / 2
+        half_h = max(y1 - y0, basemap.VIEW_H) / 2
+        for ty in range(int((cy - half_h) // 256), int((cy + half_h - 1) // 256) + 1):
+            for tx in range(
+                int((cx - half_w) // 256), int((cx + half_w - 1) // 256) + 1
+            ):
+                if 0 <= ty < size:
+                    assert (zoom, tx, ty) in have, (zoom, tx, ty)
+
+
+@pytest.mark.parametrize("points", DAYS.values(), ids=DAYS.keys())
+def test_deep_zooms_have_every_stop_in_a_patch(
+    points: list[tuple[float, float]],
+) -> None:
+    frame = basemap.fit(points, 400, 260)
+    pyramid = basemap.plan(frame, points)
+    have = set(pyramid.tiles)
+    for zoom in range(pyramid.full_zoom + 1, pyramid.max_zoom + 1):
+        patches = [p for p in pyramid.patches if p.zoom == zoom]
+        for lat, lng in points:
+            # Well inside one patch, not on its edge.
+            inside = [
+                p
+                for p in patches
+                if p.bounds[0] < lat < p.bounds[2] and p.bounds[1] < lng < p.bounds[3]
+            ]
+            assert len(inside) >= 1
+        for patch in patches:
+            assert set(patch.tiles) <= have
+            # Leaflet asks for exactly the tiles the bounds touch.
+            touched = {
+                (zoom, x, y)
+                for _, x0, y0 in patch.tiles
+                for x in range(x0 - 1, x0 + 2)
+                for y in range(y0 - 1, y0 + 2)
+                if _overlaps(patch.bounds, _tile_bounds(zoom, x, y))
+            }
+            assert touched == set(patch.tiles)
+
+
+def test_the_griffith_day_zooms_to_street_level() -> None:
+    points = DAYS["griffith"]
+    frame = basemap.fit(points, 400, 260)
+    pyramid = basemap.plan(frame, points)
+    assert (pyramid.min_zoom, pyramid.full_zoom, pyramid.max_zoom) == (10, 13, 15)
+    # The two downtown stops share their patches.
+    assert len(pyramid.patches) == 4
+
+
+@respx.mock
+async def test_the_pyramid_is_fetched_as_webp(tmp_path: Path) -> None:
+    route = respx.get(url__regex=r"https://tiles\.example\.com/.*").mock(
+        return_value=httpx.Response(200, content=_png("#336699"))
+    )
+    points = DAYS["griffith"]
+    pyramid = basemap.plan(basemap.fit(points, 400, 260), points)
+    cache = basemap.TileCache(tmp_path, TILES, ttl_days=30)
+    async with httpx.AsyncClient() as client:
+        tiles = await basemap.fetch(pyramid, cache, client)
+    assert tiles is not None
+    assert route.call_count == len(pyramid.tiles)
+    assert set(tiles) == {f"tiles/{z}/{x}/{y}.webp" for z, x, y in pyramid.tiles}
+    image = Image.open(io.BytesIO(next(iter(tiles.values()))))
+    # @2x tiles are halved to the 256px Leaflet shows.
+    assert (image.format, image.size) == ("WEBP", (256, 256))
+    assert sum(map(len, tiles.values())) < 3_000_000
+
+
+@respx.mock
+async def test_a_failed_tile_means_no_pyramid(tmp_path: Path) -> None:
+    respx.get(url__regex=r"https://tiles\.example\.com/.*").mock(
+        side_effect=[httpx.Response(200, content=_png("#336699"))] * 5
+        + [httpx.Response(503)] * 500
+    )
+    pyramid = basemap.plan(basemap.fit([GETTY], 400, 260), [GETTY])
+    cache = basemap.TileCache(tmp_path, TILES, ttl_days=30)
+    async with httpx.AsyncClient() as client:
+        assert await basemap.fetch(pyramid, cache, client) is None
+
+
 # --- the page --------------------------------------------------------------
 
 
@@ -109,7 +300,6 @@ def _stop(number: int, **fields: Any) -> page.PreviewStop:
         "number": number,
         "title": f"Stop {number}",
         "venue_name": None,
-        "venue_type": None,
         "address": None,
         "phone": None,
         "lat": None,
@@ -117,6 +307,7 @@ def _stop(number: int, **fields: Any) -> page.PreviewStop:
         "start_at": None,
         "end_at": None,
         "travel_min_from_prev": None,
+        "travel_mode": TravelMode.DRIVING,
         "booking_status": StopBookingStatus.NOT_NEEDED,
         "booking_url": None,
         "confirmation_number": None,
@@ -158,7 +349,7 @@ def test_the_page_reads_as_the_day_in_order() -> None:
                     1,
                     title="Solstice Canyon hike",
                     venue_name="Solstice Canyon",
-                    venue_type=VenueType.TRAIL,
+                    address="3800 Solstice Canyon Rd, Malibu, CA 90265",
                     lat=SOLSTICE[0],
                     lng=SOLSTICE[1],
                     start_at=at(9),
@@ -193,8 +384,8 @@ def test_the_page_reads_as_the_day_in_order() -> None:
         )
     )
     assert html.startswith("<title>Malibu day</title>")
-    assert "Saturday, October 24" in html
-    assert "Bookings pending" in html
+    assert "Sat, Oct 24 · 9:00 AM–8:00 PM · sunset 6:10 PM" in html
+    assert '<span class="chip todo">Bookings pending</span>' in html
     # Times, legs and sunset in order: sunset falls before the 6:30 dinner.
     order = ["9:00 AM", "22 min drive", "1:00 PM", "18 min drive", "Sunset 6:10 PM"]
     positions = [html.index(text) for text in order]
@@ -202,14 +393,221 @@ def test_the_page_reads_as_the_day_in_order() -> None:
     assert html.index("Sunset 6:10 PM") < html.index("6:30 PM")
     assert "Booked" in html and "#GV-77" in html
     assert "Call to book" in html and "+13103179140" in html
-    assert "On calendar" in html
     # Two pins and a route; the third stop is named as off the map.
     assert html.count('class="pin"') == 2
     assert "<polyline" in html
     assert "Not on the map yet: Sunset dinner" in html
-    assert "google.com/maps/dir/" in html
+    assert ">Route in Apple Maps</a>" in html
     assert 'src="map-light.jpg"' in html and 'src="map-dark.jpg"' in html
     assert "© OpenStreetMap contributors" in html
+    assert "Open in Google Calendar" in html
+    # No Google Maps left anywhere.
+    assert "google.com/maps" not in html
+
+
+def test_the_page_leaves_out_what_needs_no_attention() -> None:
+    html = page.render(
+        _data(
+            [
+                _stop(
+                    1,
+                    title="Mount Hollywood hike",
+                    venue_name="Mount Hollywood Trail (Griffith Observatory)",
+                    address="2800 E Observatory Rd, Los Angeles, CA 90027",
+                    lat=GRIFFITH[0],
+                    lng=GRIFFITH[1],
+                    start_at=at(9, 30),
+                    end_at=at(11, 45),
+                    place=(0.3, 0.2),
+                )
+            ],
+            status=DateStatus.CONFIRMED,
+        )
+    )
+    # No eyebrow date, stop count, status chip or "no booking" chip...
+    assert "Saturday" not in html and "1 stop" not in html
+    assert "chip" not in html.split("<main", 1)[1]
+    assert "No booking needed" not in html
+    # ...nor the venue line, the address or "On calendar".
+    assert (
+        "Mount Hollywood Trail (Griffith Observatory)"
+        not in html.split('<ol class="day">')[1]
+    )
+    assert "2800 E Observatory Rd" not in html
+    assert "On calendar" not in html and "Open in Google Calendar" not in html
+    assert "Nothing is booked from this page" not in html
+    # The stop keeps its hours, number, title and Apple Maps link.
+    assert "9:30 AM" in html and "11:45 AM" in html
+    assert ">Apple Maps</a>" in html
+
+
+def test_the_calendar_button_opens_the_day() -> None:
+    html = page.render(_data([_stop(1, on_calendar=False), _stop(2, on_calendar=True)]))
+    assert html.count("Open in Google Calendar") == 1
+    assert 'href="https://calendar.google.com/calendar/r/day/2026/10/24"' in html
+    assert page.google_calendar_day(date(2026, 1, 5)).endswith("/r/day/2026/1/5")
+
+
+# --- Apple Maps --------------------------------------------------------------
+
+
+def _params(url: str) -> list[tuple[str, str]]:
+    return parse_qsl(urlsplit(url).query)
+
+
+def test_a_place_link_pins_the_stop_under_its_name() -> None:
+    url = page.apple_place(
+        _stop(
+            1,
+            title="Lunch",
+            venue_name="Grand Central Market & Co",
+            lat=MARKET[0],
+            lng=MARKET[1],
+        )
+    )
+    assert url == (
+        "https://maps.apple.com/place?coordinate=34.0508,-118.2489"
+        "&name=Grand%20Central%20Market%20%26%20Co"
+    )
+    # No venue yet: the stop's own title names the pin.
+    titled = page.apple_place(_stop(1, title="Angels Flight", lat=1.5, lng=2.5))
+    assert titled is not None
+    assert _params(titled) == [("coordinate", "1.5,2.5"), ("name", "Angels Flight")]
+
+
+def test_a_place_link_falls_back_to_the_address() -> None:
+    url = page.apple_place(_stop(1, address="317 S Broadway, Los Angeles, CA 90013"))
+    assert url == (
+        "https://maps.apple.com/place?"
+        "address=317%20S%20Broadway,%20Los%20Angeles,%20CA%2090013"
+    )
+    assert page.apple_place(_stop(1)) is None
+
+
+def test_the_route_runs_through_every_stop_in_order() -> None:
+    stops = [
+        _stop(1, lat=GRIFFITH[0], lng=GRIFFITH[1]),
+        _stop(2),  # no coordinates: skipped
+        _stop(3, lat=MARKET[0], lng=MARKET[1]),
+        _stop(4, lat=ANGELS[0], lng=ANGELS[1], travel_mode=TravelMode.WALKING),
+        _stop(5, lat=GETTY[0], lng=GETTY[1]),
+    ]
+    url = page.apple_route(stops)
+    assert url is not None
+    assert url.startswith("https://maps.apple.com/directions?")
+    assert _params(url) == [
+        ("source", "34.1195,-118.3001"),
+        ("destination", "34.0459,-118.5648"),
+        ("waypoint", "34.0508,-118.2489"),
+        ("waypoint", "34.0513,-118.2497"),
+        ("mode", "driving"),
+    ]
+    # Commas stay literal, as in Apple's examples.
+    assert "source=34.1195,-118.3001&" in url
+
+
+def test_the_route_walks_only_when_every_leg_does() -> None:
+    walk = TravelMode.WALKING
+    stops = [
+        _stop(1, lat=MARKET[0], lng=MARKET[1]),
+        _stop(2, lat=ANGELS[0], lng=ANGELS[1], travel_mode=walk),
+    ]
+    url = page.apple_route(stops)
+    assert url is not None and url.endswith("&mode=walking")
+    assert "waypoint" not in url
+    # The first stop's own mode is how you got there; it doesn't count.
+    mixed = [*stops, _stop(3, lat=GETTY[0], lng=GETTY[1])]
+    assert (page.apple_route(mixed) or "").endswith("&mode=driving")
+
+
+def test_one_located_stop_has_no_route() -> None:
+    assert page.apple_route([_stop(1, lat=1.0, lng=2.0), _stop(2)]) is None
+
+
+# --- the interactive map -----------------------------------------------------
+
+
+def _griffith_data(**fields: Any) -> page.PreviewData:
+    points = DAYS["griffith"]
+    frame = basemap.fit(points, 400, 260)
+    stops = [
+        _stop(
+            n,
+            title=title,
+            lat=lat,
+            lng=lng,
+            start_at=at(9 + n),
+            place=frame.place(lat, lng),
+        )
+        for n, (title, (lat, lng)) in enumerate(
+            zip(["Hike", "Market", "Angels Flight</script>"], points), start=1
+        )
+    ]
+    values: dict[str, Any] = {
+        "tiles": basemap.plan(frame, points),
+        "map_zoom": frame.zoom,
+    }
+    values.update(fields)
+    return _data(stops, **values)
+
+
+def _config(html: str) -> dict[str, Any]:
+    match = re.search(
+        r'<script type="application/json" id="live-map-data">(.*?)</script>',
+        html,
+        re.S,
+    )
+    assert match
+    config: dict[str, Any] = json.loads(match.group(1))
+    return config
+
+
+def test_leaflet_comes_pinned_from_cdnjs_with_its_tiles() -> None:
+    data = _griffith_data()
+    html = page.render(data)
+    assert (
+        '<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"'
+        f' integrity="{page.LEAFLET_SRI}"'
+    ) in html
+    assert page.LEAFLET_SRI.startswith("sha512-")
+    # The stylesheet is inlined, not linked from a CDN.
+    assert ".leaflet-pane" in html
+    assert "leaflet.css" not in html and "unpkg.com" not in html
+    config = _config(html)
+    tiles = data.tiles
+    assert tiles is not None
+    assert config["url"] == "tiles/{z}/{x}/{y}.webp"
+    assert (config["minZoom"], config["fullZoom"], config["maxZoom"]) == (
+        tiles.min_zoom,
+        tiles.full_zoom,
+        tiles.max_zoom,
+    )
+    assert config["bounds"] == pytest.approx(list(tiles.bounds), abs=1e-6)
+    assert len(config["patches"]) == len(tiles.patches)
+    assert [s["number"] for s in config["stops"]] == [1, 2, 3]
+    assert config["stops"][1]["maps"] == page.apple_place(data.stops[1])
+    assert config["stops"][0]["when"] == "10:00 AM"
+
+
+def test_the_picture_stays_as_the_fallback() -> None:
+    html = page.render(_griffith_data())
+    # The picture and its pins render first; Leaflet's container sits on top.
+    assert 'src="map-light.jpg"' in html
+    assert html.count('class="pin"') == 3
+    assert html.index('class="pin"') < html.index('id="live-map"')
+
+
+def test_stop_titles_cannot_close_the_map_script() -> None:
+    html = page.render(_griffith_data())
+    assert "Angels Flight</script>" not in html
+    assert _config(html)["stops"][2]["title"] == "Angels Flight</script>"
+
+
+def test_without_tiles_there_is_no_leaflet() -> None:
+    html = page.render(_griffith_data(tiles=None))
+    assert "leaflet.js" not in html and ".leaflet-pane" not in html
+    assert 'id="live-map"' not in html
+    assert 'src="map-light.jpg"' in html
 
 
 def test_without_dark_tiles_the_light_map_is_darkened() -> None:
@@ -255,6 +653,87 @@ def test_sunset_after_every_stop_goes_last() -> None:
     assert html.index("12:00 PM") < html.index("Sunset 6:10 PM")
 
 
+# --- writing the folder ----------------------------------------------------
+
+
+def _griffith_date() -> PlannedDate:
+    """The Griffith day as unsaved rows: `write` only reads them."""
+
+    def stop(
+        position: int,
+        title: str,
+        point: tuple[float, float],
+        travel: int | None,
+        mode: TravelMode,
+    ) -> DateStop:
+        return DateStop(
+            position=position,
+            title=title,
+            kind=StopKind.ACTIVITY,
+            venue=Venue(
+                name=title,
+                city="Los Angeles",
+                venue_type=VenueType.OTHER,
+                lat=point[0],
+                lng=point[1],
+            ),
+            start_at=datetime(2026, 10, 17, 9 + 2 * position, tzinfo=LA),
+            anchor=Anchor.NONE,
+            reservation_need=ReservationNeed.NONE,
+            booking_status=StopBookingStatus.NOT_NEEDED,
+            calendar_event_id=f"event{position}",
+            travel_min_from_prev=travel,
+            travel_mode=mode,
+        )
+
+    return PlannedDate(
+        id=uuid.uuid4(),
+        title="Griffith hike + food crawl",
+        day=date(2026, 10, 17),
+        max_leg_minutes=25,
+        status=DateStatus.CONFIRMED,
+        stops=[
+            stop(0, "Mount Hollywood hike", GRIFFITH, None, TravelMode.DRIVING),
+            stop(1, "Grand Central Market", MARKET, 23, TravelMode.DRIVING),
+            stop(2, "Angels Flight", ANGELS, 2, TravelMode.WALKING),
+        ],
+    )
+
+
+@respx.mock
+async def test_write_ships_the_tiles_next_to_the_page(tmp_path: Path) -> None:
+    respx.get(url__regex=r"https://tiles\.example\.com/.*").mock(
+        return_value=httpx.Response(200, content=_png("#336699", side=256))
+    )
+    planned = _griffith_date()
+    settings = Settings(preview_dir=tmp_path, map_tiles_light=TILES)
+    async with httpx.AsyncClient() as client:
+        written = await preview.write(planned, LA, settings, client)
+
+    tiles = {name for name in written.files if name.startswith("tiles/")}
+    assert set(written.files) == tiles | {"map-light.jpg"}
+    assert 0 < len(tiles) <= basemap.TILE_BUDGET
+    assert all(re.fullmatch(r"tiles/\d+/\d+/\d+\.webp", name) for name in tiles)
+    for name, path in written.files.items():
+        assert path == tmp_path / str(planned.id) / name and path.is_file()
+    assert written.tiles_overview is not None and written.tiles_overview.is_file()
+    assert written.tiles_overview.name not in written.files
+    html = written.page.read_text()
+    assert "leaflet.js" in html
+    assert "mode=driving" in html  # one leg walks, the other drives
+    assert "Open in Google Calendar" in html
+
+    # Without a basemap the old tiles go, rather than lingering in the folder.
+    bare = Settings(preview_dir=tmp_path, map_tiles_light="")
+    async with httpx.AsyncClient() as client:
+        again = await preview.write(planned, LA, bare, client)
+    assert again.files == {} and again.tiles_overview is None
+    folder = tmp_path / str(planned.id)
+    assert not (folder / "tiles").exists()
+    assert not (folder / preview.OVERVIEW).exists()
+    assert "leaflet.js" not in again.page.read_text()
+
+
 # --- the tool --------------------------------------------------------------
 
 
@@ -292,6 +771,7 @@ async def test_the_tool_writes_the_page_and_keeps_the_link(
         out = await call("render_date_preview", date_id=str(planned.id))
         assert Path(out.page_path) == tmp_path / str(planned.id) / "index.html"
         assert out.files == {}
+        assert out.tiles_overview is None
         assert out.basemap is False
         assert out.stops_on_map == 2
         assert out.missing_coordinates == ["Dinner"]
