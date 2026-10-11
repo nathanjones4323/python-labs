@@ -21,8 +21,8 @@ def register(mcp: FastMCP) -> None:
     @as_tool_error
     async def render_date_preview(date_id: uuid.UUID) -> PreviewOut:
         """Write the date's preview page: a map of the stops with the route
-        between them, then each stop's time, drive, booking state, and where
-        sunset falls. Made for a phone.
+        between them, then each stop's time, drive or walk, booking state, and
+        where sunset falls. Made for a phone.
 
         Nothing is published here. Publish `page_path` with the Artifact
         tool, passing `files` as its supporting files, and `preview_url` as

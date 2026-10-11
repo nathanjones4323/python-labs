@@ -3,7 +3,8 @@
 One self-contained HTML file, published as an Artifact next to the basemap
 images: a header with the day, status and sunset, the map with numbered pins
 and the route between them, then the stops in order with their times, the
-drive between them, where sunset falls, and how each one's booking stands.
+drive or walk between them, where sunset falls, and how each one's booking
+stands.
 
 The Artifact host wraps the file in its own document skeleton, so there's
 no <html>/<head>/<body> here, and its CSP allows Google Fonts and nothing
@@ -16,7 +17,12 @@ from html import escape
 from pathlib import Path
 from urllib.parse import urlencode
 
-from date_planner.db.models import DateStatus, StopBookingStatus, VenueType
+from date_planner.db.models import (
+    DateStatus,
+    StopBookingStatus,
+    TravelMode,
+    VenueType,
+)
 
 LIGHT_MAP = "map-light.jpg"
 DARK_MAP = "map-dark.jpg"
@@ -34,6 +40,12 @@ CAR = (
     '<path d="M3 9.5 4.4 5.6A1.5 1.5 0 0 1 5.8 4.6h4.4a1.5 1.5 0 0 1 1.4 1'
     'L13 9.5v3H3z"/>'
     '<circle cx="5.5" cy="10.5" r=".6"/><circle cx="10.5" cy="10.5" r=".6"/></svg>'
+)
+WALK = (
+    '<svg viewBox="0 0 16 16" aria-hidden="true">'
+    '<circle cx="9" cy="2.75" r="1.25"/>'
+    '<path d="M8.5 5.5 7.5 10l2 1.75.75 3M7.5 10 6 14.5'
+    'M8.5 5.5l2 2.25 1.75.5M8.5 5.5 6.25 7 5.75 9"/></svg>'
 )
 SUN = (
     '<svg viewBox="0 0 20 12" aria-hidden="true">'
@@ -55,6 +67,8 @@ class PreviewStop:
     start_at: datetime | None  # already in the couple's timezone
     end_at: datetime | None
     travel_min_from_prev: int | None
+    # How the leg into this stop is travelled.
+    travel_mode: TravelMode
     booking_status: StopBookingStatus
     booking_url: str | None
     confirmation_number: str | None
@@ -203,7 +217,9 @@ def _stop(stop: PreviewStop) -> str:
 </li>"""
 
 
-def _leg(minutes: int) -> str:
+def _leg(minutes: int, mode: TravelMode) -> str:
+    if mode is TravelMode.WALKING:
+        return f'<li class="leg">{WALK}{minutes} min walk</li>'
     return f'<li class="leg">{CAR}{minutes} min drive</li>'
 
 
@@ -216,7 +232,7 @@ def _timeline(data: PreviewData) -> str:
     sunset_placed = data.sunset is None
     for i, stop in enumerate(data.stops):
         if i and stop.travel_min_from_prev:
-            items.append(_leg(stop.travel_min_from_prev))
+            items.append(_leg(stop.travel_min_from_prev, stop.travel_mode))
         if (
             not sunset_placed
             and data.sunset is not None
@@ -328,7 +344,8 @@ def render(data: PreviewData) -> str:
     {_timeline(data)}
   </ol>
   <footer>
-    Times in {_e(data.tz_label)}. Drives are kept under {data.max_leg_minutes} min.
+    Times in {_e(data.tz_label)}.
+    Legs between stops are kept under {data.max_leg_minutes} min.
     Nothing is booked from this page: tentative holds stay that way until you book.
   </footer>
 </main>

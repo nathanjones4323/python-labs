@@ -10,7 +10,12 @@ import httpx
 import pytest
 import respx
 from date_planner.config import get_settings
-from date_planner.db.models import DateStatus, StopBookingStatus, VenueType
+from date_planner.db.models import (
+    DateStatus,
+    StopBookingStatus,
+    TravelMode,
+    VenueType,
+)
 from date_planner.preview import basemap, page
 from date_planner.server import create_server
 from fastmcp import Client
@@ -117,6 +122,7 @@ def _stop(number: int, **fields: Any) -> page.PreviewStop:
         "start_at": None,
         "end_at": None,
         "travel_min_from_prev": None,
+        "travel_mode": TravelMode.DRIVING,
         "booking_status": StopBookingStatus.NOT_NEEDED,
         "booking_url": None,
         "confirmation_number": None,
@@ -210,6 +216,28 @@ def test_the_page_reads_as_the_day_in_order() -> None:
     assert "google.com/maps/dir/" in html
     assert 'src="map-light.jpg"' in html and 'src="map-dark.jpg"' in html
     assert "© OpenStreetMap contributors" in html
+
+
+def test_a_walking_leg_reads_as_a_walk() -> None:
+    html = page.render(
+        _data(
+            [
+                _stop(1, start_at=at(17)),
+                _stop(
+                    2,
+                    start_at=at(18),
+                    travel_min_from_prev=12,
+                    travel_mode=TravelMode.WALKING,
+                ),
+            ]
+        )
+    )
+    assert "12 min walk" in html
+    assert "12 min drive" not in html
+    assert page.WALK in html and page.CAR not in html
+    # The limit covers walks as well, so the footer doesn't call it a drive.
+    assert "Drives are kept" not in html
+    assert "Legs between stops are kept under 45 min." in html
 
 
 def test_without_dark_tiles_the_light_map_is_darkened() -> None:
