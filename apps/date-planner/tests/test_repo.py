@@ -1,20 +1,39 @@
-"""The repo layer against a real Postgres: upserts, transitions, listings."""
+"""The repo layer against a real Postgres: upserts, stops, derived status,
+listings, the travel cache."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.booking.detect import Detection
 from date_planner.booking.window import BookingWindow
 from date_planner.db import repo
-from date_planner.db.models import DATE_TRANSITIONS, DateStatus
+from date_planner.db.models import (
+    DateStatus,
+    ReservationNeed,
+    StopBookingStatus,
+    StopKind,
+    TravelMode,
+    VenueType,
+)
 from date_planner.errors import InvalidTransition, NotFound
-from date_planner.schemas import CoupleProfileIn, DatePatch, RestaurantIn
+from date_planner.schemas import (
+    CoupleProfileIn,
+    DatePatch,
+    PreferenceEdit,
+    StopIn,
+    StopPatch,
+    VenueIn,
+)
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 Factory = async_sessionmaker[AsyncSession]
+LA = ZoneInfo("America/Los_Angeles")
+DAY = date(2026, 10, 24)
 
 
 # --- couples ---------------------------------------------------------------
@@ -65,52 +84,116 @@ async def test_a_null_name_is_ignored_rather_than_breaking_the_row(
         assert same.name == "A & B"
 
 
+async def test_editing_preferences_keeps_what_it_doesnt_name(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await repo.upsert_couple(
+            session,
+            CoupleProfileIn(name="A & B", likes=["sushi", "wine bars"]),
+        )
+        edited = await repo.edit_preferences(
+            session, couple.id, PreferenceEdit(add_likes=["tapas", " Sushi "])
+        )
+        # Re-adding an item already there, in another case, doesn't duplicate it.
+        assert edited.likes == ["sushi", "wine bars", "tapas"]
+    async with db() as session:
+        stored = await repo.get_couple(session, couple.id)
+        assert stored.likes == ["sushi", "wine bars", "tapas"]
+
+
+async def test_disliking_something_takes_it_off_the_likes(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await repo.upsert_couple(
+            session,
+            CoupleProfileIn(name="A & B", likes=["sushi"], dislikes=["jazz"]),
+        )
+        edited = await repo.edit_preferences(
+            session,
+            couple.id,
+            PreferenceEdit(add_dislikes=["SUSHI"], add_likes=["jazz"]),
+        )
+        assert edited.likes == ["jazz"]
+        assert edited.dislikes == ["SUSHI"]
+
+
+async def test_dietary_needs_can_be_added_and_dropped(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await repo.upsert_couple(
+            session, CoupleProfileIn(name="A & B", dietary=["no shellfish"])
+        )
+        edited = await repo.edit_preferences(
+            session,
+            couple.id,
+            PreferenceEdit(remove_dietary=["No Shellfish"], add_dietary=["vegetarian"]),
+        )
+        assert edited.dietary == ["vegetarian"]
+
+
 async def test_unknown_couple_is_not_found(db: Factory) -> None:
     async with db() as session, session.begin():
         with pytest.raises(NotFound):
             await repo.get_couple(session, uuid.uuid4())
 
 
-# --- restaurants -----------------------------------------------------------
+# --- venues ----------------------------------------------------------------
 
 
-async def test_restaurants_are_keyed_on_name_and_city(db: Factory) -> None:
+def _venue(name: str, city: str, **extra: Any) -> VenueIn:
+    return VenueIn(name=name, city=city, venue_type=VenueType.RESTAURANT, **extra)
+
+
+async def test_venues_are_keyed_on_name_and_city(db: Factory) -> None:
     async with db() as session, session.begin():
-        first = await repo.upsert_restaurant(
-            session, RestaurantIn(name="Nobu Malibu", city="Malibu")
-        )
-        second = await repo.upsert_restaurant(
+        first = await repo.upsert_venue(session, _venue("Nobu Malibu", "Malibu"))
+        # Updating an existing venue doesn't need its type again.
+        second = await repo.upsert_venue(
             session,
-            RestaurantIn(name="nobu malibu", city="MALIBU", phone="+13103179140"),
+            VenueIn(name="nobu malibu", city="MALIBU", phone="+13103179140"),
         )
         assert second.id == first.id
         assert second.phone == "+13103179140"
-        assert len(await repo.list_restaurants(session)) == 1
+        assert second.venue_type is VenueType.RESTAURANT
+        assert len(await repo.list_venues(session)) == 1
 
 
-async def test_find_restaurant_ignores_case_and_padding(db: Factory) -> None:
+async def test_find_venue_ignores_case_and_padding(db: Factory) -> None:
     async with db() as session, session.begin():
-        await repo.upsert_restaurant(
-            session, RestaurantIn(name="Bestia", city="Los Angeles")
-        )
-        assert await repo.find_restaurant(session, " bestia ", "los angeles")
-        assert await repo.find_restaurant(session, "Bestia", "Malibu") is None
+        await repo.upsert_venue(session, _venue("Bestia", "Los Angeles"))
+        assert await repo.find_venue(session, " bestia ", "los angeles")
+        assert await repo.find_venue(session, "Bestia", "Malibu") is None
 
 
-async def test_a_new_restaurant_needs_a_name_and_city(db: Factory) -> None:
+async def test_a_new_venue_needs_a_name_city_and_type(db: Factory) -> None:
     async with db() as session, session.begin():
         with pytest.raises(ValueError, match="name and a city"):
-            await repo.upsert_restaurant(session, RestaurantIn(name="Bestia"))
+            await repo.upsert_venue(session, _venue("Bestia", ""))
+        with pytest.raises(ValueError, match="venue_type"):
+            await repo.upsert_venue(session, VenueIn(name="Bestia", city="LA"))
+
+
+async def test_a_venue_keeps_where_it_is(db: Factory) -> None:
+    async with db() as session, session.begin():
+        trail = await repo.upsert_venue(
+            session,
+            VenueIn(
+                name="Solstice Canyon",
+                city="Malibu",
+                venue_type=VenueType.TRAIL,
+                lat=34.03765,
+                lng=-118.7477,
+                external_url="https://www.alltrails.com/trail/x",
+                default_duration_min=105,
+            ),
+        )
+        assert trail.has_coordinates
+        assert trail.default_duration_min == 105
 
 
 async def test_record_detection_caches_channel_and_window(db: Factory) -> None:
     async with db() as session, session.begin():
-        restaurant = await repo.upsert_restaurant(
-            session, RestaurantIn(name="Bestia", city="Los Angeles")
-        )
+        venue = await repo.upsert_venue(session, _venue("Bestia", "Los Angeles"))
         await repo.record_detection(
             session,
-            restaurant,
+            venue,
             Detection(
                 channel=BookingChannel.RESY,
                 confidence=0.95,
@@ -121,23 +204,23 @@ async def test_record_detection_caches_channel_and_window(db: Factory) -> None:
                 window=BookingWindow(30, WindowUnit.DAYS),
             ),
         )
-        assert restaurant.booking_channel is BookingChannel.RESY
-        assert restaurant.platform_slug == "bestia"
-        assert restaurant.channel_checked_at is not None
-        assert restaurant.window_amount == 30
-        assert restaurant.window_unit is WindowUnit.DAYS
-        assert restaurant.phone == "+12135550000"
+        assert venue.booking_channel is BookingChannel.RESY
+        assert venue.platform_slug == "bestia"
+        assert venue.channel_checked_at is not None
+        assert venue.window_amount == 30
+        assert venue.window_unit is WindowUnit.DAYS
+        assert venue.phone == "+12135550000"
 
 
 async def test_detection_does_not_overwrite_what_a_person_entered(
     db: Factory,
 ) -> None:
     async with db() as session, session.begin():
-        restaurant = await repo.upsert_restaurant(
+        venue = await repo.upsert_venue(
             session,
-            RestaurantIn(
-                name="Nobu Malibu",
-                city="Malibu",
+            _venue(
+                "Nobu Malibu",
+                "Malibu",
                 phone="+13103179140",
                 window_amount=1,
                 window_unit=WindowUnit.MONTHS,
@@ -145,7 +228,7 @@ async def test_detection_does_not_overwrite_what_a_person_entered(
         )
         await repo.record_detection(
             session,
-            restaurant,
+            venue,
             Detection(
                 channel=BookingChannel.PHONE,
                 confidence=0.8,
@@ -154,207 +237,337 @@ async def test_detection_does_not_overwrite_what_a_person_entered(
                 window=BookingWindow(30, WindowUnit.DAYS),
             ),
         )
-        assert restaurant.phone == "+13103179140"
-        assert restaurant.window_amount == 1
-        assert restaurant.window_unit is WindowUnit.MONTHS
+        assert venue.phone == "+13103179140"
+        assert venue.window_amount == 1
+        assert venue.window_unit is WindowUnit.MONTHS
 
 
-# --- dates -----------------------------------------------------------------
+# --- dates and stops -------------------------------------------------------
 
 
-async def test_create_date_starts_proposed(db: Factory, seeded: dict[str, Any]) -> None:
-    async with db() as session, session.begin():
-        start = datetime.now(timezone.utc) + timedelta(days=14)
-        planned = await repo.create_date(
-            session,
-            couple_id=seeded["couple_id"],
-            title="Dinner at Nobu",
-            start_at=start,
-            end_at=start + timedelta(hours=2),
-            restaurant_id=seeded["nobu_id"],
-        )
-        assert planned.status is DateStatus.PROPOSED
-        assert planned.party_size == 2
+def _stop(title: str, **extra: Any) -> StopIn:
+    values: dict[str, Any] = {"kind": StopKind.ACTIVITY} | extra
+    return StopIn(title=title, **values)
 
 
-async def test_create_date_rejects_an_end_before_its_start(
+def _at(hour: int, minute: int = 0) -> datetime:
+    return datetime.combine(DAY, time(hour, minute), LA)
+
+
+async def _date(session: AsyncSession, couple_id: uuid.UUID) -> uuid.UUID:
+    planned = await repo.create_date(
+        session, couple_id=couple_id, title="Malibu day", day=DAY
+    )
+    return planned.id
+
+
+async def test_a_new_date_is_planning_with_no_stops(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     async with db() as session, session.begin():
-        start = datetime.now(timezone.utc) + timedelta(days=14)
-        with pytest.raises(ValueError, match="after start_at"):
+        planned = await repo.create_date(
+            session, couple_id=seeded["couple_id"], title="Malibu day", day=DAY
+        )
+        assert planned.status is DateStatus.PLANNING
+        assert planned.max_leg_minutes == 25
+        assert planned.stops == []
+
+
+async def test_create_date_checks_the_couple_and_window(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        with pytest.raises(NotFound):
+            await repo.create_date(
+                session, couple_id=uuid.uuid4(), title="Nobody's date", day=DAY
+            )
+    async with db() as session, session.begin():
+        with pytest.raises(ValueError, match="end_before"):
             await repo.create_date(
                 session,
                 couple_id=seeded["couple_id"],
                 title="Backwards",
-                start_at=start,
-                end_at=start - timedelta(hours=1),
+                day=DAY,
+                start_after=time(18, 0),
+                end_before=time(9, 0),
             )
 
 
-async def test_create_date_checks_the_couple_and_restaurant_exist(
-    db: Factory, seeded: dict[str, Any]
-) -> None:
-    start = datetime.now(timezone.utc) + timedelta(days=14)
+async def test_stops_keep_their_order(db: Factory, seeded: dict[str, Any]) -> None:
     async with db() as session, session.begin():
-        with pytest.raises(NotFound):
-            await repo.create_date(
-                session,
-                couple_id=uuid.uuid4(),
-                title="Nobody's date",
-                start_at=start,
-                end_at=start + timedelta(hours=2),
-            )
-    async with db() as session, session.begin():
-        with pytest.raises(NotFound):
-            await repo.create_date(
-                session,
-                couple_id=seeded["couple_id"],
-                title="Nowhere",
-                start_at=start,
-                end_at=start + timedelta(hours=2),
-                restaurant_id=uuid.uuid4(),
-            )
+        date_id = await _date(session, seeded["couple_id"])
+        await repo.add_stop(session, date_id, _stop("Hike"))
+        await repo.add_stop(session, date_id, _stop("Dinner", kind=StopKind.MEAL))
+        planned = await repo.add_stop(session, date_id, _stop("Museum"), position=1)
+        assert [s.title for s in planned.stops] == ["Hike", "Museum", "Dinner"]
+        assert [s.position for s in planned.stops] == [0, 1, 2]
 
-
-async def test_the_booking_path_walks_the_state_machine(
-    db: Factory, seeded: dict[str, Any]
-) -> None:
-    start = datetime.now(timezone.utc) + timedelta(days=14)
-    async with db() as session, session.begin():
-        planned = await repo.create_date(
-            session,
-            couple_id=seeded["couple_id"],
-            title="Dinner at Bestia",
-            start_at=start,
-            end_at=start + timedelta(hours=2),
-            restaurant_id=seeded["bestia_id"],
+        hike, museum, dinner = planned.stops
+        swapped = await repo.reorder_stops(
+            session, date_id, [museum.id, hike.id, dinner.id]
         )
-        date_id = planned.id
+        assert [s.title for s in swapped.stops] == ["Museum", "Hike", "Dinner"]
+
+        trimmed = await repo.remove_stop(session, hike.id)
+        assert [(s.title, s.position) for s in trimmed.stops] == [
+            ("Museum", 0),
+            ("Dinner", 1),
+        ]
+    # The deferred unique (date_id, position) held at commit.
+    async with db() as session:
+        stored = await repo.get_date(session, date_id)
+        assert [s.title for s in stored.stops] == ["Museum", "Dinner"]
+
+
+async def test_reorder_needs_every_stop_once(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
     async with db() as session, session.begin():
-        held = await repo.update_date(
+        date_id = await _date(session, seeded["couple_id"])
+        await repo.add_stop(session, date_id, _stop("Hike"))
+        planned = await repo.add_stop(session, date_id, _stop("Dinner"))
+        first = planned.stops[0].id
+        with pytest.raises(ValueError, match="exactly once"):
+            await repo.reorder_stops(session, date_id, [first, first])
+        with pytest.raises(ValueError, match="exactly once"):
+            await repo.reorder_stops(session, date_id, [first])
+
+
+async def test_a_stop_needs_an_existing_venue_and_sane_times(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        with pytest.raises(NotFound):
+            await repo.add_stop(
+                session, date_id, _stop("Nowhere", venue_id=uuid.uuid4())
+            )
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        with pytest.raises(ValueError, match="after start_at"):
+            await repo.add_stop(
+                session, date_id, _stop("Backwards", start_at=_at(19), end_at=_at(18))
+            )
+
+
+async def test_booking_status_defaults_from_the_need(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        for need in ReservationNeed:
+            await repo.add_stop(session, date_id, _stop(need, reservation_need=need))
+        planned = await repo.get_date(session, date_id)
+        statuses = {s.reservation_need: s.booking_status for s in planned.stops}
+        assert statuses == {
+            ReservationNeed.NONE: StopBookingStatus.NOT_NEEDED,
+            ReservationNeed.REQUIRED: StopBookingStatus.NEEDED,
+            ReservationNeed.RECOMMENDED: StopBookingStatus.NEEDED,
+            # Unknown waits: nobody has looked yet.
+            ReservationNeed.UNKNOWN: StopBookingStatus.NEEDED,
+        }
+
+
+async def test_the_date_status_follows_its_stops(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    """planning -> booking_pending -> confirmed, purely from stop changes."""
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        planned = await repo.add_stop(
             session,
             date_id,
-            DatePatch(
-                status=DateStatus.BOOKING_PENDING,
-                calendar_event_id="evt_1",
-                booking_url="https://resy.com/...",
+            _stop("Hike", reservation_need=ReservationNeed.NONE, est_duration_min=90),
+        )
+        # Nothing to book, but no time yet.
+        assert planned.status is DateStatus.PLANNING
+        hike = planned.stops[0]
+
+        planned = await repo.add_stop(
+            session,
+            date_id,
+            _stop(
+                "Dinner",
+                kind=StopKind.MEAL,
+                venue_id=seeded["nobu_id"],
+                reservation_need=ReservationNeed.RECOMMENDED,
             ),
         )
-        assert held.status is DateStatus.BOOKING_PENDING
-        assert held.calendar_event_id == "evt_1"
-        confirmed = await repo.update_date(
+        assert planned.status is DateStatus.BOOKING_PENDING
+        dinner = planned.stops[1]
+
+        for status in (StopBookingStatus.LINK_SENT, StopBookingStatus.REMINDER_SET):
+            planned = await repo.update_stop(
+                session, dinner.id, StopPatch(booking_status=status)
+            )
+            assert planned.status is DateStatus.BOOKING_PENDING
+
+        planned = await repo.update_stop(
+            session,
+            dinner.id,
+            StopPatch(
+                booking_status=StopBookingStatus.CONFIRMED,
+                confirmation_number="NOBU-1",
+                start_at=_at(17, 45),
+                end_at=_at(19, 15),
+            ),
+        )
+        # Booked, but the hike still has no time.
+        assert planned.status is DateStatus.PLANNING
+
+        planned = await repo.update_stop(
+            session, hike.id, StopPatch(start_at=_at(9), end_at=_at(10, 30))
+        )
+        assert planned.status is DateStatus.CONFIRMED
+
+        # Clearing a time takes it back.
+        planned = await repo.update_stop(session, hike.id, StopPatch(end_at=None))
+        assert planned.status is DateStatus.PLANNING
+
+
+async def test_a_cancelled_stop_counts_for_nothing(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        date_id = await _date(session, seeded["couple_id"])
+        planned = await repo.add_stop(
             session,
             date_id,
-            DatePatch(status=DateStatus.CONFIRMED, confirmation_number="ABC123"),
+            _stop(
+                "Hike",
+                reservation_need=ReservationNeed.NONE,
+                start_at=_at(9),
+                end_at=_at(10),
+            ),
         )
-        assert confirmed.status is DateStatus.CONFIRMED
-        done = await repo.update_date(
-            session, date_id, DatePatch(status=DateStatus.COMPLETED, rating=5)
-        )
-        assert done.status is DateStatus.COMPLETED
-        assert done.rating == 5
-
-
-async def test_a_forbidden_move_is_refused(db: Factory, seeded: dict[str, Any]) -> None:
-    start = datetime.now(timezone.utc) + timedelta(days=14)
-    async with db() as session, session.begin():
-        planned = await repo.create_date(
+        assert planned.status is DateStatus.CONFIRMED
+        planned = await repo.add_stop(
             session,
-            couple_id=seeded["couple_id"],
-            title="Dinner",
-            start_at=start,
-            end_at=start + timedelta(hours=2),
+            date_id,
+            _stop("Dinner", reservation_need=ReservationNeed.REQUIRED),
         )
-        # Nothing has been booked, so it can't be confirmed.
-        with pytest.raises(InvalidTransition):
-            await repo.update_date(
-                session, planned.id, DatePatch(status=DateStatus.CONFIRMED)
-            )
+        assert planned.status is DateStatus.BOOKING_PENDING
+        planned = await repo.update_stop(
+            session,
+            planned.stops[1].id,
+            StopPatch(booking_status=StopBookingStatus.CANCELLED),
+        )
+        assert planned.status is DateStatus.CONFIRMED
 
 
-async def test_a_completed_date_is_the_end_of_the_line(
+async def test_completed_and_cancelled_stick(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     async with db() as session, session.begin():
+        loved = await repo.get_date(session, seeded["loved_date_id"])
+        assert loved.status is DateStatus.COMPLETED
+        assert loved.rating == 5
+        # A stop change doesn't un-complete it...
+        await repo.update_stop(
+            session,
+            loved.stops[0].id,
+            StopPatch(booking_status=StopBookingStatus.NEEDED),
+        )
+        assert loved.status is DateStatus.COMPLETED
+        # ...and nor can a patch.
         with pytest.raises(InvalidTransition):
-            await repo.update_date(
-                session,
-                seeded["loved_date_id"],
-                DatePatch(status=DateStatus.TENTATIVE),
-            )
-
-
-async def test_setting_the_same_status_is_not_an_error(
-    db: Factory, seeded: dict[str, Any]
-) -> None:
-    async with db() as session, session.begin():
+            await repo.update_date(session, loved.id, DatePatch(status="cancelled"))
         same = await repo.update_date(
-            session,
-            seeded["loved_date_id"],
-            DatePatch(status=DateStatus.COMPLETED, notes="still great"),
+            session, loved.id, DatePatch(status="completed", notes="still great")
         )
         assert same.notes == "still great"
 
 
-def test_every_status_has_a_transition_rule() -> None:
-    assert set(DATE_TRANSITIONS) == set(DateStatus)
+def test_only_hand_set_statuses_can_be_patched() -> None:
+    with pytest.raises(ValidationError):
+        DatePatch(status="confirmed")  # type: ignore[arg-type]
 
 
 async def test_list_past_dates_is_newest_first_and_skips_cancelled(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     async with db() as session, session.begin():
-        now = datetime.now(timezone.utc)
         past = await repo.list_past_dates(session, seeded["couple_id"])
-        assert [p.id for p in past] == [
-            seeded["meh_date_id"],
-            seeded["loved_date_id"],
-        ]
+        assert [p.id for p in past] == [seeded["meh_date_id"], seeded["loved_date_id"]]
         assert [p.rating for p in past] == [3, 5]
-        # A future date isn't a past date.
-        start = now + timedelta(days=3)
+        # Every stop's venue comes along, for spotting repeats.
+        assert [p.stops[0].venue_name for p in past] == ["Bestia", "Nobu Malibu"]
+
+        today = datetime.now(LA).date()
         await repo.create_date(
             session,
             couple_id=seeded["couple_id"],
             title="Upcoming",
-            start_at=start,
-            end_at=start + timedelta(hours=2),
+            day=today + timedelta(days=3),
         )
         assert len(await repo.list_past_dates(session, seeded["couple_id"])) == 2
-        # A date that was cancelled before it happened never happened.
-        flaked_start = now - timedelta(days=2)
+
         flaked = await repo.create_date(
             session,
             couple_id=seeded["couple_id"],
             title="Cancelled on us",
-            start_at=flaked_start,
-            end_at=flaked_start + timedelta(hours=2),
+            day=today - timedelta(days=2),
         )
-        await repo.update_date(
-            session, flaked.id, DatePatch(status=DateStatus.CANCELLED)
-        )
+        await repo.update_date(session, flaked.id, DatePatch(status="cancelled"))
         after = await repo.list_past_dates(session, seeded["couple_id"])
-        assert [p.id for p in after] == [
-            seeded["meh_date_id"],
-            seeded["loved_date_id"],
-        ]
+        assert [p.id for p in after] == [seeded["meh_date_id"], seeded["loved_date_id"]]
 
 
-async def test_list_dates_filters_by_status_and_window(
+async def test_list_dates_filters_by_status_and_day(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     async with db() as session, session.begin():
-        now = datetime.now(timezone.utc)
+        today = datetime.now(LA).date()
         completed = await repo.list_dates(
             session, seeded["couple_id"], status=DateStatus.COMPLETED
         )
         assert len(completed) == 2
         recent = await repo.list_dates(
-            session, seeded["couple_id"], start_from=now - timedelta(days=20)
+            session, seeded["couple_id"], day_from=today - timedelta(days=20)
         )
         assert [r.id for r in recent] == [seeded["meh_date_id"]]
         nothing = await repo.list_dates(
-            session, seeded["couple_id"], start_to=now - timedelta(days=365)
+            session, seeded["couple_id"], day_to=today - timedelta(days=365)
         )
         assert nothing == []
+
+
+# --- travel cache ----------------------------------------------------------
+
+
+async def test_the_travel_cache_hits_misses_and_expires(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    a, b = seeded["getty_id"], seeded["nobu_id"]
+    driving = TravelMode.DRIVING
+    async with db() as session, session.begin():
+        assert (
+            await repo.cached_travel(session, a, b, driving, "haversine", ttl_days=30)
+            is None
+        )
+        await repo.cache_travel(
+            session, a, b, driving, "haversine", minutes=12.5, meters=9000
+        )
+        hit = await repo.cached_travel(session, a, b, driving, "haversine", ttl_days=30)
+        assert hit is not None and hit.minutes == 12.5
+        # Directional, and per mode and provider.
+        for key in (
+            (b, a, driving, "haversine"),
+            (a, b, TravelMode.WALKING, "haversine"),
+            (a, b, driving, "osrm"),
+        ):
+            assert await repo.cached_travel(session, *key, ttl_days=30) is None
+        # Expired once it's ttl_days old.
+        later = datetime.now(timezone.utc) + timedelta(days=30)
+        expired = await repo.cached_travel(
+            session, a, b, driving, "haversine", ttl_days=30, now=later
+        )
+        assert expired is None
+        # A recompute replaces the row rather than colliding with it.
+        await repo.cache_travel(
+            session, a, b, driving, "haversine", minutes=14.0, meters=9100
+        )
+        fresh = await repo.cached_travel(
+            session, a, b, driving, "haversine", ttl_days=30
+        )
+        assert fresh is not None and fresh.minutes == 14.0

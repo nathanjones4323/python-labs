@@ -1,4 +1,4 @@
-"""How a restaurant takes a reservation, and the window it opens one in."""
+"""How a venue takes a reservation, and the window it opens one in."""
 
 import enum
 
@@ -10,6 +10,9 @@ class BookingChannel(enum.StrEnum):
     SEVENROOMS = "sevenrooms"
     PHONE = "phone"
     WALK_IN = "walk_in"
+    # Timed entry booked on the venue's own site (e.g. the Getty Villa).
+    # `platform_slug` holds the URL of that booking page.
+    TICKETED = "ticketed"
     UNKNOWN = "unknown"
 
 

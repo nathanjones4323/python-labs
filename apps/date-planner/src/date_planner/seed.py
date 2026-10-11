@@ -5,6 +5,16 @@
 Idempotent: it upserts, so running it twice changes nothing. The couple is a
 placeholder — edit it with `upsert_couple_profile` (or in psql) once the real
 emails and shared calendar id are known.
+
+The venues are the Malibu day the multi-stop planner was built around: a
+hike, a timed museum entry, a sunset dinner. Coordinates were looked up, not
+guessed (2026-10-11):
+
+* Solstice Canyon — the trailhead lot at Corral Canyon Rd, from HikeSpeak's
+  trailhead point (34.03765, -118.7477), within a few hundred metres of the
+  NPS figure for the same intersection.
+* Getty Villa — OpenStreetMap's museum point (way 23014640).
+* Nobu Malibu — OpenStreetMap's point for 22706 Pacific Coast Hwy.
 """
 
 import asyncio
@@ -12,7 +22,8 @@ from datetime import time
 
 from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.db import open_session, repo
-from date_planner.schemas import CoupleProfileIn, RestaurantIn
+from date_planner.db.models import VenueType
+from date_planner.schemas import CoupleProfileIn, VenueIn
 
 COUPLE = CoupleProfileIn(
     name="Nathan & partner",
@@ -27,9 +38,13 @@ COUPLE = CoupleProfileIn(
     max_travel_minutes=45,
 )
 
-NOBU_MALIBU = RestaurantIn(
+NOBU_MALIBU = VenueIn(
     name="Nobu Malibu",
     city="Malibu",
+    venue_type=VenueType.RESTAURANT,
+    lat=34.0389596,
+    lng=-118.6696041,
+    default_duration_min=90,
     address="22706 Pacific Coast Hwy, Malibu, CA 90265",
     phone="+13103179140",
     website="https://www.noburestaurants.com/malibu/home",
@@ -45,6 +60,36 @@ NOBU_MALIBU = RestaurantIn(
     ),
 )
 
+SOLSTICE_CANYON = VenueIn(
+    name="Solstice Canyon",
+    city="Malibu",
+    venue_type=VenueType.TRAIL,
+    address="Corral Canyon Rd & Solstice Canyon Rd, Malibu, CA 90265",
+    timezone="America/Los_Angeles",
+    lat=34.03765,
+    lng=-118.7477,
+    external_url="https://www.alltrails.com/trail/us/california/solstice-canyon-trail-2",
+    # AllTrails: 2.9 mi loop, about 1.5 h; plus 15 min to park and get going.
+    default_duration_min=105,
+    booking_channel=BookingChannel.WALK_IN,
+    notes="Small lot fills early on weekends; arrive early, bring water.",
+)
+
+GETTY_VILLA = VenueIn(
+    name="Getty Villa",
+    city="Pacific Palisades",
+    venue_type=VenueType.MUSEUM,
+    address="17985 Pacific Coast Hwy, Pacific Palisades, CA 90272",
+    website="https://www.getty.edu/visit/villa/",
+    timezone="America/Los_Angeles",
+    lat=34.0449819,
+    lng=-118.5650197,
+    default_duration_min=120,
+    booking_channel=BookingChannel.TICKETED,
+    platform_slug="https://tickets.getty.edu/online/article/villa",
+    notes="Free, but needs a timed-entry reservation; parking is paid.",
+)
+
 
 async def seed() -> None:
     async with open_session() as session:
@@ -57,10 +102,14 @@ async def seed() -> None:
             COUPLE if not existing else COUPLE.model_copy(update={"id": existing[0].id})
         )
         couple = await repo.upsert_couple(session, profile)
-        # Restaurants are keyed on (name, city), so this one upserts itself.
-        nobu = await repo.upsert_restaurant(session, NOBU_MALIBU)
-        print(f"couple     {couple.id}  {couple.name}")
-        print(f"restaurant {nobu.id}  {nobu.name} ({nobu.booking_channel})")
+        print(f"couple  {couple.id}  {couple.name}")
+        # Venues are keyed on (name, city), so these upsert themselves.
+        for data in (NOBU_MALIBU, SOLSTICE_CANYON, GETTY_VILLA):
+            venue = await repo.upsert_venue(session, data)
+            print(
+                f"venue   {venue.id}  {venue.name} "
+                f"({venue.venue_type}, {venue.booking_channel})"
+            )
 
 
 def main() -> None:

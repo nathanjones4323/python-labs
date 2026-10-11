@@ -14,7 +14,7 @@ it).
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 from date_planner.booking.channels import BookingChannel
@@ -42,7 +42,7 @@ VERIFIED: dict[BookingChannel, date] = {
 
 @dataclass(frozen=True)
 class LinkTarget:
-    """What a builder needs about a restaurant, without the ORM row."""
+    """What a builder needs about a venue, without the ORM row."""
 
     channel: BookingChannel
     timezone: ZoneInfo
@@ -64,8 +64,8 @@ class BookingLink:
 def _require(value: str | None, channel: BookingChannel, field: str) -> str:
     if not value:
         raise MissingPlatformSlug(
-            f"A {channel} link needs {field}; the restaurant record has none. "
-            "Run detect_booking_channel, or fill it in with upsert_restaurant."
+            f"A {channel} link needs {field}; the venue record has none. "
+            "Run detect_booking_channel, or fill it in with upsert_venue."
         )
     return value
 
@@ -118,21 +118,41 @@ BUILDERS: dict[BookingChannel, Builder] = {
 }
 
 
-def build(target: LinkTarget, start_at: datetime, party_size: int) -> BookingLink:
-    """A prefilled link for `start_at`, read in the restaurant's local time.
+def _ticket_page(target: LinkTarget) -> str:
+    """A `ticketed` venue's own booking page, as detection recorded it.
 
-    Raises `UnsupportedChannel` for phone, walk-in and unknown — those have
-    no link to build, and the caller should take the phone or walk-in branch
-    instead.
+    Nothing to prefill: museums' ticketing systems don't share a URL shape,
+    so the user picks the slot on the page.
     """
+    url = _require(target.platform_slug, target.channel, "its booking page URL")
+    if urlparse(url).scheme not in ("http", "https"):
+        raise MissingPlatformSlug(f"{url!r} isn't a web address")
+    return url
+
+
+def build(target: LinkTarget, start_at: datetime, party_size: int) -> BookingLink:
+    """A prefilled link for `start_at`, read in the venue's local time.
+
+    A `ticketed` venue gets its booking page as-is, never `verified`: it
+    won't prefill. Raises `UnsupportedChannel` for phone, walk-in and
+    unknown — those have no link to build, and the caller should take the
+    phone or walk-in branch instead.
+    """
+    if start_at.tzinfo is None:
+        raise ValueError("start_at must be timezone-aware")
+    if target.channel is BookingChannel.TICKETED:
+        return BookingLink(
+            url=_ticket_page(target),
+            platform=target.channel,
+            verified=False,
+            local_start=start_at.astimezone(target.timezone),
+        )
     builder = BUILDERS.get(target.channel)
     if builder is None:
         raise UnsupportedChannel(
             f"{target.channel} reservations aren't made through a link; "
             "there's nothing to build."
         )
-    if start_at.tzinfo is None:
-        raise ValueError("start_at must be timezone-aware")
     local = start_at.astimezone(target.timezone)
     return BookingLink(
         url=builder(target, local, party_size),

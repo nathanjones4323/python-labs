@@ -1,17 +1,22 @@
 # date-planner
 
-An MCP server for planning a couple's dates, plus the skill that drives it.
+An MCP server for planning a couple's dates, plus the Claude Code skill that
+drives it.
 
-The server owns the parts that want code: the couple's preferences and past
-dates, restaurants and how each one takes reservations, prefilled booking
-links, and the arithmetic of when a booking window opens. The skill
-(`skills/date-planner/SKILL.md`) owns the judgement, and uses the official
-Google Calendar and Gmail connectors for everything Google.
+A date is a **day with an ordered list of stops**: a hike, a timed museum
+entry, a sunset dinner. The server owns the parts that want code — the
+couple's preferences and past dates, venues and how each one takes
+reservations, prefilled booking links, booking windows, sunset, travel time
+between stops, and a deterministic timeline checker. The skill
+(`.claude/skills/date-planner/SKILL.md`) owns the judgement: which stops, in
+what order, what "nearby" means today. It uses the official Google Calendar
+and Gmail connectors for everything Google.
 
 **It never books anything.** For an online platform it produces a link for
-the user to tap; for a phone-only restaurant it works out when the lines open
-and leaves a reminder with the number and a script. Google credentials stay
-with the connectors, and the final step stays with a person.
+the user to tap; for a phone-only venue it works out when the lines open and
+leaves a reminder with the number and a script; for timed entry it links the
+venue's own ticket page. Google credentials stay with the connectors, and the
+final step stays with a person.
 
 ## Quick start
 
@@ -24,15 +29,48 @@ uv run --package date-planner alembic upgrade head
 uv run --package date-planner python -m date_planner.seed
 ```
 
-The seed prints the couple id and inserts Nobu Malibu, which is the
-interesting case: phone-only, bookable one calendar month ahead from 10:00
-local. Edit the placeholder couple with `upsert_couple_profile` (names,
-emails, shared calendar id) once you know the real values.
+The seed prints the couple id and inserts the venues for a Malibu day:
+Solstice Canyon (trail, trailhead coordinates), the Getty Villa (museum,
+timed entry) and Nobu Malibu (phone-only, bookable one calendar month ahead
+from 10:00 local). Edit the placeholder couple with `upsert_couple_profile`
+once you know the real names, emails and shared calendar id.
 
-Commands read `.env` from the working directory, so run them from
-`apps/date-planner` — or set `DATABASE_URL` in the environment.
+## Claude Code project
 
-## Registering the server with Claude Code
+Open Claude Code **in `apps/date-planner`** — that's the project root the
+config below lives in:
+
+| file | what it does |
+| --- | --- |
+| `.mcp.json` | Registers this server (`uv run date-planner-mcp`). `DATABASE_URL` comes from your environment, falling back to the local compose database. |
+| `.claude/skills/date-planner/SKILL.md` | The skill, invocable as `/date-planner`. |
+| `.claude/settings.json` | `PreToolUse` hooks that enforce the hard rules in code. |
+| `.claude/hooks/calendar_guard.py` | Denies calendar deletes; asks before any create/update that adds attendees; allows the rest. |
+| `.claude/hooks/deny.py` | Denies with a fixed reason — used to block sending email. |
+
+Claude Code asks you to approve a project `.mcp.json` server the first time.
+
+### Google connectors
+
+Google Calendar and Gmail come from the claude.ai connectors, which Claude
+Code shows under `/mcp`. Their tool names, as of 2026-10-11, which the hook
+matchers in `.claude/settings.json` are written against (and
+`tests/test_hooks.py` checks):
+
+| connector | tools the skill uses | tools the hooks gate |
+| --- | --- | --- |
+| Google Calendar | `mcp__claude_ai_Google_Calendar__list_events`, `__suggest_time`, `__create_event`, `__update_event` | `__create_event`, `__update_event` (ask if attendees), `__delete_event` (deny) |
+| Gmail | `mcp__claude_ai_Gmail__search_threads`, `__get_thread` | `__send_message`, `__reply`, `__forward` (deny) |
+| AllTrails (optional) | `mcp__claude_ai_AllTrails__search_trails_by_name`, `__get_trail_details` | — |
+
+The calendar guard treats any non-empty field with "attendee" or "guest" in
+its name as an invite: `attendees` / `attendeeEmails` on `create_event`,
+`addedAttendees` / `addedAttendeeEmails` on `update_event`.
+`guestPermissions` and `removedAttendeeEmails` invite nobody and pass.
+
+### Without the project config
+
+To use the server from another directory:
 
 ```sh
 claude mcp add date-planner \
@@ -41,14 +79,7 @@ claude mcp add date-planner \
      --package date-planner date-planner-mcp
 ```
 
-Then check it: ask for the `ping` tool, or run
-`uv run --package date-planner date-planner-mcp` and see it wait on stdio.
-
-The skill lives in this repo; point Claude Code at it with a symlink, e.g.
-
-```sh
-ln -s "$PWD/skills/date-planner" ~/.claude/skills/date-planner
-```
+The hooks only apply in sessions started in `apps/date-planner`.
 
 ### HTTP transport
 
@@ -63,29 +94,86 @@ not ready for public hosting.
 | Tool | What it's for |
 | --- | --- |
 | `list_couples`, `get_couple_profile`, `upsert_couple_profile` | The couple and their preferences |
-| `list_past_dates` | Recent dates with ratings, so ideas don't repeat |
-| `find_restaurant`, `upsert_restaurant` | The venue record |
-| `detect_booking_channel` | Read the venue's website: Resy / OpenTable / Tock / SevenRooms / phone / walk-in / unknown, with evidence and a confidence |
-| `build_booking_link` | A prefilled reservation URL for the online platforms |
-| `compute_booking_window` | When bookings open for a given date, in the venue's timezone |
-| `create_date`, `update_date`, `get_date`, `list_dates` | One date's progress |
+| `edit_couple_preferences` | Add or drop single likes, dislikes or dietary needs without resending the list |
+| `list_past_dates` | Recent dates with ratings and every stop, so no venue repeats |
+| `find_venue`, `upsert_venue` | Venues of any type: restaurant, trail, museum, bar, park, viewpoint |
+| `detect_booking_channel` | Read the venue's website: Resy / OpenTable / Tock / SevenRooms / ticketed / phone / walk-in / unknown, with evidence and a confidence |
+| `suggest_reservation_need` | The default need for a stop, from its venue's channel |
+| `build_booking_link` | A stop's reservation link: prefilled for the platforms, the venue's own page for ticketed |
+| `compute_booking_window` | When bookings open for a stop's time, in the venue's timezone |
+| `create_date`, `update_date`, `get_date`, `list_dates` | The day itself |
+| `add_stop`, `update_stop`, `reorder_stops`, `remove_stop` | Its stops |
+| `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
+| `estimate_travel` | One leg's time and distance, cached |
+| `plan_timeline` | Place every stop in the current order and report what's wrong |
 
-A date moves `proposed` → `tentative` → `booking_pending` → `confirmed` →
-`completed`, or `cancelled`; `update_date` refuses any other move.
+### Status
+
+A date's status is **derived** from its stops and stored after every stop
+change: any stop `needed` / `link_sent` / `reminder_set` makes it
+`booking_pending`; every stop `not_needed` or `confirmed`, with times, makes
+it `confirmed`; anything else is `planning`. `completed` and `cancelled` are
+set by hand (`update_date`) and stick.
+
+### The timeline
+
+`plan_timeline(date_id, buffer_min=10, apply=False)` never reorders. Fixed
+stops keep their time; sunset stops go at sunset + offset (default −30),
+rounded to 15 minutes; flexible stops walk backward from the first anchor and
+forward from each one after, each leg costing travel + buffer. It reports
+`leg_exceeds_max`, `overlap`, `outside_window`, `missing_duration`,
+`missing_coordinates` and `daylight` (a trail ending after sunset), and
+writes nothing unless `apply=True`.
+
+## Travel between stops
+
+`TRAVEL_PROVIDER` picks how legs are timed. **Nothing paid is needed.**
+
+| provider | how | notes |
+| --- | --- | --- |
+| `haversine` (default) | straight line × 1.4, at 40 km/h driving / 4.8 km/h walking | Offline, free. Pessimistic on fast roads: Solstice Canyon → Getty Villa comes out at 43 min padded, where OSRM routes it at 23.7 min (18.5 km) unpadded — checked once against the demo server on 2026-10-11. |
+| `osrm` | `GET {OSRM_URL}/route/v1/{profile}/…` | Self-hosted, below. |
+| `ors` | OpenRouteService directions with `ORS_API_KEY` | Free tier; hosted. |
+| `google` | — | Placeholder for traffic-aware times; raises `NotImplementedError`. |
+
+None of them know about traffic, so every driving time gets
+`TRAVEL_PADDING_PCT` (default 20%) on top. Results are cached per direction,
+mode and provider for 30 days in `travel_cache`, unpadded, so changing the
+padding takes effect immediately.
+
+### Road routing with OSRM
+
+```sh
+mkdir -p data/osrm && cd data/osrm
+curl -LO https://download.geofabrik.de/north-america/us/california/socal-latest.osm.pbf
+IMG=ghcr.io/project-osrm/osrm-backend:v5.27.1
+docker run --rm -t -v "$PWD:/data" $IMG osrm-extract -p /opt/car.lua /data/socal-latest.osm.pbf
+docker run --rm -t -v "$PWD:/data" $IMG osrm-partition /data/socal-latest.osrm
+docker run --rm -t -v "$PWD:/data" $IMG osrm-customize /data/socal-latest.osrm
+cd ../.. && docker compose --profile routing up -d osrm
+```
+
+Then `TRAVEL_PROVIDER=osrm` (and `OSRM_URL=http://localhost:5000`) in `.env`.
+The extract is around 500 MB and preparing it takes a while and several GB
+of RAM. Don't point `OSRM_URL` at the public demo server
+(`router.project-osrm.org`) other than for a one-off manual check: it's
+rate-limited and not for applications.
 
 ## Booking windows
 
 "One month ahead" is not "30 days ahead". `compute_booking_window` counts
 calendar months with `relativedelta`, so a 31 March dinner opens on 28 (or 29)
-February, and it combines the open time with the date in the restaurant's own
+February, and it combines the open time with the date in the venue's own
 timezone, so 10:00 local stays 10:00 across a DST change.
 
 ## Deep links are verified
 
-The four URL templates were written from the shape of each platform's public
-URLs, then checked by hand against live venues on 2026-10-10 — see the note
-above `links.VERIFIED` for which venue confirmed each one.
-`build_booking_link` reports `verified: true` for all four as of that date.
+The four platform URL templates were written from the shape of each
+platform's public URLs, then checked by hand against live venues on
+2026-10-10 — see the note above `links.VERIFIED` for which venue confirmed
+each one. `build_booking_link` reports `verified: true` for all four as of
+that date, and always `false` for a ticketed venue's own page, which doesn't
+prefill.
 
 If a platform changes its URL shape later, `scripts/verify_links.py` prints
 fresh links to re-check:
@@ -95,11 +183,18 @@ uv run --package date-planner python scripts/verify_links.py
 uv run --package date-planner python scripts/verify_links.py --from-db
 ```
 
-Open each link. A 404 or "not found" from the platform itself can mean the
-sample slug is stale or the venue isn't currently taking reservations there,
-rather than the template being wrong — check the platform's own error message
-before concluding the URL shape needs a fix. Update the date in
-`links.VERIFIED` once you've re-confirmed a template.
+A 404 or "not found" from the platform itself can mean the sample slug is
+stale or the venue isn't currently taking reservations there, rather than the
+template being wrong — check the platform's own error message first.
+
+## Migrating from v1
+
+`alembic upgrade head` runs migration `002`, which renames `restaurants` to
+`venues` (backfilling `venue_type=restaurant`), turns each v1 date into a day
+with one stop carrying its restaurant, times and booking fields, and maps the
+statuses across (see the migration's docstring). It's reversible:
+`alembic downgrade 001` puts the first stop back onto each date, and v1 data
+survives the round trip unchanged (`tests/test_migration.py`).
 
 ## Tests
 
@@ -117,9 +212,7 @@ uv run --package date-planner mypy
 uvx ruff check . && uvx ruff format --check .
 ```
 
-## Not in v1
+## Not in scope
 
 Automated booking of any kind (platform APIs, browser automation, phone
-calls), multi-user auth, and public hosting. The standalone agent is phase 2:
-`SKILL.md` becomes the system prompt, this server is reused as-is, and Google
-access moves to OAuth in the app.
+calls), paid routing APIs, multi-user auth, and public hosting.

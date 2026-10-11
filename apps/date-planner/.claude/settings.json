@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*([Cc]alendar).*__(delete_event|create_event|update_event)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && uv run python .claude/hooks/calendar_guard.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*([Gg]mail).*__(send_message|reply|forward)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"${CLAUDE_PROJECT_DIR}\" && uv run python .claude/hooks/deny.py 'Date Planner never sends email.'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -42,7 +42,7 @@ def localize(moment: datetime, tz: ZoneInfo) -> datetime:
     """Read `moment` in `tz`.
 
     A naive datetime is taken to be local time there — an agent saying
-    "7pm on the 24th" means 7pm at the restaurant, not 7pm UTC.
+    "7pm on the 24th" means 7pm at the venue, not 7pm UTC.
     """
     if moment.tzinfo is None:
         return moment.replace(tzinfo=tz)
@@ -50,8 +50,9 @@ def localize(moment: datetime, tz: ZoneInfo) -> datetime:
 
 
 def register_all(mcp: FastMCP) -> None:
-    from date_planner.tools import couples, dates, restaurants
+    from date_planner.tools import couples, dates, planning, venues
 
     couples.register(mcp)
-    restaurants.register(mcp)
+    venues.register(mcp)
     dates.register(mcp)
+    planning.register(mcp)

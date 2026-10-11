@@ -5,7 +5,12 @@ import uuid
 from fastmcp import FastMCP
 
 from date_planner.db import open_session, repo
-from date_planner.schemas import CoupleProfile, CoupleProfileIn, DateOut
+from date_planner.schemas import (
+    CoupleProfile,
+    CoupleProfileIn,
+    DateOut,
+    PreferenceEdit,
+)
 from date_planner.tools import as_tool_error
 
 
@@ -41,6 +46,9 @@ def register(mcp: FastMCP) -> None:
         With an `id`, only the fields present are written, so correcting one
         preference leaves the rest alone. Without one, a new couple is
         created and `name` is required.
+
+        A list field (`likes`, `dislikes`, `dietary`) replaces the stored
+        list whole. To add or drop one item, use `edit_couple_preferences`.
         """
         async with open_session() as session:
             return CoupleProfile.model_validate(
@@ -49,11 +57,28 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool
     @as_tool_error
-    async def list_past_dates(couple_id: uuid.UUID, limit: int = 20) -> list[DateOut]:
-        """Dates that have already started, most recent first, with ratings.
+    async def edit_couple_preferences(
+        couple_id: uuid.UUID, edit: PreferenceEdit
+    ) -> CoupleProfile:
+        """Add or drop single likes, dislikes or dietary needs.
 
-        Use it to avoid proposing a repeat, and to lean towards what they
-        rated highly. Cancelled dates aren't included — they never happened.
+        Use this, not `upsert_couple_profile`, when a preference changes in
+        conversation: the items not named are kept. Liking something takes
+        it off the dislikes and vice versa; matching ignores case.
+        """
+        async with open_session() as session:
+            return CoupleProfile.model_validate(
+                await repo.edit_preferences(session, couple_id, edit)
+            )
+
+    @mcp.tool
+    @as_tool_error
+    async def list_past_dates(couple_id: uuid.UUID, limit: int = 20) -> list[DateOut]:
+        """Dates up to today, most recent first, with ratings and their stops.
+
+        Use it to avoid proposing a repeat — a trail or museum as much as a
+        restaurant — and to lean towards what they rated highly. Cancelled
+        dates aren't included: they never happened.
         """
         async with open_session() as session:
             rows = await repo.list_past_dates(session, couple_id, limit=limit)
