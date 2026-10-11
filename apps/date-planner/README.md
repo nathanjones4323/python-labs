@@ -106,6 +106,7 @@ not ready for public hosting.
 | `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
 | `estimate_travel` | One leg's time and distance, cached |
 | `plan_timeline` | Place every stop in the current order and report what's wrong |
+| `render_date_preview` | Write the day as a phone-sized page: a map of the stops and the route, then the timeline with drives, sunset and bookings |
 
 ### Status
 
@@ -158,6 +159,31 @@ The extract is around 500 MB and preparing it takes a while and several GB
 of RAM. Don't point `OSRM_URL` at the public demo server
 (`router.project-osrm.org`) other than for a one-off manual check: it's
 rate-limited and not for applications.
+
+## The preview page
+
+`render_date_preview` writes `previews/<date id>/index.html` plus the map
+under it, and the skill publishes that folder with Claude Code's Artifact
+tool, so it opens as a card in the chat — on a phone, through Remote
+Control, too. The Artifact's link is saved on the date (`preview_url`) and
+every later change republishes to the same link.
+
+An Artifact page can't load map tiles from another host, so the server
+fetches the few tiles that cover the stops and stitches them into one
+image; the pins and the route are drawn by the page on top. The tiles are
+OpenStreetMap's own, which its tile policy allows for light use like this:
+a handful per date, an identifying User-Agent, two requests at a time,
+cached under `previews/.tiles` for 30 days, and the credit on the map. OSM
+has no dark style, so in dark mode the page darkens the light map itself.
+
+`DATE_PLANNER_MAP_TILES_LIGHT` / `_DARK` take any `{z}/{x}/{y}` template,
+256px or @2x (set `DATE_PLANNER_MAP_ATTRIBUTION` to match), or an empty
+light URL for no basemap: the pins then sit on a plain grid, still to
+scale. CARTO's basemaps now need an API key and answer without one with a
+placeholder tile, so they aren't the default.
+
+The session needs `Artifact` and `Read(./previews/**)` in its allowlist —
+see `.claude/settings.local.json` for Remote Control.
 
 ## Booking windows
 

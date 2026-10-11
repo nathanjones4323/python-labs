@@ -21,6 +21,7 @@ final tap or phone call is always the user's.
   - dates and stops: `create_date`, `update_date`, `get_date`, `list_dates`,
     `add_stop`, `update_stop`, `reorder_stops`, `remove_stop`
   - fitting the day: `get_sunset`, `estimate_travel`, `plan_timeline`
+  - showing it: `render_date_preview`
 - **Google Calendar** — `list_events`, `suggest_time`, `create_event`,
   `update_event`.
 - **Gmail** — `search_threads`, `get_thread`.
@@ -28,6 +29,8 @@ final tap or phone call is always the user's.
   `find_trails_near_location`.
 - **Web search** — what's on, what's new, a venue's coordinates or booking
   rule when its site didn't say.
+- **Artifact** — publishes the preview page so it opens as a card in the
+  chat.
 
 ## Before the first call
 
@@ -36,7 +39,7 @@ The MCP tools may be deferred. If they are, load every one you'll need in
 real schemas instead of guessing:
 
 ```
-select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,WebSearch
+select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,WebSearch
 ```
 
 ### Argument shapes
@@ -238,7 +241,33 @@ The call script covers: party size, date, preferred time, two backup times
 
 **Walk-in** — no booking; note "arrive early" in the event.
 
-### 8. Confirm
+### 8. Show the day
+
+Once the holds are up and the bookings handed over, show the plan as a page:
+a map with the stops numbered in order and the route between them, then
+each stop's time, the drive before it, where sunset falls, and its booking
+state. It's what the user looks at on the phone; the reply stays short.
+
+1. `render_date_preview(date_id)` writes the page and its map images.
+2. `Read` `page_path` and every file in `files` before publishing them.
+3. Publish with the **Artifact** tool:
+   - `preview_url` empty → `file_path=page_path`, `files` as returned,
+     `icon="map"`, a one-line `description` ("Malibu day, Oct 24: hike,
+     Getty Villa, sunset dinner"). Save the link it returns with
+     `update_date(preview_url=...)`.
+   - `preview_url` set → `Artifact` `action="read"` on it, then publish with
+     `url=preview_url`, `file_path` and `files` (no `icon`). Same link, new
+     content.
+4. In the reply, put the link first, then the timeline and the one next
+   action as usual.
+
+Render and republish after anything that changes what the page shows: a
+stop added, removed, swapped or retimed, a booking confirmed, the date
+moved. If `missing_coordinates` lists a stop, it's off the map: save the
+venue's lat/lng if you can. `basemap: false` means the map tiles couldn't be
+fetched; the pins still show, on a plain grid — say so in a few words.
+
+### 9. Confirm
 
 When the user says a stop is booked — or when asked to check — search Gmail:
 
@@ -251,6 +280,8 @@ the date **per stop** before believing a thread. Then for that stop: drop
 `[TENTATIVE]` from its event and `update_stop(booking_status="confirmed",
 confirmation_number=...)`. A phone booking usually has no email — ask for
 the details.
+
+Republish the preview (step 8) so the stop shows as booked.
 
 `get_date` shows the derived status. When it reaches **`confirmed`**, offer
 to drop `[TENTATIVE]` from every event and invite the partner to each —
@@ -269,9 +300,10 @@ and puts any stop that was booked (or had a link or reminder out) back to
   moved to the new day's `compute_booking_window`, not deleted;
 - tell the user which bookings to cancel, by confirmation number. Never
   cancel one yourself;
-- go through step 7 again for every stop that's `needed`.
+- go through step 7 again for every stop that's `needed`;
+- republish the preview (step 8).
 
-### 9. After the date
+### 10. After the date
 
 If asked, `update_date(status="completed", rating=...)`. That rating is what
 `list_past_dates` feeds back into step 1. If the rating is a **5** or a

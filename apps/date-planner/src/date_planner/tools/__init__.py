@@ -50,9 +50,10 @@ def localize(moment: datetime, tz: ZoneInfo) -> datetime:
 
 
 def register_all(mcp: FastMCP) -> None:
-    from date_planner.tools import couples, dates, planning, venues
+    from date_planner.tools import couples, dates, planning, preview, venues
 
     couples.register(mcp)
     venues.register(mcp)
     dates.register(mcp)
     planning.register(mcp)
+    preview.register(mcp)

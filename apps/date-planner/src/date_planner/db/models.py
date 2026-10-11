@@ -269,6 +269,8 @@ class PlannedDate(Base):
     )
     rating: Mapped[int | None] = mapped_column(SmallInteger)  # 1-5, after the date
     notes: Mapped[str | None] = mapped_column(Text)
+    # The Artifact the preview page was published to, to republish in place.
+    preview_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
