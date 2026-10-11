@@ -6,3 +6,6 @@
 # hooks, settings) and belongs in git. Personal overrides stay local.
 !/.claude/
 /.claude/settings.local.json
+
+# Date preview pages and the map tiles behind them.
+/previews/

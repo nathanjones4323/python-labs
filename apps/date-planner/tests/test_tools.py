@@ -58,7 +58,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 23
+    assert len(tools) == 24
     assert all(tool.description for tool in tools)
 
 

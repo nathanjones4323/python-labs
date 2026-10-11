@@ -5,6 +5,7 @@ environment-specific knobs land here.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -49,6 +50,23 @@ class Settings(BaseSettings):
     # and PCH on a weekend is not free-flow.
     travel_padding_pct: float = Field(default=20.0, alias="TRAVEL_PADDING_PCT")
     travel_cache_ttl_days: int = 30
+
+    # The date preview page; see `preview`. Pages are written under
+    # `preview_dir` (relative to where the server starts, which is the
+    # Claude Code project) so the session can publish them as an Artifact.
+    # The basemap is OpenStreetMap's own tiles: free for light use like this
+    # (a handful of tiles per date, cached) with an identifying User-Agent
+    # and the credit on the map. OSM has no dark style; without
+    # `map_tiles_dark` the page darkens the light map itself. Any
+    # {z}/{x}/{y} template works, 256px or @2x. An empty light URL turns the
+    # basemap off and leaves the pins on a plain grid.
+    preview_dir: Path = Path("previews")
+    map_tiles_light: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    map_tiles_dark: str = ""
+    map_attribution: str = "© OpenStreetMap contributors"
+    # Tile servers ask for an honest client name, unlike restaurant sites.
+    map_user_agent: str = "date-planner/0.1 (personal date preview)"
+    map_tile_ttl_days: int = 30
 
     # `--http` only. Without a token the HTTP transport refuses to start, so
     # a stray `--http` can't expose the database unauthenticated.

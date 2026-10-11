@@ -244,6 +244,8 @@ class DateOut(Out):
     status: DateStatus
     rating: int | None
     notes: str | None
+    # The published preview page; republish to it after a change.
+    preview_url: str | None
     stops: list[StopOut]
 
 
@@ -321,6 +323,8 @@ class DatePatch(BaseModel):
     end_before: time | None = None
     rating: Rating | None = None
     notes: str | None = None
+    # The Artifact link the preview page was published to.
+    preview_url: str | None = None
 
 
 # --- planning --------------------------------------------------------------
@@ -368,6 +372,23 @@ class ViolationOut(BaseModel):
     type: str
     message: str
     stop_id: uuid.UUID | None = None
+
+
+class PreviewOut(BaseModel):
+    """A date's preview page, written to disk for the session to publish."""
+
+    # Publish this with the Artifact tool as `file_path`...
+    page_path: str
+    # ...and these as its `files` ({published path: local path}): the
+    # basemap, one image per theme. Empty when the tiles couldn't be had.
+    files: dict[str, str]
+    # Set once the page has been published: pass it as the Artifact `url`.
+    preview_url: str | None
+    stops_on_map: int
+    # Stops left off the map: no venue yet, or a venue with no lat/lng.
+    missing_coordinates: list[str]
+    # False when the tiles couldn't be fetched; the pins sit on a plain grid.
+    basemap: bool
 
 
 class TimelineOut(BaseModel):

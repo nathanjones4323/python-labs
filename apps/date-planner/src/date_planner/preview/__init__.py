@@ -1,0 +1,145 @@
+"""A phone-sized preview of a planned date, for publishing as an Artifact.
+
+`write` turns a date into a folder of files — `index.html` plus one basemap
+image per theme — under `preview_dir/<date id>/`. The session publishes that
+folder with the Artifact tool; this server never publishes anything itself.
+"""
+
+from dataclasses import dataclass
+from datetime import datetime, time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from date_planner.config import Settings
+from date_planner.db.models import PlannedDate
+from date_planner.planning import sunset
+from date_planner.preview import basemap, page
+
+MAP_WIDTH = 400
+MAP_HEIGHT = 260
+
+
+@dataclass(frozen=True)
+class Written:
+    page: Path
+    # Published path -> local file, for the Artifact tool's `files`.
+    files: dict[str, Path]
+    stops_on_map: int
+    missing_coordinates: list[str]
+    basemap: bool
+
+
+async def _basemap(
+    template: str,
+    frame: basemap.Frame,
+    settings: Settings,
+    client: httpx.AsyncClient,
+) -> bytes | None:
+    if not template:
+        return None
+    cache = basemap.TileCache(
+        settings.preview_dir.resolve() / ".tiles", template, settings.map_tile_ttl_days
+    )
+    return await basemap.render(frame, cache, client)
+
+
+async def write(
+    planned: PlannedDate,
+    tz: ZoneInfo,
+    settings: Settings,
+    client: httpx.AsyncClient,
+) -> Written:
+    """Render `planned` (stops and venues loaded) into its preview folder."""
+    stops = list(planned.stops)
+    located = [
+        (s.venue.lat, s.venue.lng)
+        for s in stops
+        if s.venue is not None and s.venue.lat is not None and s.venue.lng is not None
+    ]
+    frame = basemap.fit(located, MAP_WIDTH, MAP_HEIGHT) if located else None
+
+    light = dark = None
+    if frame is not None:
+        light = await _basemap(settings.map_tiles_light, frame, settings, client)
+        if light is not None:
+            dark = await _basemap(settings.map_tiles_dark, frame, settings, client)
+
+    day_sunset = (
+        sunset.compute(located[0][0], located[0][1], planned.day, tz).sunset
+        if located
+        else None
+    )
+
+    preview_stops = []
+    for number, stop in enumerate(stops, start=1):
+        venue = stop.venue
+        place = None
+        if (
+            frame is not None
+            and venue is not None
+            and venue.lat is not None
+            and venue.lng is not None
+        ):
+            place = frame.place(venue.lat, venue.lng)
+        preview_stops.append(
+            page.PreviewStop(
+                number=number,
+                title=stop.title,
+                venue_name=venue.name if venue else None,
+                venue_type=venue.venue_type if venue else None,
+                address=venue.address if venue else None,
+                phone=venue.phone if venue else None,
+                lat=venue.lat if venue else None,
+                lng=venue.lng if venue else None,
+                start_at=stop.start_at and stop.start_at.astimezone(tz),
+                end_at=stop.end_at and stop.end_at.astimezone(tz),
+                travel_min_from_prev=stop.travel_min_from_prev,
+                booking_status=stop.booking_status,
+                booking_url=stop.booking_url,
+                confirmation_number=stop.confirmation_number,
+                on_calendar=stop.calendar_event_id is not None,
+                place=place,
+            )
+        )
+
+    noon = datetime.combine(planned.day, time(12), tzinfo=tz)
+    html = page.render(
+        page.PreviewData(
+            title=planned.title,
+            day=planned.day,
+            tz_label=f"{noon.tzname()} ({tz.key})",
+            status=planned.status,
+            max_leg_minutes=planned.max_leg_minutes,
+            sunset=day_sunset,
+            stops=preview_stops,
+            map_credit=settings.map_attribution,
+            map_width=MAP_WIDTH,
+            map_height=MAP_HEIGHT,
+            has_light_map=light is not None,
+            has_dark_map=dark is not None,
+        )
+    )
+
+    folder = settings.preview_dir.resolve() / str(planned.id)
+    folder.mkdir(parents=True, exist_ok=True)
+    index = folder / "index.html"
+    index.write_text(html, encoding="utf-8")
+    files: dict[str, Path] = {}
+    for name, image in ((page.LIGHT_MAP, light), (page.DARK_MAP, dark)):
+        path = folder / name
+        if image is not None:
+            path.write_bytes(image)
+            files[name] = path
+        else:
+            # A stale picture from an earlier render would show the old area.
+            path.unlink(missing_ok=True)
+
+    return Written(
+        page=index,
+        files=files,
+        stops_on_map=sum(1 for s in preview_stops if s.place is not None),
+        missing_coordinates=[s.title for s in preview_stops if s.place is None],
+        basemap=light is not None,
+    )
