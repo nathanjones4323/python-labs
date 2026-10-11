@@ -29,6 +29,58 @@ final tap or phone call is always the user's.
 - **Web search** — what's on, what's new, a venue's coordinates or booking
   rule when its site didn't say.
 
+## Before the first call
+
+The MCP tools may be deferred. If they are, load every one you'll need in
+**one** `ToolSearch` call before calling any of them, so you work from their
+real schemas instead of guessing:
+
+```
+select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,WebSearch
+```
+
+### Argument shapes
+
+| tool | arguments |
+| --- | --- |
+| `upsert_venue` | `venue={...}` — a new venue needs `name`, `city` and `venue_type`; put `lat`/`lng`, `address`, `phone`, `website` here |
+| `add_stop` | `date_id`, `stop={title, kind, venue_id?, start_at?, est_duration_min?, anchor?, reservation_need?, booking_status?}` |
+| `update_stop` | `stop_id`, `patch={...}` — only the fields to change |
+| `update_date` | `date_id`, `patch={...}` |
+| `upsert_couple_profile` | `profile={...}` |
+
+- Coordinates, address and website belong to the **venue**, never the stop.
+  Create the venue first, then add the stop with its `venue_id`.
+- Numbers are numbers: `lat: 34.48`, not `"34.48"`.
+- `venue_type`: `restaurant`, `trail`, `museum`, `bar`, `park`, `viewpoint`,
+  `other` (a swimming hole or beach is `park` or `other`).
+- `kind`: `activity`, `meal`, `ticketed`.
+- `anchor`: `none` (plan_timeline places it), `fixed` (keeps `start_at`),
+  `sunset`. There is no `flexible`; that's `none`.
+- `reservation_need`: `required`, `recommended`, `none`, `unknown`.
+- `booking_status`: `not_needed`, `needed`, `link_sent`, `reminder_set`,
+  `confirmed`, `cancelled`.
+
+## How to work
+
+The person may be on a phone. **Get as far as you can in one turn** and keep
+round trips for real decisions:
+
+- **Act, then show.** When the request is specific enough, pick the
+  best-fitting venue yourself, apply the timeline, and put up the
+  `[TENTATIVE]` holds. Then show the plan with the alternatives in one line
+  ("or Suzanne's / Olivella — say the word and I'll swap"). Holds have no
+  guests and can be retitled, so they're safe to place unasked.
+- **Assume and say so** rather than asking: "next Thursday = Oct 15",
+  "dinner at 6:45 to give you time to change". Ask only when you're blocked:
+  a booked stop's time or confirmation you can't infer, no calendar on the
+  profile, or two readings of the request that lead to different days.
+- **Ask everything at once.** If you must ask, put every question in one
+  message.
+- **Short replies.** A timeline table, the one next action (call this
+  number, tap this link), and at most three one-line caveats. No long
+  "couldn't confirm" lists.
+
 ## Workflow
 
 ### 1. Load context
@@ -78,7 +130,8 @@ sunset dinner somewhere"): one `add_stop` per item, in their order.
 
 **The user wants ideas**: propose 2–4 stops that work as a sequence — a
 shape for the day, not a list of unrelated places. Use web search for what's
-on and seasonal. Say briefly why it suits them. Add stops once they agree.
+on and seasonal. Say briefly why it suits them. This is the one place to
+stop and wait: add the stops once they agree.
 
 Kinds: `activity`, `meal`, `ticketed` (timed entry). Every venue needs
 `venue_type` and, for travel and sunset, `lat`/`lng` — for a trail, the
@@ -97,14 +150,20 @@ Every stop needs `est_duration_min` before it can be placed:
 
 ### 4. Choose open venues
 
-For each stop without a venue: find candidates, `upsert_venue` them with
-coordinates, and keep only those within `max_leg_minutes` of the
+For each stop without a venue: find candidates and `upsert_venue` them with
+coordinates **and their website and phone** (web search for them if you
+don't have them). Keep only those within `max_leg_minutes` of the
 neighbouring stops (`estimate_travel` both ways if the stop is in the
-middle). For each survivor run `detect_booking_channel(venue_id)`, then add
-it to the stop and run `suggest_reservation_need(stop_id)`. Present **2–3
-options** with drive time and booking path ("Nobu Malibu — 25 min from the
-Getty, phone bookings, opens a month ahead at 10am"). The user picks; set it
-with `update_stop(venue_id=..., reservation_need=...)`.
+middle). `detect_booking_channel` reads the venue's website, so only run it
+once the website is saved; if it fails, say the booking method is unknown
+and fall back to the phone number rather than retrying.
+
+Pick the best fit for the couple and add it to the stop, then run
+`suggest_reservation_need(stop_id)`. Mention one or two runners-up in a
+single line with their drive time and booking path ("or Nobu Malibu — 25
+min, phone bookings, opens a month ahead at 10am"). Only stop and ask for a
+pick when the options are genuinely different kinds of evening and nothing
+in the request or profile decides between them.
 
 Reservation need: take the suggestion; raise it if you know better, never
 lower it without a reason. **Treat `recommended` as "book it" for
@@ -127,9 +186,15 @@ It never reorders; it places and reports violations:
 | `daylight` | move the trail earlier — never leave a hike ending after sunset |
 | `missing_duration` / `missing_coordinates` | fill them in (steps 2–3) |
 
-Iterate until there are none. Then show the timeline: each stop's start and
-end, each leg's drive time, sunset, and what "nearby" was set to. On the
-user's approval, `plan_timeline(date_id, apply=True)`.
+`plan_timeline` starts a flexible stop as soon as the previous leg ends. A
+meal after a swim, a hike or anything else that needs a change of clothes
+wants **20–30 minutes** more: give it a `fixed` `start_at` with that cushion
+instead.
+
+Iterate until there are none, then `plan_timeline(date_id, apply=True)` and
+go straight on to the calendar. Show the timeline in the same reply: each
+stop's start and end, each leg's drive time, sunset, and what "nearby" was
+set to. Changes after that are a quick update, not a reason to wait first.
 
 ### 6. Calendar
 
@@ -239,4 +304,5 @@ The date's status is worked out from its stops; you never set it except to
   it could be read two ways.
 - **Say when something is a guess** — a low detection confidence, an
   unverified link, an assumed window-open time, a straight-line travel
-  estimate, a duration you made up.
+  estimate, a duration you made up. A few words beside the number is
+  enough ("~17 min, straight-line").
