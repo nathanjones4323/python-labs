@@ -1,0 +1,33 @@
+# A Postgres for local development and the test suite.
+#
+#   docker compose up -d        # from apps/date-planner
+#   docker compose down -v      # stop and wipe it
+#
+# Port 5434 so it collides with neither the meal-planner stack (5432) nor
+# tee-time-booker (5433). The URLs to put in .env:
+#   DATABASE_URL=postgresql://postgres:postgres@localhost:5434/date_planner
+#   DATE_PLANNER_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5434/date_planner_test
+
+name: date-planner
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: date_planner
+    ports:
+      - "${DATE_PLANNER_DB_PORT:-5434}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      # Creates the test database alongside the dev one on first start.
+      - ./scripts/create-test-db.sh:/docker-entrypoint-initdb.d/create-test-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d date_planner"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
