@@ -96,6 +96,7 @@ async def write(
                 start_at=stop.start_at and stop.start_at.astimezone(tz),
                 end_at=stop.end_at and stop.end_at.astimezone(tz),
                 travel_min_from_prev=stop.travel_min_from_prev,
+                travel_mode=stop.travel_mode,
                 booking_status=stop.booking_status,
                 booking_url=stop.booking_url,
                 confirmation_number=stop.confirmation_number,

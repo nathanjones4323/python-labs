@@ -7,13 +7,13 @@ Calendar connector; what lives here are their ids, one per stop.
 """
 
 import uuid
-from datetime import date, time
+from datetime import date
 
 from fastmcp import FastMCP
 
 from date_planner.db import open_session, repo
 from date_planner.db.models import DateStatus
-from date_planner.schemas import DateOut, DatePatch, StopIn, StopPatch
+from date_planner.schemas import DateOut, DatePatch, LocalTime, StopIn, StopPatch
 from date_planner.tools import as_tool_error, localize
 
 
@@ -25,8 +25,8 @@ def register(mcp: FastMCP) -> None:
         title: str,
         day: date,
         max_leg_minutes: int = 25,
-        start_after: time | None = None,
-        end_before: time | None = None,
+        start_after: LocalTime | None = None,
+        end_before: LocalTime | None = None,
         notes: str | None = None,
     ) -> DateOut:
         """Start a date: a day, with no stops yet. It starts `planning`.
