@@ -467,6 +467,7 @@ async def test_a_new_need_moves_a_defaulted_booking_status(
         planned = await repo.update_stop(
             session, hike.id, StopPatch(reservation_need=ReservationNeed.NONE)
         )
+        hike = planned.stops[0]
         assert hike.booking_status is StopBookingStatus.NOT_NEEDED
 
         # A status somebody set isn't a default, so it stays.
@@ -561,7 +562,7 @@ async def test_a_stop_change_costs_the_same_queries_however_many_stops(
                     session, date_id, _stop(f"Stop {n}", venue_id=seeded["nobu_id"])
                 )
             statements: list[str] = []
-            engine = session.bind.sync_engine  # type: ignore[union-attr]
+            engine = session.bind.sync_engine
 
             def count(*args: Any) -> None:
                 statements.append(args[2])
