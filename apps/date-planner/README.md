@@ -37,6 +37,13 @@ from 10:00 local). Set `DATE_PLANNER_SEED_MEMBER_EMAILS` (comma-separated) and
 `DATE_PLANNER_SHARED_CALENDAR_ID` in `.env` before seeding; a reseed with them
 unset overwrites the stored values.
 
+To wipe the local data and seed again (schema kept, localhost only):
+
+```sh
+uv run --package date-planner date-planner-reset            # wipe + seed
+uv run --package date-planner date-planner-reset --no-seed  # wipe only
+```
+
 ## Claude Code project
 
 Open Claude Code **in `apps/date-planner`** — that's the project root the
