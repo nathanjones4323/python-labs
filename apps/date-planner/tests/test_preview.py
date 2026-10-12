@@ -425,7 +425,7 @@ def test_the_page_reads_as_the_day_in_order() -> None:
     assert positions == sorted(positions)
     assert html.index("Sunset 6:10 PM") < html.index("6:30 PM")
     assert "Booked" in html and "#GV-77" in html
-    assert "Call to book" in html and "+13103179140" in html
+    assert "Call to book" in html and "(310) 317-9140" in html
     # Two pins and a route; the third stop is named as off the map.
     assert html.count('class="pin"') == 2
     assert "<polyline" in html
@@ -453,6 +453,14 @@ def test_a_phone_stop_still_needed_offers_a_call() -> None:
 def test_a_phone_number_with_a_plus_keeps_it_in_the_tel_link() -> None:
     assert page.tel_link("+1 (310) 317-9140") == "tel:+13103179140"
     assert page.tel_link("call us") is None
+
+
+def test_a_us_number_reads_as_people_write_it() -> None:
+    assert page.phone_label("+13103179140") == "(310) 317-9140"
+    assert page.phone_label("805.965.6074") == "(805) 965-6074"
+    # Anything else is shown as it was saved.
+    assert page.phone_label("+44 20 7946 0958") == "+44 20 7946 0958"
+    assert page.phone_label("ext. 12") == "ext. 12"
 
 
 def test_a_phone_stop_with_no_number_stays_plain() -> None:
@@ -673,6 +681,17 @@ def test_the_picture_stays_as_the_fallback() -> None:
     assert 'src="map-light.jpg"' in html
     assert html.count('class="pin"') == 3
     assert html.index('class="pin"') < html.index('id="live-map"')
+
+
+def test_the_cards_pin_buttons_work_though_the_map_script_runs_first() -> None:
+    html = page.render(_griffith_data())
+    # The map's script runs before the cards below it are parsed...
+    assert html.index(page.LIVE_JS.strip()[:40]) < html.index('data-locate="1"')
+    # ...so it can't find their buttons then: it listens on the document.
+    assert 'document.addEventListener("click"' in page.LIVE_JS
+    assert '.closest("[data-locate]")' in page.LIVE_JS
+    per_button = 'querySelectorAll("[data-locate]")) {\n      button.addEventListener'
+    assert per_button not in page.LIVE_JS
 
 
 def test_stop_titles_cannot_close_the_map_script() -> None:
@@ -923,6 +942,9 @@ async def test_the_tool_writes_the_page_and_keeps_the_link(
         assert out.preview_url is None
         html = Path(out.page_path).read_text()
         assert "Solstice Canyon" in html and "Getty Villa" in html
+        # The trail's AllTrails page, saved on the venue, becomes a button.
+        assert "alltrails.com/trail/us/california/solstice-canyon-trail-2" in html
+        assert ">AllTrails</a>" in html
 
         link = "https://claude.ai/artifact/abc123"
         updated = await call(
@@ -932,3 +954,94 @@ async def test_the_tool_writes_the_page_and_keeps_the_link(
         again = await call("render_date_preview", date_id=str(planned.id))
         assert again.preview_url == link
     get_settings.cache_clear()
+
+
+# --- AllTrails ---------------------------------------------------------------
+
+
+TRAIL_PAGE = "https://www.alltrails.com/trail/us/california/solstice-canyon-trail-2"
+
+
+def test_a_trail_links_to_its_alltrails_page() -> None:
+    trail = _stop(
+        1,
+        venue_type=VenueType.TRAIL,
+        website="https://www.parks.ca.gov/?page_id=623",
+        external_url=TRAIL_PAGE,
+    )
+    # On the card, beside Apple Maps...
+    card = page.render(_data([trail])).split('<ol class="day">')[1]
+    assert f'href="{TRAIL_PAGE}" target="_blank" rel="noopener">AllTrails</a>' in card
+    # ...and in the pin's popup, in place of the park's homepage.
+    popup = page._popup(trail)
+    assert ">AllTrails</a>" in popup
+    assert ">Website</a>" not in popup and "parks.ca.gov" not in popup
+
+
+def test_only_an_alltrails_page_gets_the_alltrails_button() -> None:
+    assert page.alltrails_link(_stop(1, external_url="alltrails.com/trail/x")) == (
+        "https://alltrails.com/trail/x"
+    )
+    for url in (
+        None,
+        "https://example.com/trail/x",
+        "https://alltrails.com.evil.example/x",
+        "javascript:alert(1)",
+    ):
+        assert page.alltrails_link(_stop(1, external_url=url)) is None
+    # Without one, the popup keeps the venue's own site.
+    popup = page._popup(_stop(1, website="getty.edu"))
+    assert ">Website</a>" in popup and ">AllTrails</a>" not in popup
+
+
+def _anchors(html: str) -> list[tuple[str, str]]:
+    """Every link's href and visible text, in order."""
+    return [
+        (href, re.sub(r"<[^>]+>", "", text))
+        for href, text in re.findall(r'<a [^>]*href="([^"]*)"[^>]*>(.*?)</a>', html)
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # A trail: Apple Maps and AllTrails, never the park's site.
+        {
+            "venue_type": VenueType.TRAIL,
+            "website": "https://www.nps.gov/samo/",
+            "external_url": TRAIL_PAGE,
+        },
+        # A walk-in bar: Apple Maps and its site.
+        {"venue_type": VenueType.BAR, "website": "https://rosenthalestatewines.com"},
+        # A phone restaurant still to book: the call, Apple Maps, its site.
+        {
+            "venue_type": VenueType.RESTAURANT,
+            "website": "https://www.noburestaurants.com/malibu/home",
+            "phone": "+13103179140",
+            "channel": BookingChannel.PHONE,
+            "booking_status": StopBookingStatus.NEEDED,
+        },
+        # Ticketed and still to book: Book now, Apple Maps, its site.
+        {
+            "venue_type": VenueType.MUSEUM,
+            "website": "https://www.getty.edu/visit/villa/",
+            "book_url": "https://tickets.getty.edu/online/article/villa",
+            "booking_status": StopBookingStatus.NEEDED,
+        },
+        # Booked: the chip is a label, not a link.
+        {
+            "venue_type": VenueType.RESTAURANT,
+            "website": "https://www.malibu-farm.com",
+            "booking_status": StopBookingStatus.CONFIRMED,
+            "confirmation_number": "MF-1",
+        },
+    ],
+)
+def test_the_card_and_the_pin_offer_the_same_actions(fields: dict[str, Any]) -> None:
+    stop = _stop(1, lat=SOLSTICE[0], lng=SOLSTICE[1], place=(0.5, 0.5), **fields)
+    card = page._stop(stop, live=True)
+    popup = page._popup(stop)
+    assert _anchors(card) == _anchors(popup)
+    assert _anchors(card)  # never an empty row
+    booking = page._booking(stop)
+    assert booking in card and booking in popup

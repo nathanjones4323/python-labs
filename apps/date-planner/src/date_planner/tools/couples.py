@@ -12,7 +12,6 @@ from date_planner.schemas import (
     CoupleProfileIn,
     DateOut,
     MemberIn,
-    MemberProfile,
     PreferenceEdit,
 )
 from date_planner.tools import as_tool_error
@@ -32,40 +31,20 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool
     @as_tool_error
     async def list_couples() -> list[CoupleProfile]:
-        """Every couple profile on file, oldest first.
+        """Every couple profile on file, oldest first. There is usually
+        exactly one. Read it before proposing anything.
 
-        There is usually exactly one; start here to get its id.
+        Each profile has the budget and travel limit, each member's likes,
+        dislikes and dietary needs (use those when a date is one person's
+        pick), and `shared` — the pooled taste to plan a date for both by
+        (every like nobody vetoes, every dislike and dietary need of either).
+
+        `next_turn` names the member planned for least recently. It's only a
+        suggestion: plan for both unless the user says whose turn it is.
         """
         async with open_session() as session:
             rows = await repo.list_couples(session)
             return [await couple_profile(session, row) for row in rows]
-
-    @mcp.tool
-    @as_tool_error
-    async def get_couple_profile(couple_id: uuid.UUID) -> CoupleProfile:
-        """The couple: budget and travel limit, each member's likes, dislikes
-        and dietary needs, and `shared` — the pooled taste to plan a date for
-        both by (every like nobody vetoes, every dislike and dietary need of
-        either).
-
-        `next_turn` names the member planned for least recently. It's only a
-        suggestion: plan for both unless the user says whose turn it is.
-
-        Read this before proposing anything.
-        """
-        async with open_session() as session:
-            return await couple_profile(
-                session, await repo.get_couple(session, couple_id)
-            )
-
-    @mcp.tool
-    @as_tool_error
-    async def list_members(couple_id: uuid.UUID) -> list[MemberProfile]:
-        """The couple's members with their own likes, dislikes and dietary
-        needs. Use these, not `shared`, when a date is one person's pick."""
-        async with open_session() as session:
-            couple = await repo.get_couple(session, couple_id)
-            return [MemberProfile.model_validate(m) for m in couple.members]
 
     @mcp.tool
     @as_tool_error

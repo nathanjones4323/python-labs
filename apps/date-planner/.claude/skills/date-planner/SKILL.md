@@ -14,9 +14,8 @@ final tap or phone call is always the user's.
 ## Tools you rely on
 
 - **date-planner MCP server**
-  - couple: `list_couples`, `get_couple_profile`, `list_members`,
-    `upsert_couple_profile`, `upsert_member`, `edit_member_preferences`,
-    `list_past_dates`
+  - couple: `list_couples`, `upsert_couple_profile`, `upsert_member`,
+    `edit_member_preferences`, `list_past_dates`
   - venues: `find_venue`, `upsert_venue`, `detect_booking_channel`,
     `suggest_reservation_need`, `build_booking_link`, `compute_booking_window`,
     `find_google_place`, `resy_widget_args`
@@ -30,8 +29,10 @@ final tap or phone call is always the user's.
 - **Resy** — `display_resy_restaurant_availabilities_app`: shows a Resy
   restaurant's live availability in the chat, where the user picks a time
   and finishes on Resy. The way to hand over a Resy booking (step 7).
-- **AllTrails** (if connected) — `search_trails_by_name`, `get_trail_details`,
-  `find_trails_near_location`.
+- **AllTrails** — `search_trails_by_name`, `find_trails_near_location`,
+  `get_trail_details`. **Every hike goes through AllTrails** (step 3): it
+  gives the trailhead, the time to complete, and the page the preview's
+  AllTrails button opens.
 - **Web search** — what's on, what's new, a venue's coordinates or booking
   rule when its site didn't say.
 - **Artifact** — publishes the preview page so it opens as a card in the
@@ -44,14 +45,20 @@ The MCP tools may be deferred. If they are, load every one you'll need in
 real schemas instead of guessing:
 
 ```
-select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__list_members,mcp__date-planner__edit_member_preferences,mcp__date-planner__upsert_member,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,WebSearch
+select:mcp__date-planner__list_couples,mcp__date-planner__list_past_dates,mcp__date-planner__edit_member_preferences,mcp__date-planner__upsert_member,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__suggest_time,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gmail__get_thread,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,mcp__claude_ai_AllTrails__search_trails_by_name,mcp__claude_ai_AllTrails__find_trails_near_location,mcp__claude_ai_AllTrails__get_trail_details,WebSearch
 ```
+
+The connectors (Google Calendar, Gmail, Resy, AllTrails) are claude.ai
+connectors. If one of them doesn't come back from that call, search for it
+by keyword (`+AllTrails trail`, `+Calendar events`) before concluding it
+isn't connected — and say so to the user rather than silently working
+around it.
 
 ### Argument shapes
 
 | tool | arguments |
 | --- | --- |
-| `upsert_venue` | `venue={...}` — a new venue needs `name`, `city` and `venue_type`; put `lat`/`lng`, `address`, `phone`, `website` here |
+| `upsert_venue` | `venue={...}` — a new venue needs `name`, `city` and `venue_type`; put `lat`/`lng`, `address`, `phone`, `website` here, and a trail's AllTrails page in `external_url` |
 | `add_stop` | `date_id`, `stop={title, kind, venue_id?, start_at?, est_duration_min?, anchor?, reservation_need?, booking_status?}` |
 | `update_stop` | `stop_id`, `patch={...}` — only the fields to change |
 | `update_date` | `date_id`, `patch={...}` |
@@ -99,7 +106,7 @@ round trips for real decisions:
 
 ### 1. Load context
 
-`list_couples` → `get_couple_profile` and `list_past_dates`. If there's no
+`list_couples` (it returns the whole profile) and `list_past_dates`. If there's no
 profile, ask for the basics (home area, budget, travel limit, shared calendar
 id) and save them with `upsert_couple_profile`; then add each person with
 `upsert_member` (name, email) and ask each for their own likes, dislikes and
@@ -109,7 +116,7 @@ dietary needs. Everything you say from here uses the couple's timezone.
 plan by: every like nobody vetoes, and every dislike and dietary need of
 *either* person. Only plan around one person when the user says so — "it's my
 turn", "this one's for Sam". Then pass `planned_for` (their name or email) to
-`create_date`, lean on that member's own likes (from `list_members`), and
+`create_date`, lean on that member's own likes (under `members` in the profile), and
 keep honouring both people's dislikes and dietary needs. `next_turn` names
 whoever was planned for least recently: at most mention it in one line
 ("Sam's due a turn — want this one to be theirs?") and carry on as a date for
@@ -192,9 +199,18 @@ the venue's own site, AllTrails); never invent them.
 
 Every stop needs `est_duration_min` before it can be placed:
 
-- **Trails**: AllTrails `get_trail_details` → its average time to complete
-  (use the top of the range for a relaxed pace), plus **15 minutes** for
-  parking and getting to the trailhead.
+- **Trails**: always look the trail up on AllTrails, even when you already
+  know it or the user named it — `search_trails_by_name` (or
+  `find_trails_near_location` when choosing one), then `get_trail_details`.
+  Its average time to complete (use the top of the range for a relaxed
+  pace), plus **15 minutes** for parking and getting to the trailhead, is
+  the duration. Save the trail with `upsert_venue`: `venue_type="trail"`,
+  the trailhead's `lat`/`lng`, and the AllTrails page in `external_url` —
+  that's what puts an AllTrails button (which opens the app on a phone) on
+  the preview. A park or state-park site goes in `website` at most; it is
+  never a substitute for the AllTrails page. Only if the AllTrails tools
+  aren't connected, fall back to web search and tell the user the preview
+  won't have an AllTrails link.
 - Otherwise the venue's `default_duration_min`, or ask.
 - Typical: museum 2 h, dinner 1.5 h, drinks 1 h, viewpoint 30 min.
 
