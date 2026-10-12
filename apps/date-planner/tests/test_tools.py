@@ -267,6 +267,33 @@ async def test_find_google_place_saves_the_match_once(
         assert row.google_place_data == BESTIA_PLACE
 
 
+async def test_choosing_another_place_drops_the_saved_response(
+    db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "k3y")
+    with respx.mock() as router:
+        router.post(PLACES_URL).respond(200, json={"places": [BESTIA_PLACE]})
+        await call("find_google_place", venue_id=str(seeded["bestia_id"]))
+
+    # Same id again: the response still describes it.
+    await call(
+        "upsert_venue",
+        venue={"id": str(seeded["bestia_id"]), "google_place_id": "ChIJ-bestia"},
+    )
+    async with db() as session:
+        row = await repo.get_venue(session, seeded["bestia_id"])
+        assert row.google_place_data == BESTIA_PLACE
+
+    await call(
+        "upsert_venue",
+        venue={"id": str(seeded["bestia_id"]), "google_place_id": "ChIJ-other"},
+    )
+    async with db() as session:
+        row = await repo.get_venue(session, seeded["bestia_id"])
+        assert row.google_place_id == "ChIJ-other"
+        assert row.google_place_data is None
+
+
 async def test_find_google_place_saves_nothing_without_a_match(
     db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

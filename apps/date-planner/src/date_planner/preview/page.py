@@ -344,7 +344,11 @@ def _popup(stop: PreviewStop) -> str:
     return (
         # The popup sits outside the card, so it carries the type colour too.
         f'<div class="pop" style="--t:{style.color}">'
-        + (f'<div class="kind">{style.icon}{_e(style.label)}</div>' if style.label else "")
+        + (
+            f'<div class="kind">{style.icon}{_e(style.label)}</div>'
+            if style.label
+            else ""
+        )
         + f"<strong>{stop.number}. {_e(stop.title)}</strong>"
         + (f"<span>{_e(when)}</span>" if when else "")
         + (f'<span class="addr">{_e(stop.address)}</span>' if stop.address else "")
