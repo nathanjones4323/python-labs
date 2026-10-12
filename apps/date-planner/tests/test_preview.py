@@ -16,6 +16,7 @@ import httpx
 import pytest
 import respx
 from date_planner import preview
+from date_planner.booking.channels import BookingChannel
 from date_planner.config import Settings, get_settings
 from date_planner.db.models import (
     Anchor,
@@ -437,6 +438,49 @@ def test_the_page_reads_as_the_day_in_order() -> None:
     assert "google.com/maps" not in html
 
 
+def _needed(**fields: Any) -> str:
+    stop = _stop(1, booking_status=StopBookingStatus.NEEDED, **fields)
+    return page._booking(stop)
+
+
+def test_a_phone_stop_still_needed_offers_a_call() -> None:
+    chip = _needed(channel=BookingChannel.PHONE, phone="(805) 965-6074")
+    assert 'href="tel:8059656074"' in chip
+    assert "Call to book" in chip and "(805) 965-6074" in chip
+    assert "Needs booking" not in chip
+
+
+def test_a_phone_number_with_a_plus_keeps_it_in_the_tel_link() -> None:
+    assert page.tel_link("+1 (310) 317-9140") == "tel:+13103179140"
+    assert page.tel_link("call us") is None
+
+
+def test_a_phone_stop_with_no_number_stays_plain() -> None:
+    chip = _needed(channel=BookingChannel.PHONE)
+    assert "Needs booking" in chip and "href" not in chip
+
+
+def test_an_online_stop_still_needed_offers_its_link() -> None:
+    link = "https://resy.com/cities/los-angeles-ca/venues/a-ti?seats=2"
+    chip = _needed(channel=BookingChannel.RESY, book_url=link)
+    assert f'href="{link}"' in chip
+    assert "Book now" in chip
+
+
+def test_a_stop_with_no_way_to_book_stays_plain() -> None:
+    assert "Needs booking" in _needed(channel=BookingChannel.UNKNOWN)
+    assert "Needs booking" in _needed()
+
+
+def test_the_reminder_chip_dials_too() -> None:
+    stop = _stop(
+        1,
+        booking_status=StopBookingStatus.REMINDER_SET,
+        phone="+13103179140",
+    )
+    assert 'href="tel:+13103179140"' in page._booking(stop)
+
+
 def test_the_page_leaves_out_what_needs_no_attention() -> None:
     html = page.render(
         _data(
@@ -754,6 +798,51 @@ def _griffith_date() -> PlannedDate:
             stop(2, "Angels Flight", ANGELS, 2, TravelMode.WALKING),
         ],
     )
+
+
+def _needed_stop(**venue: Any) -> DateStop:
+    return DateStop(
+        position=0,
+        title="Dinner",
+        kind=StopKind.MEAL,
+        venue=Venue(
+            name="Venue",
+            city="Santa Barbara",
+            timezone="America/Los_Angeles",
+            **venue,
+        ),
+        start_at=datetime(2026, 10, 17, 19, tzinfo=LA),
+        party_size=2,
+        booking_status=StopBookingStatus.NEEDED,
+    )
+
+
+def test_a_needed_stop_gets_a_link_built_from_its_venue() -> None:
+    stop = _needed_stop(
+        booking_channel=BookingChannel.RESY,
+        platform_slug="a-ti",
+        platform_city_slug="los-angeles-ca",
+    )
+    url = preview._book_url(stop)
+    assert url == (
+        "https://resy.com/cities/los-angeles-ca/venues/a-ti?date=2026-10-17&seats=2"
+    )
+
+
+def test_no_link_when_the_venue_cannot_build_one() -> None:
+    # Phone has none; Resy without its slugs can't build one either.
+    for channel in (BookingChannel.PHONE, BookingChannel.RESY):
+        assert preview._book_url(_needed_stop(booking_channel=channel)) is None
+
+
+def test_no_link_once_a_stop_is_past_needed() -> None:
+    stop = _needed_stop(
+        booking_channel=BookingChannel.RESY,
+        platform_slug="a-ti",
+        platform_city_slug="los-angeles-ca",
+    )
+    stop.booking_status = StopBookingStatus.CONFIRMED
+    assert preview._book_url(stop) is None
 
 
 @respx.mock

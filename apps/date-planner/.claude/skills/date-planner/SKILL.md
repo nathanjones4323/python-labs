@@ -330,6 +330,15 @@ user looks at on the phone; the reply stays short.
 4. In the reply, put the link first, then the timeline and the one next
    action as usual.
 
+A stop still `needed` isn't a dead end on the page: it shows **Book now**
+(the prefilled link, for Resy / OpenTable / Tock / SevenRooms / ticketed
+venues with their slugs saved) or **Call to book** (a tap-to-dial chip, for
+a phone venue with a number). A venue with neither shows plain "Needs
+booking" — fix the venue (`detect_booking_channel`, or `upsert_venue` with
+the slugs or phone) rather than leaving it. This is a fallback: still work
+through step 7 first, so the stop carries the link or reminder and the Resy
+widget gets its turn in the chat.
+
 Render and republish after anything that changes what the page shows: a
 stop added, removed, swapped or retimed, a booking confirmed, the date
 moved. If `missing_coordinates` lists a stop, it's off the map: save the

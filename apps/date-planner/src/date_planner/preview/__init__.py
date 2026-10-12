@@ -18,7 +18,9 @@ import httpx
 from PIL import Image
 
 from date_planner.config import Settings
-from date_planner.db.models import DateStop, PlannedDate
+from date_planner.booking import links
+from date_planner.db.models import DateStop, PlannedDate, StopBookingStatus
+from date_planner.errors import MissingPlatformSlug, UnsupportedChannel
 from date_planner.planning import sunset
 from date_planner.preview import basemap, page
 
@@ -68,6 +70,25 @@ async def _basemap(
     if not template:
         return None
     return await basemap.render(frame, _cache(template, settings), client)
+
+
+def _book_url(stop: DateStop) -> str | None:
+    """The prefilled link for a stop still `needed`, when its venue has one.
+
+    Phone, walk-in and unknown venues have none, and an online venue missing
+    its slug can't build one; the page then falls back to a call or nothing.
+    """
+    venue = stop.venue
+    if (
+        venue is None
+        or stop.booking_status is not StopBookingStatus.NEEDED
+        or stop.start_at is None
+    ):
+        return None
+    try:
+        return links.build(venue.link_target, stop.start_at, stop.party_size).url
+    except (UnsupportedChannel, MissingPlatformSlug):
+        return None
 
 
 def _minutes(stop: DateStop) -> int | None:
@@ -144,6 +165,8 @@ async def write(
                 venue_type=venue.venue_type if venue else None,
                 website=venue.website if venue else None,
                 duration_min=_minutes(stop),
+                channel=venue.booking_channel if venue else None,
+                book_url=_book_url(stop),
             )
         )
 
