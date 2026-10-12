@@ -46,3 +46,17 @@ class IncompleteStop(DatePlannerError):
 class TravelFailed(DatePlannerError):
     """The routing provider couldn't time a leg: unreachable, no route, or
     not configured."""
+
+
+class PlacesFailed(DatePlannerError):
+    """Google Places couldn't be asked: no `GOOGLE_PLACES_API_KEY`, a bad
+    key, the API not enabled, or no answer."""
+
+
+class MissingGooglePlace(DatePlannerError):
+    """The venue has no Google Place ID on file. Run `find_google_place`."""
+
+
+class OutsideWidgetRange(DatePlannerError):
+    """The Resy widget only shows today to 60 days out, for 1–15 people.
+    Hand over `build_booking_link` instead."""

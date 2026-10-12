@@ -127,6 +127,7 @@ class VenueOut(Out):
     booking_channel: BookingChannel
     platform_slug: str | None
     platform_city_slug: str | None
+    google_place_id: str | None
     window_amount: int | None
     window_unit: WindowUnit | None
     window_open_time: LocalTime | None
@@ -161,6 +162,8 @@ class VenueIn(BaseModel):
     booking_channel: BookingChannel | None = None
     platform_slug: str | None = None
     platform_city_slug: str | None = None
+    # Only ever one `find_google_place` returned — never typed from memory.
+    google_place_id: str | None = None
     window_amount: int | None = None
     window_unit: WindowUnit | None = None
     window_open_time: LocalTime | None = None
@@ -192,6 +195,50 @@ class BookingLinkOut(BaseModel):
     # live venue — and always for `ticketed`, whose page doesn't prefill.
     verified: bool
     # The date and time the link asks for, in the venue's timezone.
+    local_start: datetime
+
+
+class PlaceCandidateOut(BaseModel):
+    google_place_id: str
+    name: str
+    address: str | None
+    lat: float | None
+    lng: float | None
+    # From the venue's saved coordinates; null when it has none.
+    distance_m: float | None
+    # Name matches and, where there's a distance, it's within 300 m.
+    is_match: bool
+
+
+class GooglePlaceOut(BaseModel):
+    venue_id: uuid.UUID
+    # The venue's Place ID after this call; null when nothing matched.
+    google_place_id: str | None
+    # True when the id was already on the venue and Google wasn't asked.
+    from_cache: bool = False
+    # Fields this call filled in on the venue because they were empty.
+    filled: list[str] = Field(default_factory=list)
+    # What Google returned, in its order. Empty when `from_cache`.
+    candidates: list[PlaceCandidateOut] = Field(default_factory=list)
+
+
+class ResyWidgetOut(BaseModel):
+    """The Resy connector's `display_resy_restaurant_availabilities_app`
+    arguments, by their own names, checked against its rules."""
+
+    google_places_id: str
+    restaurant_name: str
+    # The stop's day in the venue's timezone, YYYY-MM-DD.
+    date: str
+    party_size: int
+    latitude: float | None
+    longitude: float | None
+    phone_number: str | None
+    # Not an argument: the venue's prefilled resy.com page, for the
+    # connector's "confirm it's on Resy" step and as the link kept on the
+    # stop. Null when detection saw a Resy widget but no venue slug.
+    resy_url: str | None
+    # Not an argument: the time the stop wants, for the message around it.
     local_start: datetime
 
 

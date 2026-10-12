@@ -17,7 +17,8 @@ final tap or phone call is always the user's.
   - couple: `list_couples`, `get_couple_profile`, `upsert_couple_profile`,
     `edit_couple_preferences`, `list_past_dates`
   - venues: `find_venue`, `upsert_venue`, `detect_booking_channel`,
-    `suggest_reservation_need`, `build_booking_link`, `compute_booking_window`
+    `suggest_reservation_need`, `build_booking_link`, `compute_booking_window`,
+    `find_google_place`, `resy_widget_args`
   - dates and stops: `create_date`, `update_date`, `get_date`, `list_dates`,
     `add_stop`, `update_stop`, `reorder_stops`, `remove_stop`
   - fitting the day: `get_sunset`, `estimate_travel`, `plan_timeline`
@@ -25,6 +26,9 @@ final tap or phone call is always the user's.
 - **Google Calendar** — `list_events`, `suggest_time`, `create_event`,
   `update_event`.
 - **Gmail** — `search_threads`, `get_thread`.
+- **Resy** — `display_resy_restaurant_availabilities_app`: shows a Resy
+  restaurant's live availability in the chat, where the user picks a time
+  and finishes on Resy. The way to hand over a Resy booking (step 7).
 - **AllTrails** (if connected) — `search_trails_by_name`, `get_trail_details`,
   `find_trails_near_location`.
 - **Web search** — what's on, what's new, a venue's coordinates or booking
@@ -39,7 +43,7 @@ The MCP tools may be deferred. If they are, load every one you'll need in
 real schemas instead of guessing:
 
 ```
-select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,WebSearch
+select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,WebSearch
 ```
 
 ### Argument shapes
@@ -187,7 +191,9 @@ once the website is saved; if it fails, say the booking method is unknown
 and fall back to the phone number rather than retrying.
 
 Pick the best fit for the couple and add it to the stop, then run
-`suggest_reservation_need(stop_id)`. Mention one or two runners-up in a
+`suggest_reservation_need(stop_id)`. If the pick books on **Resy**, run
+`find_google_place(venue_id)` now: the Resy widget needs the id it saves.
+Don't run it for runners-up. Mention one or two runners-up in a
 single line with their drive time and booking path ("or Nobu Malibu — 25
 min, phone bookings, opens a month ahead at 10am"). Only stop and ask for a
 pick when the options are genuinely different kinds of evening and nothing
@@ -244,7 +250,36 @@ Save each id with `update_stop(calendar_event_id=...)`.
 
 For every stop with `booking_status="needed"`:
 
-**Online (`resy`, `opentable`, `tock`, `sevenrooms`)** — `build_booking_link`,
+**Resy** — show the Resy connector's widget so the booking starts in the
+chat:
+
+1. `resy_widget_args(stop_id)`.
+2. The connector wants proof the venue is live on Resy. Detection evidence
+   reading "Resy venue link on …" is that proof: the venue's own site links
+   its resy.com page. Otherwise, run one web search for the venue on
+   resy.com and check that its page is there.
+3. Call `display_resy_restaurant_availabilities_app` with the argument
+   fields exactly as returned: `google_places_id`, `restaurant_name`,
+   `date`, `party_size`, `latitude`, `longitude`, `phone_number`. Never pass
+   a Place ID that didn't come from `find_google_place`. Show the widget
+   **once per turn**: if another stop is also on Resy, give it the link
+   and offer its widget next.
+4. Add one neutral line: pick a time in the widget near `local_start`; if
+   no times show, change the time or party size there, or open the link.
+   Don't say whether there's availability, and don't say it's booked.
+5. Same as online: put `resy_url` in the event description, and
+   `update_stop(booking_url=resy_url, booking_status="link_sent")`. The
+   widget only lives in the chat; the calendar and the preview keep the
+   link.
+
+Fall back to the online branch below, saying why in a few words, when
+`resy_widget_args` raises `OutsideWidgetRange` (the day is more than 60
+days out or past, or the party isn't 1–15), when `find_google_place` raises
+`PlacesFailed` or matches nothing, or when the Resy connector isn't
+connected.
+
+**Online (`opentable`, `tock`, `sevenrooms`, and Resy's fallback)** —
+`build_booking_link`,
 put the link in that stop's event description, `update_stop(booking_url=...,
 booking_status="link_sent")`, and hand the link over. If `verified` is false,
 say the link may not prefill.
@@ -356,8 +391,8 @@ The date's status is worked out from its stops; you never set it except to
 ## Hard rules
 
 - **Never place a booking.** No reservation forms, no payment details, no
-  submitting anything on the user's behalf. You produce a link or a reminder;
-  the user finishes it.
+  submitting anything on the user's behalf. You produce a link, a reminder
+  or the Resy widget; the user finishes it.
 - **Never invite anyone without explicit approval.** Events go up with no
   guests; adding the partner is its own, asked-for step. (A hook asks the
   user to approve any calendar call that adds attendees.)

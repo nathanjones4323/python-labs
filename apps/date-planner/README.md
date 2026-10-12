@@ -12,8 +12,9 @@ between stops, and a deterministic timeline checker. The skill
 what order, what "nearby" means today. It uses the official Google Calendar
 and Gmail connectors for everything Google.
 
-**It never books anything.** For an online platform it produces a link for
-the user to tap; for a phone-only venue it works out when the lines open and
+**It never books anything.** For a Resy restaurant it shows the Resy
+connector's availability widget in the chat, where the user picks a time
+and finishes on Resy; for another online platform it produces a link to tap; for a phone-only venue it works out when the lines open and
 leaves a reminder with the number and a script; for timed entry it links the
 venue's own ticket page. Google credentials stay with the connectors, and the
 final step stays with a person.
@@ -62,6 +63,7 @@ matchers in `.claude/settings.json` are written against (and
 | --- | --- | --- |
 | Google Calendar | `mcp__claude_ai_Google_Calendar__list_events`, `__suggest_time`, `__create_event`, `__update_event` | `__create_event`, `__update_event` (ask if attendees), `__delete_event` (deny) |
 | Gmail | `mcp__claude_ai_Gmail__search_threads`, `__get_thread` | `__send_message`, `__reply`, `__forward` (deny) |
+| Resy | `mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app` | — |
 | AllTrails (optional) | `mcp__claude_ai_AllTrails__search_trails_by_name`, `__get_trail_details` | — |
 
 The calendar guard treats any non-empty field with "attendee" or "guest" in
@@ -102,6 +104,8 @@ not ready for public hosting.
 | `suggest_reservation_need` | The default need for a stop, from its venue's channel |
 | `build_booking_link` | A stop's reservation link: prefilled for the platforms, the venue's own page for ticketed |
 | `compute_booking_window` | When bookings open for a stop's time, in the venue's timezone |
+| `find_google_place` | The venue's Google Place ID, from Google Places, saved on the venue |
+| `resy_widget_args` | A Resy stop's arguments for the Resy connector's widget, checked against its limits |
 | `create_date`, `update_date`, `get_date`, `list_dates` | The day itself |
 | `add_stop`, `update_stop`, `reorder_stops`, `remove_stop` | Its stops |
 | `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
@@ -214,6 +218,35 @@ frame.
 
 The session needs `Artifact` and `Read(./previews/**)` in its allowlist —
 see `.claude/settings.local.json` for Remote Control.
+
+## The Resy widget
+
+The Resy connector has one tool,
+`display_resy_restaurant_availabilities_app`. It shows a restaurant's live
+availability in the chat, and the user picks a time and books on Resy. It
+identifies the restaurant by its **Google Place ID** alone (required, and
+its instructions say never to guess one). In claude.ai chat Claude has a
+places search of its own to supply the ID; Claude Code has none, so this
+server looks it up:
+
+- `find_google_place(venue_id)` makes one Places API (New) Text Search call
+  for the venue's name and address near its saved coordinates. It asks only
+  for id, name, address and location (billed as Text Search Pro, which has
+  a monthly free allowance). It keeps the first result whose name matches
+  and that lies within 300 m, and saves the ID on the venue. Later calls
+  reuse it.
+- `resy_widget_args(stop_id)` hands back the widget's arguments under the
+  connector's own names. It refuses what the widget can't show: a day in
+  the past or more than 60 days out, or a party outside 1–15.
+
+The skill falls back to the prefilled resy.com link when either one
+refuses, when there's no key, or when the connector isn't connected. The
+link is always saved on the stop and put in the calendar hold, since the
+widget only lives in the chat.
+
+To get a key, enable **Places API (New)** in a Google Cloud project, create
+an API key restricted to that API, and set `GOOGLE_PLACES_API_KEY` in
+`.env`.
 
 ## Booking windows
 

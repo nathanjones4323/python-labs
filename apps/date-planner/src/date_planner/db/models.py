@@ -201,6 +201,9 @@ class Venue(Base):
     platform_slug: Mapped[str | None] = mapped_column(String(200))
     # Resy scopes venues by city, e.g. `los-angeles-ca`.
     platform_city_slug: Mapped[str | None] = mapped_column(String(120))
+    # Google's id for the place; the Resy connector's widget takes nothing
+    # else. Set by `find_google_place`.
+    google_place_id: Mapped[str | None] = mapped_column(Text)
 
     window_amount: Mapped[int | None] = mapped_column(SmallInteger)
     window_unit: Mapped[WindowUnit | None] = mapped_column(
