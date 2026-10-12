@@ -20,6 +20,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlsplit
 
+from date_planner.booking.channels import BookingChannel
 from date_planner.db.models import (
     DateStatus,
     StopBookingStatus,
@@ -147,6 +148,10 @@ class PreviewStop:
     venue_type: VenueType | None = None
     website: str | None = None
     duration_min: int | None = None
+    # How the venue takes a booking, and the prefilled link for it when one
+    # can be built: what a stop still `needed` offers instead of a dead chip.
+    channel: BookingChannel | None = None
+    book_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,23 @@ def google_calendar_day(day: date) -> str:
     )
 
 
+def tel_link(phone: str | None) -> str | None:
+    """`tel:` for a phone number, keeping only its digits and a leading +."""
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if not digits:
+        return None
+    return "tel:" + ("+" if (phone or "").strip().startswith("+") else "") + digits
+
+
+def _call(stop: PreviewStop) -> str:
+    """"Call to book" with the number: a tap-to-dial link when there is one."""
+    number = f' <span class="ref">{_e(stop.phone)}</span>' if stop.phone else ""
+    href = tel_link(stop.phone)
+    if href:
+        return f'<a class="chip todo act" href="{_e(href)}">Call to book{number}</a>'
+    return f'<span class="chip todo">Call to book{number}</span>'
+
+
 def _booking(stop: PreviewStop) -> str:
     """The stop's booking state as a chip, plus the one thing to do next."""
     status = stop.booking_status
@@ -261,9 +283,17 @@ def _booking(stop: PreviewStop) -> str:
     if status is StopBookingStatus.LINK_SENT:
         return '<span class="chip todo">Booking link sent</span>'
     if status is StopBookingStatus.REMINDER_SET:
-        call = f' <span class="ref">{_e(stop.phone)}</span>' if stop.phone else ""
-        return f'<span class="chip todo">Call to book{call}</span>'
+        return _call(stop)
     if status is StopBookingStatus.NEEDED:
+        # Nobody has handed it over yet, so offer the action the venue's
+        # channel allows rather than a chip that does nothing.
+        if stop.book_url:
+            return (
+                f'<a class="chip todo act" href="{_e(stop.book_url)}" '
+                f'target="_blank" rel="noopener">Book now{ARROW}</a>'
+            )
+        if stop.channel is BookingChannel.PHONE and tel_link(stop.phone):
+            return _call(stop)
         return '<span class="chip todo">Needs booking</span>'
     if status is StopBookingStatus.CANCELLED:
         return '<span class="chip off">Cancelled</span>'
