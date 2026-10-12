@@ -73,7 +73,8 @@ async def _basemap(
 def _minutes(stop: DateStop) -> int | None:
     """How long the stop lasts: its times when both are set, else the estimate."""
     if stop.start_at is not None and stop.end_at is not None:
-        return round((stop.end_at - stop.start_at).total_seconds() / 60) or None
+        minutes = round((stop.end_at - stop.start_at).total_seconds() / 60)
+        return minutes if minutes > 0 else None
     return stop.est_duration_min
 
 

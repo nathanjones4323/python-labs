@@ -189,6 +189,9 @@ async def upsert_venue(session: AsyncSession, data: VenueIn) -> Venue:
         session.add(venue)
         for key in ("name", "city", "venue_type"):
             values.pop(key, None)
+    if values.get("google_place_id", venue.google_place_id) != venue.google_place_id:
+        # The saved Places response was for the old id.
+        venue.google_place_data = None
     _assign(venue, values, VENUE_REQUIRED)
     await session.flush()
     return venue

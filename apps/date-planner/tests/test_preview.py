@@ -620,7 +620,7 @@ def test_leaflet_comes_pinned_from_cdnjs_with_its_tiles() -> None:
     place = page.apple_place(data.stops[1])
     assert place is not None
     assert escape(place, quote=True) in config["stops"][1]["popup"]
-    assert config["stops"][0]["when"] == "10:00 AM"
+    assert config["stops"][0]["at"] == "10:00 AM"
 
 
 def test_the_picture_stays_as_the_fallback() -> None:

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from date_planner.db.models import (
     DateStatus,
@@ -66,9 +66,10 @@ SUN = (
     '<path d="M2 10.5h16M5.5 10.5a4.5 4.5 0 0 1 9 0M10 1.5v2'
     'M3.6 4.1l1.4 1.4M16.4 4.1 15 5.5"/></svg>'
 )
+PIN_PATH = "M8 14.5s4.5-4.1 4.5-7.5a4.5 4.5 0 0 0-9 0c0 3.4 4.5 7.5 4.5 7.5z"
 PIN = (
     '<svg viewBox="0 0 16 16" aria-hidden="true">'
-    '<path d="M8 14.5s4.5-4.1 4.5-7.5a4.5 4.5 0 0 0-9 0c0 3.4 4.5 7.5 4.5 7.5z"/>'
+    f'<path d="{PIN_PATH}"/>'
     '<circle cx="8" cy="7" r="1.5"/></svg>'
 )
 
@@ -114,7 +115,7 @@ TYPE_STYLES = {
     VenueType.OTHER: TypeStyle(
         None,
         "#6b7885",
-        _glyph("M8 14.5s4.5-4.1 4.5-7.5a4.5 4.5 0 0 0-9 0c0 3.4 4.5 7.5 4.5 7.5z"),
+        _glyph(PIN_PATH),
     ),
 }
 
@@ -313,6 +314,18 @@ def _kind(stop: PreviewStop) -> str:
     return f'<div class="kind">{icon}{_e(" · ".join(bits))}</div>'
 
 
+def _web_link(website: str | None) -> str | None:
+    """The venue's site as a link that leaves the page: "bestia.com" gets
+    https://, and anything that isn't http(s) — javascript:, say — none."""
+    website = (website or "").strip()
+    if not website:
+        return None
+    scheme = urlsplit(website).scheme.lower()
+    if not scheme:
+        return f"https://{website}"
+    return website if scheme in ("http", "https") else None
+
+
 def _popup(stop: PreviewStop) -> str:
     """What opens when the stop's pin is tapped. Every control is a button
     or link sized for a thumb: there's no hover on a phone."""
@@ -324,13 +337,13 @@ def _popup(stop: PreviewStop) -> str:
         actions += (
             f'<a href="{_e(place)}" target="_blank" rel="noopener">Apple Maps</a>'
         )
-    if stop.website:
-        actions += (
-            f'<a href="{_e(stop.website)}" target="_blank" rel="noopener">Website</a>'
-        )
+    website = _web_link(stop.website)
+    if website:
+        actions += f'<a href="{_e(website)}" target="_blank" rel="noopener">Website</a>'
     booking = _booking(stop)
     return (
-        '<div class="pop">'
+        # The popup sits outside the card, so it carries the type colour too.
+        f'<div class="pop" style="--t:{style.color}">'
         + (f'<div class="kind">{style.icon}{_e(style.label)}</div>' if style.label else "")
         + f"<strong>{stop.number}. {_e(stop.title)}</strong>"
         + (f"<span>{_e(when)}</span>" if when else "")
@@ -572,6 +585,14 @@ def _live(data: PreviewData) -> str:
     if data.tiles is None or not stops:
         return ""
     tiles = data.tiles
+    # A stop's travel fields describe the leg from the stop before it in the
+    # day. When that one isn't on the map, the line drawn here skips it, so
+    # the leg's minutes and mode don't describe the line: leave them off.
+    position = {id(s): i for i, s in enumerate(data.stops)}
+    direct = [
+        bool(i) and position[id(s)] == position[id(stops[i - 1])] + 1
+        for i, s in enumerate(stops)
+    ]
     config = {
         "url": TILE_URL,
         "minZoom": tiles.min_zoom,
@@ -589,13 +610,12 @@ def _live(data: PreviewData) -> str:
                 "title": s.title,
                 "lat": s.lat,
                 "lng": s.lng,
-                "when": _hours(s),
                 # Under the pin, where it can be read without tapping.
                 "at": clock(s.start_at) if s.start_at else "",
                 "pin": _disc(s),
                 "popup": _popup(s),
-                "walking": s.travel_mode is TravelMode.WALKING,
-                "leg": _leg_tag(s) if i else "",
+                "walking": direct[i] and s.travel_mode is TravelMode.WALKING,
+                "leg": _leg_tag(s) if direct[i] else "",
             }
             for i, s in enumerate(stops)
         ],
