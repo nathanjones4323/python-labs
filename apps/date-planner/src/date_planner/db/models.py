@@ -219,6 +219,13 @@ class Venue(Base):
             text("lower(city)"),
             unique=True,
         ),
+        # A Google place is one venue, whatever it was called when recorded.
+        Index(
+            "ix_venues_google_place_id",
+            "google_place_id",
+            unique=True,
+            postgresql_where=text("google_place_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

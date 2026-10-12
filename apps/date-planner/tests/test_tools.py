@@ -344,6 +344,23 @@ async def test_choosing_another_place_drops_the_saved_response(
         assert row.google_place_data is None
 
 
+async def test_a_reworded_venue_is_found_and_says_so(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    found = await call("find_venue", name="Nobu", city="Malibu")
+    assert found.name == "Nobu Malibu"
+    assert found.matched_name == "Nobu"
+    exact = await call("find_venue", name="nobu malibu", city="Malibu")
+    assert exact.matched_name is None
+
+    again = await call(
+        "upsert_venue", venue={"name": "Nobu Malibu Restaurant", "city": "Malibu"}
+    )
+    assert again.id == found.id
+    assert again.name == "Nobu Malibu"
+    assert again.matched_name == "Nobu Malibu Restaurant"
+
+
 async def test_find_google_place_saves_nothing_without_a_match(
     db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -12,6 +12,7 @@ and stores the status they add up to (`models.derive_status`).
 
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -36,7 +37,13 @@ from date_planner.db.models import (
     Venue,
     derive_status,
 )
-from date_planner.errors import InvalidTransition, NotFound
+from date_planner.errors import (
+    AmbiguousVenue,
+    DuplicateVenue,
+    InvalidTransition,
+    NotFound,
+)
+from date_planner.matching import SAME_PLACE_M, names_match
 from date_planner.schemas import (
     CoupleProfileIn,
     DatePatch,
@@ -264,25 +271,88 @@ async def list_venues(session: AsyncSession) -> list[Venue]:
     return list(result)
 
 
-async def find_venue(session: AsyncSession, name: str, city: str) -> Venue | None:
-    """The venue with this name in this city, whatever the capitalisation."""
-    found: Venue | None = await session.scalar(
+async def find_venue(
+    session: AsyncSession,
+    name: str,
+    city: str,
+    lat: float | None = None,
+    lng: float | None = None,
+) -> Venue | None:
+    """The venue we have under this name in this city.
+
+    Claude doesn't word a venue the same way every chat, so after an exact
+    match (whatever the capitalisation) comes a fuzzy one: a stored venue
+    whose name plausibly is this one (`matching.names_match`). With
+    coordinates on both sides the venue must be within `SAME_PLACE_M`,
+    whatever the city; otherwise it must be in the same city. More than one
+    fuzzy fit raises `AmbiguousVenue` rather than guessing a branch.
+    """
+    exact: Venue | None = await session.scalar(
         select(Venue).where(
             func.lower(Venue.name) == name.strip().lower(),
             func.lower(Venue.city) == city.strip().lower(),
         )
     )
-    return found
+    if exact is not None:
+        return exact
+    # Imported here: `travel` imports this module.
+    from date_planner.planning.travel import LatLng, great_circle_m
+
+    here = LatLng(lat, lng) if lat is not None and lng is not None else None
+    fits: list[Venue] = []
+    for venue in await list_venues(session):
+        if not names_match(name, venue.name):
+            continue
+        if here is not None and venue.lat is not None and venue.lng is not None:
+            # Both pinned: where it is settles it, so two branches of a chain
+            # in one city stay two venues.
+            if great_circle_m(here, LatLng(venue.lat, venue.lng)) <= SAME_PLACE_M:
+                fits.append(venue)
+        elif venue.city.strip().casefold() == city.strip().casefold():
+            fits.append(venue)
+    if len(fits) > 1:
+        raise AmbiguousVenue(
+            f"'{name}' in {city} fits more than one venue: "
+            + "; ".join(f"{v.name} ({v.id})" for v in fits)
+            + ". Pass lat/lng, or the venue's id."
+        )
+    return fits[0] if fits else None
+
+
+async def _place_owner(
+    session: AsyncSession, place_id: str, venue: Venue
+) -> Venue | None:
+    owner: Venue | None = await session.scalar(
+        select(Venue).where(Venue.google_place_id == place_id, Venue.id != venue.id)
+    )
+    return owner
+
+
+def _taken(owner: Venue) -> DuplicateVenue:
+    return DuplicateVenue(
+        f"Google says that place is already venue {owner.id} ({owner.name}, "
+        f"{owner.city}); use that venue instead of recording it twice."
+    )
 
 
 async def upsert_venue(session: AsyncSession, data: VenueIn) -> Venue:
-    """Update the venue `data.id` — or `(name, city)` — names, else insert it."""
+    """Update the venue `data.id` — or the one `(name, city)` finds — else
+    insert it.
+
+    A venue found only by a fuzzy name keeps the name and city it has.
+    """
     values = data.model_dump(exclude_unset=True, exclude={"id"})
     venue: Venue | None = None
     if data.id is not None:
         venue = await get_venue(session, data.id)
     elif data.name and data.city:
-        venue = await find_venue(session, data.name, data.city)
+        venue = await find_venue(session, data.name, data.city, data.lat, data.lng)
+        if venue is not None and (
+            venue.name.strip().lower() != data.name.strip().lower()
+            or venue.city.strip().lower() != data.city.strip().lower()
+        ):
+            for key in ("name", "city"):
+                values.pop(key, None)
     if venue is None:
         if not data.name or not data.city:
             raise ValueError("A new venue needs a name and a city")
@@ -294,12 +364,42 @@ async def upsert_venue(session: AsyncSession, data: VenueIn) -> Venue:
         session.add(venue)
         for key in ("name", "city", "venue_type"):
             values.pop(key, None)
+    new_id = values.get("google_place_id")
+    if new_id is not None and new_id != venue.google_place_id:
+        if (owner := await _place_owner(session, new_id, venue)) is not None:
+            raise _taken(owner)
     if values.get("google_place_id", venue.google_place_id) != venue.google_place_id:
         # The saved Places response was for the old id.
         venue.google_place_data = None
     _assign(venue, values, VENUE_REQUIRED)
     await session.flush()
     return venue
+
+
+async def apply_place(
+    session: AsyncSession, venue: Venue, place: dict[str, Any]
+) -> list[str]:
+    """Save a Places response on the venue; returns the fields it filled in.
+
+    Fills an empty lat/lng or address from Google. Refuses a place another
+    venue already holds, so one place is never two rows.
+    """
+    place_id = place["id"]
+    if (owner := await _place_owner(session, place_id, venue)) is not None:
+        raise _taken(owner)
+    venue.google_place_id = place_id
+    venue.google_place_data = place
+    filled: list[str] = []
+    location = place.get("location") or {}
+    lat, lng = location.get("latitude"), location.get("longitude")
+    if lat is not None and lng is not None and not venue.has_coordinates:
+        venue.lat, venue.lng = lat, lng
+        filled += ["lat", "lng"]
+    if place.get("formattedAddress") and not venue.address:
+        venue.address = place["formattedAddress"]
+        filled.append("address")
+    await session.flush()
+    return filled
 
 
 async def record_detection(
