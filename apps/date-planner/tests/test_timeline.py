@@ -13,6 +13,7 @@ import pytest
 from date_planner.db.models import Anchor
 from date_planner.errors import IncompleteStop
 from date_planner.planning.timeline import (
+    Busy,
     StopInput,
     Timeline,
     ViolationType,
@@ -285,3 +286,27 @@ def test_rounding(moment: datetime, rounded: str, floored: str, ceiled: str) -> 
     assert hhmm(round_to(moment, 15)) == rounded
     assert hhmm(floor_to(moment, 5)) == floored
     assert hhmm(ceil_to(moment, 5)) == ceiled
+
+
+def test_a_stop_on_a_busy_block_is_a_calendar_conflict() -> None:
+    brunch = Busy("Brunch with Sam", at(11), at(12, 30))
+    stops = [
+        stop("Getty", Anchor.FIXED, 120, start=at(12)),
+        stop("Beach", duration=60),
+    ]
+    result = plan(stops, [15], day=DAY, tz=LA, busy=[brunch])
+    conflicts = [
+        v for v in result.violations if v.type is ViolationType.CALENDAR_CONFLICT
+    ]
+    assert [v.stop_id for v in conflicts] == [stops[0].id]
+    assert "given for it" in conflicts[0].message
+    assert "11:00-12:30" in conflicts[0].message
+    # Checked, never moved.
+    assert hhmm(result.stops[0].start_at) == "12:00"
+
+
+def test_touching_a_busy_block_is_not_a_calendar_conflict() -> None:
+    stops = [stop("Getty", Anchor.FIXED, 120, start=at(13))]
+    busy = [Busy("Brunch", at(11), at(13)), Busy("Call", at(15), at(16))]
+    result = plan(stops, [], day=DAY, tz=LA, busy=busy)
+    assert result.violations == []

@@ -127,6 +127,13 @@ forward from each one after, each leg costing travel + buffer. It reports
 `missing_coordinates` and `daylight` (a trail ending after sunset), and
 writes nothing unless `apply=True`.
 
+`busy` takes the day's events from the shared calendar (`title`, `start`,
+`end` with offsets, `event_id`), which the skill reads with `list_events`. A
+stop that overlaps one is a `calendar_conflict`, never moved; events that
+are the date's own holds or call reminders are skipped. The skill leaves
+this out when it's laying several alternative dates side by side to choose
+from, and runs it once one is picked.
+
 ## Travel between stops
 
 `TRAVEL_PROVIDER` picks how legs are timed. **Nothing paid is needed.**
