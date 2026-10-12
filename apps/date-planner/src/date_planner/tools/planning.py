@@ -61,21 +61,13 @@ def register(mcp: FastMCP) -> None:
         if venue_id is not None:
             async with open_session() as session:
                 venue = await repo.get_venue(session, venue_id)
-                if venue.lat is None or venue.lng is None:
-                    raise MissingCoordinates(
-                        f"{venue.name} has no lat/lng; save them with upsert_venue."
-                    )
-                lat, lng, tz = venue.lat, venue.lng, venue.tz
+                point = travel.coordinates(venue)
+                lat, lng, tz = point.lat, point.lng, venue.tz
         else:
             if lat is None or lng is None:
                 raise MissingCoordinates("Pass a venue_id, or both lat and lng")
             tz = ZoneInfo(timezone or DEFAULT_TIMEZONE)
-        result = sunset.compute(lat, lng, day, tz)
-        return SunsetOut(
-            sunset=result.sunset,
-            civil_dusk=result.civil_dusk,
-            golden_hour_start=result.golden_hour_start,
-        )
+        return SunsetOut.model_validate(sunset.compute(lat, lng, day, tz))
 
     @mcp.tool
     @as_tool_error
@@ -97,13 +89,7 @@ def register(mcp: FastMCP) -> None:
             origin = await repo.get_venue(session, from_venue_id)
             dest = await repo.get_venue(session, to_venue_id)
             leg = await travel.estimate(session, origin, dest, mode, get_settings())
-            return TravelOut(
-                minutes=leg.minutes,
-                meters=leg.meters,
-                provider=leg.provider,
-                is_estimate=leg.is_estimate,
-                from_cache=leg.from_cache,
-            )
+            return TravelOut.model_validate(leg)
 
     @mcp.tool
     @as_tool_error
@@ -137,11 +123,11 @@ def register(mcp: FastMCP) -> None:
         settings = get_settings()
         # One HTTP client for every leg, rather than one per routing call.
         async with (
-            httpx.AsyncClient(timeout=10.0) as client,
+            httpx.AsyncClient(timeout=settings.fetch_timeout) as client,
             open_session() as session,
         ):
             planned = await repo.get_date(session, date_id)
-            tz = (await repo.get_couple(session, planned.couple_id)).tz
+            tz = await repo.date_tz(session, planned)
             stops = list(planned.stops)
             violations: list[ViolationOut] = []
 
@@ -174,21 +160,18 @@ def register(mcp: FastMCP) -> None:
                     )
 
             legs: list[LegOut] = []
-            leg_minutes: list[int | None] = []
             for previous, stop in zip(stops, stops[1:]):
                 origin, dest = previous.venue, stop.venue
                 found = None
-                if origin is not None and dest is not None:
-                    if origin.has_coordinates and dest.has_coordinates:
-                        found = await travel.estimate(
-                            session,
-                            origin,
-                            dest,
-                            stop.travel_mode,
-                            settings,
-                            client=client,
-                        )
-                leg_minutes.append(found.minutes if found else None)
+                if (
+                    origin is not None
+                    and dest is not None
+                    and origin.has_coordinates
+                    and dest.has_coordinates
+                ):
+                    found = await travel.estimate(
+                        session, origin, dest, stop.travel_mode, settings, client=client
+                    )
                 legs.append(
                     LegOut(
                         from_stop_id=previous.id,
@@ -250,7 +233,7 @@ def register(mcp: FastMCP) -> None:
 
             result = timeline.plan(
                 inputs,
-                leg_minutes,
+                [leg.minutes for leg in legs],
                 day=planned.day,
                 tz=tz,
                 buffer_min=buffer_min,
@@ -259,10 +242,7 @@ def register(mcp: FastMCP) -> None:
                 end_before=planned.end_before,
                 busy=blocks,
             )
-            violations += [
-                ViolationOut(type=v.type, message=v.message, stop_id=v.stop_id)
-                for v in result.violations
-            ]
+            violations += [ViolationOut.model_validate(v) for v in result.violations]
 
             if apply:
                 await repo.write_timeline(

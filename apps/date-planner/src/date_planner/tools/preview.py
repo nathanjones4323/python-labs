@@ -39,7 +39,7 @@ def register(mcp: FastMCP) -> None:
         # rows stay readable once the session has closed.
         async with open_session() as session:
             planned = await repo.get_date(session, date_id)
-            tz = (await repo.get_couple(session, planned.couple_id)).tz
+            tz = await repo.date_tz(session, planned)
         async with httpx.AsyncClient(
             timeout=settings.fetch_timeout,
             headers={"User-Agent": settings.map_user_agent},

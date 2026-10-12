@@ -17,6 +17,7 @@ cache. Detection never raises on a 404 or a timeout for one page — only an
 unreachable site (`DetectionFailed`) stops it.
 """
 
+import asyncio
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -497,37 +498,23 @@ def classify(pages: list[Page]) -> Detection:
     )
 
 
-async def detect(
-    website: str,
-    *,
-    client: httpx.AsyncClient | None = None,
-    settings: Settings | None = None,
-) -> Detection:
+async def detect(website: str, *, settings: Settings | None = None) -> Detection:
     """Read `website` (plus a few reservation pages) and classify it."""
     settings = settings or get_settings()
     url = _normalize_website(website)
-    if client is not None:
-        return await _detect_with(client, url, settings)
     async with httpx.AsyncClient(
         timeout=settings.fetch_timeout,
         follow_redirects=True,
         headers={"User-Agent": settings.user_agent},
-    ) as owned:
-        return await _detect_with(owned, url, settings)
-
-
-async def _detect_with(
-    client: httpx.AsyncClient, url: str, settings: Settings
-) -> Detection:
-    home = await _fetch(client, url)
-    if home is None:
-        raise DetectionFailed(f"Couldn't fetch {url}")
+    ) as client:
+        home = await _fetch(client, url)
+        if home is None:
+            raise DetectionFailed(f"Couldn't fetch {url}")
+        candidates = _candidate_urls(home, max(settings.max_pages - 1, 0))
+        # Slow or missing /reserve pages are common; wait on them together.
+        fetched = await asyncio.gather(*(_fetch(client, c) for c in candidates))
     pages = [home]
-    budget = max(settings.max_pages - 1, 0)
-    for candidate in _candidate_urls(home, budget):
-        if len(pages) > budget:
-            break
-        page = await _fetch(client, candidate)
+    for page in fetched:
         if page is not None and page.url not in {p.url for p in pages}:
             pages.append(page)
     return classify(pages)

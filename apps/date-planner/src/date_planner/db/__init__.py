@@ -5,15 +5,7 @@
 unit-of-work helper.
 """
 
-from date_planner.db.models import (
-    Base,
-    Couple,
-    DateStatus,
-    DateStop,
-    PlannedDate,
-    TravelCache,
-    Venue,
-)
+from date_planner.db.models import Base
 from date_planner.db.session import (
     make_engine,
     make_session_factory,
@@ -24,12 +16,6 @@ from date_planner.db.session import (
 
 __all__ = [
     "Base",
-    "Couple",
-    "DateStatus",
-    "DateStop",
-    "PlannedDate",
-    "TravelCache",
-    "Venue",
     "make_engine",
     "make_session_factory",
     "normalize_url",

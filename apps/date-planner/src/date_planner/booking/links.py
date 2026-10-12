@@ -75,15 +75,19 @@ def _segment(value: str) -> str:
     return quote(value, safe="")
 
 
+def _venue_slug(target: LinkTarget) -> str:
+    return _segment(_require(target.platform_slug, target.channel, "a venue slug"))
+
+
 def _resy(target: LinkTarget, start: datetime, party_size: int) -> str:
     city = _segment(_require(target.platform_city_slug, target.channel, "a city slug"))
-    slug = _segment(_require(target.platform_slug, target.channel, "a venue slug"))
+    slug = _venue_slug(target)
     query = urlencode({"date": start.date().isoformat(), "seats": party_size})
     return f"https://resy.com/cities/{city}/venues/{slug}?{query}"
 
 
 def _opentable(target: LinkTarget, start: datetime, party_size: int) -> str:
-    slug = _segment(_require(target.platform_slug, target.channel, "a venue slug"))
+    slug = _venue_slug(target)
     query = urlencode(
         {"covers": party_size, "dateTime": start.strftime("%Y-%m-%dT%H:%M")}
     )
@@ -91,7 +95,7 @@ def _opentable(target: LinkTarget, start: datetime, party_size: int) -> str:
 
 
 def _tock(target: LinkTarget, start: datetime, party_size: int) -> str:
-    slug = _segment(_require(target.platform_slug, target.channel, "a venue slug"))
+    slug = _venue_slug(target)
     query = urlencode(
         {
             "date": start.date().isoformat(),
@@ -103,7 +107,7 @@ def _tock(target: LinkTarget, start: datetime, party_size: int) -> str:
 
 
 def _sevenrooms(target: LinkTarget, start: datetime, party_size: int) -> str:
-    slug = _segment(_require(target.platform_slug, target.channel, "a venue slug"))
+    slug = _venue_slug(target)
     query = urlencode({"date": start.date().isoformat(), "party_size": party_size})
     return f"https://www.sevenrooms.com/reservations/{slug}?{query}"
 

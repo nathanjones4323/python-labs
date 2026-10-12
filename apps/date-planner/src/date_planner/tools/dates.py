@@ -123,7 +123,7 @@ def register(mcp: FastMCP) -> None:
         """
         async with open_session() as session:
             planned = await repo.get_date(session, date_id)
-            tz = (await repo.get_couple(session, planned.couple_id)).tz
+            tz = await repo.date_tz(session, planned)
             stop = stop.model_copy(
                 update={
                     "start_at": stop.start_at and localize(stop.start_at, tz),
@@ -152,7 +152,7 @@ def register(mcp: FastMCP) -> None:
             if values.get("start_at") or values.get("end_at"):
                 stop = await repo.get_stop(session, stop_id)
                 planned = await repo.get_date(session, stop.date_id)
-                tz = (await repo.get_couple(session, planned.couple_id)).tz
+                tz = await repo.date_tz(session, planned)
                 patch = patch.model_copy(
                     update={
                         key: localize(values[key], tz)

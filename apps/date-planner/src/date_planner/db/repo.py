@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from date_planner.booking.detect import Detection
 from date_planner.db.models import (
@@ -72,6 +73,11 @@ async def get_couple(session: AsyncSession, couple_id: uuid.UUID) -> Couple:
     if couple is None:
         raise NotFound(f"No couple {couple_id}")
     return couple
+
+
+async def date_tz(session: AsyncSession, planned: PlannedDate) -> ZoneInfo:
+    """The timezone a date is planned in: its couple's."""
+    return (await get_couple(session, planned.couple_id)).tz
 
 
 async def list_couples(session: AsyncSession) -> list[Couple]:
@@ -238,13 +244,14 @@ async def _settle(session: AsyncSession, planned: PlannedDate) -> PlannedDate:
     `venue_name`.
     """
     await session.flush()
-    await session.refresh(planned, ["stops"])
-    await session.scalars(
+    stops = await session.scalars(
         select(DateStop)
         .where(DateStop.date_id == planned.id)
+        .order_by(DateStop.position)
         .options(selectinload(DateStop.venue))
         .execution_options(populate_existing=True)
     )
+    set_committed_value(planned, "stops", list(stops))
     planned.status = derive_status(planned.status, planned.stops)
     await session.flush()
     return planned
@@ -325,8 +332,9 @@ async def update_date(
     status = values.pop("status", None)
     new_day = values.get("day")
     if new_day is not None and new_day != planned.day:
-        couple = await get_couple(session, planned.couple_id)
-        _move_stops(planned.stops, new_day - planned.day, couple.tz)
+        _move_stops(
+            planned.stops, new_day - planned.day, await date_tz(session, planned)
+        )
     _assign(planned, values, DATE_REQUIRED)
     _check_window(planned.start_after, planned.end_before)
     if status is not None:

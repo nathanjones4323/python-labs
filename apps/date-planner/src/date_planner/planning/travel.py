@@ -24,7 +24,7 @@ from typing import Any, Protocol
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from date_planner.config import Settings
+from date_planner.config import Settings, get_settings
 from date_planner.db import repo
 from date_planner.db.models import TravelMode, Venue
 from date_planner.errors import MissingCoordinates, TravelFailed
@@ -159,7 +159,7 @@ async def _get_json(
         if client is not None:
             response = await client.request(method, url, **kwargs)
         else:
-            async with httpx.AsyncClient(timeout=10.0) as owned:
+            async with httpx.AsyncClient(timeout=get_settings().fetch_timeout) as owned:
                 response = await owned.request(method, url, **kwargs)
         response.raise_for_status()
     except httpx.HTTPError as exc:
