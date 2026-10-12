@@ -18,7 +18,7 @@ import httpx
 from PIL import Image
 
 from date_planner.config import Settings
-from date_planner.db.models import PlannedDate
+from date_planner.db.models import DateStop, PlannedDate
 from date_planner.planning import sunset
 from date_planner.preview import basemap, page
 
@@ -68,6 +68,14 @@ async def _basemap(
     if not template:
         return None
     return await basemap.render(frame, _cache(template, settings), client)
+
+
+def _minutes(stop: DateStop) -> int | None:
+    """How long the stop lasts: its times when both are set, else the estimate."""
+    if stop.start_at is not None and stop.end_at is not None:
+        minutes = round((stop.end_at - stop.start_at).total_seconds() / 60)
+        return minutes if minutes > 0 else None
+    return stop.est_duration_min
 
 
 async def write(
@@ -133,6 +141,9 @@ async def write(
                 confirmation_number=stop.confirmation_number,
                 on_calendar=stop.calendar_event_id is not None,
                 place=place,
+                venue_type=venue.venue_type if venue else None,
+                website=venue.website if venue else None,
+                duration_min=_minutes(stop),
             )
         )
 

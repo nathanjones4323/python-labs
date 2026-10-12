@@ -18,9 +18,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
-from date_planner.db.models import DateStatus, StopBookingStatus, TravelMode
+from date_planner.db.models import (
+    DateStatus,
+    StopBookingStatus,
+    TravelMode,
+    VenueType,
+)
 from date_planner.preview.basemap import TILE_FORMAT, Pyramid
 
 LIGHT_MAP = "map-light.jpg"
@@ -61,6 +66,62 @@ SUN = (
     '<path d="M2 10.5h16M5.5 10.5a4.5 4.5 0 0 1 9 0M10 1.5v2'
     'M3.6 4.1l1.4 1.4M16.4 4.1 15 5.5"/></svg>'
 )
+PIN_PATH = "M8 14.5s4.5-4.1 4.5-7.5a4.5 4.5 0 0 0-9 0c0 3.4 4.5 7.5 4.5 7.5z"
+PIN = (
+    '<svg viewBox="0 0 16 16" aria-hidden="true">'
+    f'<path d="{PIN_PATH}"/>'
+    '<circle cx="8" cy="7" r="1.5"/></svg>'
+)
+
+
+def _glyph(path: str) -> str:
+    return (
+        f'<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="{path}"/></svg>'
+    )
+
+
+@dataclass(frozen=True)
+class TypeStyle:
+    label: str | None  # None: nothing worth saying, as for "other"
+    color: str  # the pin's fill and the card's accent, the same in both themes
+    icon: str
+
+
+TYPE_STYLES = {
+    VenueType.RESTAURANT: TypeStyle(
+        "Restaurant",
+        "#c8553d",
+        _glyph("M5 2v5a1.5 1.5 0 0 0 3 0V2M6.5 2v12M12 2c-1.5 1-2 3-2 5h2v7"),
+    ),
+    VenueType.BAR: TypeStyle("Bar", "#8a5bc8", _glyph("M2.5 3h11L8 9zM8 9v5M5 14h6")),
+    VenueType.MUSEUM: TypeStyle(
+        "Museum",
+        "#3f7fc1",
+        _glyph("M2 6.5 8 3l6 3.5M3.5 7v5M6.5 7v5M9.5 7v5M12.5 7v5M2 13.5h12"),
+    ),
+    VenueType.TRAIL: TypeStyle(
+        "Trail", "#3a9560", _glyph("M1.5 13.5 6 5l3 5 1.5-2.5 4 6z")
+    ),
+    VenueType.PARK: TypeStyle(
+        "Park",
+        "#5d9a2e",
+        _glyph("M8 14V9M8 2.5a3.5 3.5 0 0 0-2.5 6h5A3.5 3.5 0 0 0 8 2.5z"),
+    ),
+    VenueType.VIEWPOINT: TypeStyle(
+        "Viewpoint",
+        "#1f94a3",
+        _glyph("M2 12h12M4.5 12a3.5 3.5 0 0 1 7 0M8 3v2.5M3.5 5.5 5 7M12.5 5.5 11 7"),
+    ),
+    VenueType.OTHER: TypeStyle(
+        None,
+        "#6b7885",
+        _glyph(PIN_PATH),
+    ),
+}
+
+
+def type_style(venue_type: VenueType | None) -> TypeStyle:
+    return TYPE_STYLES[venue_type or VenueType.OTHER]
 
 
 @dataclass(frozen=True)
@@ -83,6 +144,9 @@ class PreviewStop:
     on_calendar: bool
     # Where the pin goes, as fractions of the map; None when off the map.
     place: tuple[float, float] | None
+    venue_type: VenueType | None = None
+    website: str | None = None
+    duration_min: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +184,14 @@ def clock(at: datetime) -> str:
 
 def _e(value: object) -> str:
     return escape(str(value), quote=True)
+
+
+def duration(minutes: int) -> str:
+    """90 -> "1 hr 30 min"."""
+    hours, rest = divmod(minutes, 60)
+    if not hours:
+        return f"{rest} min"
+    return f"{hours} hr" + (f" {rest} min" if rest else "")
 
 
 # Apple Maps' unified URLs (iOS 18.4+, macOS 15.4+): https links that open
@@ -198,7 +270,94 @@ def _booking(stop: PreviewStop) -> str:
     return ""
 
 
-def _stop(stop: PreviewStop) -> str:
+def _state(stop: PreviewStop) -> str:
+    """How the stop's booking looks on its pin: done, still to do, or off."""
+    status = stop.booking_status
+    if status is StopBookingStatus.CONFIRMED:
+        return "ok"
+    if status in (
+        StopBookingStatus.NEEDED,
+        StopBookingStatus.LINK_SENT,
+        StopBookingStatus.REMINDER_SET,
+    ):
+        return "todo"
+    return "off" if status is StopBookingStatus.CANCELLED else ""
+
+
+STATE_MARK = {"ok": "✓", "todo": "!"}
+
+
+def _disc(stop: PreviewStop) -> str:
+    """The pin: the venue's type as a glyph, its number in one corner and
+    its booking state in the other."""
+    style = type_style(stop.venue_type)
+    state = _state(stop)
+    mark = STATE_MARK.get(state)
+    badge = f'<span class="st">{mark}</span>' if mark else ""
+    return (
+        f'<span class="disc" data-state="{state}" style="--t:{style.color}">'
+        f'{style.icon}<span class="n">{stop.number}</span>{badge}</span>'
+    )
+
+
+def _length(stop: PreviewStop) -> str:
+    return duration(stop.duration_min) if stop.duration_min else ""
+
+
+def _kind(stop: PreviewStop) -> str:
+    """"Restaurant · 1 hr 30 min", either part left out when unknown."""
+    style = type_style(stop.venue_type)
+    bits = [b for b in (style.label, _length(stop)) if b]
+    if not bits:
+        return ""
+    icon = style.icon if style.label else ""
+    return f'<div class="kind">{icon}{_e(" · ".join(bits))}</div>'
+
+
+def _web_link(website: str | None) -> str | None:
+    """The venue's site as a link that leaves the page: "bestia.com" gets
+    https://, and anything that isn't http(s) — javascript:, say — none."""
+    website = (website or "").strip()
+    if not website:
+        return None
+    scheme = urlsplit(website).scheme.lower()
+    if not scheme:
+        return f"https://{website}"
+    return website if scheme in ("http", "https") else None
+
+
+def _popup(stop: PreviewStop) -> str:
+    """What opens when the stop's pin is tapped. Every control is a button
+    or link sized for a thumb: there's no hover on a phone."""
+    style = type_style(stop.venue_type)
+    when = " · ".join(b for b in (_hours(stop), _length(stop)) if b)
+    place = apple_place(stop)
+    actions = f'<button type="button" data-goto="{stop.number}">Details</button>'
+    if place:
+        actions += (
+            f'<a href="{_e(place)}" target="_blank" rel="noopener">Apple Maps</a>'
+        )
+    website = _web_link(stop.website)
+    if website:
+        actions += f'<a href="{_e(website)}" target="_blank" rel="noopener">Website</a>'
+    booking = _booking(stop)
+    return (
+        # The popup sits outside the card, so it carries the type colour too.
+        f'<div class="pop" style="--t:{style.color}">'
+        + (
+            f'<div class="kind">{style.icon}{_e(style.label)}</div>'
+            if style.label
+            else ""
+        )
+        + f"<strong>{stop.number}. {_e(stop.title)}</strong>"
+        + (f"<span>{_e(when)}</span>" if when else "")
+        + (f'<span class="addr">{_e(stop.address)}</span>' if stop.address else "")
+        + (f'<div class="row">{booking}</div>' if booking else "")
+        + f'<div class="acts">{actions}</div></div>'
+    )
+
+
+def _stop(stop: PreviewStop, live: bool = False) -> str:
     if stop.start_at is not None:
         end = f"<span>{clock(stop.end_at)}</span>" if stop.end_at else ""
         when = f"<time>{clock(stop.start_at)}</time>{end}"
@@ -212,14 +371,23 @@ def _stop(stop: PreviewStop) -> str:
     cancelled = (
         " cancelled" if stop.booking_status is StopBookingStatus.CANCELLED else ""
     )
+    # Hidden until the interactive map has loaded; the script reveals it.
+    locate = (
+        f'<button type="button" class="locate" data-locate="{stop.number}" hidden'
+        f' aria-label="Show {_e(stop.title)} on the map">{PIN}</button>'
+        if live and stop.place is not None and stop.lat is not None
+        else ""
+    )
     return f"""
-<li class="stop{cancelled}">
+<li class="stop{cancelled}" id="stop-{stop.number}" style="--t:{type_style(stop.venue_type).color}">
   <div class="when">{when}</div>
   <div class="what">
     <div class="head">
       <span class="num" aria-hidden="true">{stop.number}</span>
       <h2>{_e(stop.title)}</h2>
+      {locate}
     </div>
+    {_kind(stop)}
     {row}
   </div>
 </li>"""
@@ -249,7 +417,7 @@ def _timeline(data: PreviewData) -> str:
         ):
             items.append(_sunset(data.sunset))
             sunset_placed = True
-        items.append(_stop(stop))
+        items.append(_stop(stop, live=data.tiles is not None))
     timed = [s for s in data.stops if s.start_at is not None]
     if not sunset_placed and data.sunset is not None and timed:
         items.append(_sunset(data.sunset))
@@ -272,7 +440,7 @@ def _map(data: PreviewData) -> str:
     )
     pins = "".join(
         f'<span class="pin" style="left:{s.place[0] * 100:.2f}%;'
-        f'top:{s.place[1] * 100:.2f}%" title="{_e(s.title)}">{s.number}</span>'
+        f'top:{s.place[1] * 100:.2f}%" title="{_e(s.title)}">{_disc(s)}</span>'
         for s in placed
         if s.place
     )
@@ -317,6 +485,7 @@ LIVE_JS = """
   try {
     const cfg = JSON.parse(data.textContent);
     const box = (b) => [[b[0], b[1]], [b[2], b[3]]];
+    const motion = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
     const map = L.map(live, {
       minZoom: cfg.minZoom, maxZoom: cfg.maxZoom,
       maxBounds: box(cfg.bounds), maxBoundsViscosity: 1,
@@ -330,40 +499,67 @@ LIVE_JS = """
         minZoom: p.zoom, maxZoom: p.zoom, bounds: box(p.bounds), zIndex: 2,
       }).addTo(map);
     }
-    const points = cfg.stops.map((s) => [s.lat, s.lng]);
-    if (points.length > 1) {
-      L.polyline(points, { className: "live-route", interactive: false }).addTo(map);
-    }
+    // Walking legs dotted, driving legs solid, each labelled where it ends
+    // up halfway: nothing here needs a hover.
+    cfg.stops.forEach((s, i) => {
+      if (!i) return;
+      const p = cfg.stops[i - 1];
+      L.polyline([[p.lat, p.lng], [s.lat, s.lng]], {
+        className: "live-route " + (s.walking ? "walk" : "drive"), interactive: false,
+      }).addTo(map);
+      if (!s.leg) return;
+      L.marker([(p.lat + s.lat) / 2, (p.lng + s.lng) / 2], {
+        icon: L.divIcon({ className: "leg-tag", html: "<span>" + s.leg + "</span>", iconSize: [0, 0] }),
+        interactive: false, keyboard: false, zIndexOffset: -500,
+      }).addTo(map);
+    });
+    const markers = new Map();
     for (const s of cfg.stops) {
-      const pop = document.createElement("div");
-      pop.className = "pop";
-      const name = document.createElement("strong");
-      name.textContent = s.number + ". " + s.title;
-      pop.append(name);
-      if (s.when) {
-        const when = document.createElement("span");
-        when.textContent = s.when;
-        pop.append(when);
-      }
-      if (s.maps) {
-        const a = document.createElement("a");
-        a.href = s.maps;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.textContent = "Apple Maps";
-        pop.append(a);
-      }
-      const icon = L.divIcon({
-        className: "live-pin", html: String(s.number), iconSize: [26, 26],
-      });
-      L.marker([s.lat, s.lng], { icon, title: s.title, keyboard: true })
-        .bindPopup(pop, { closeButton: false, offset: [0, -8] })
+      const icon = L.divIcon({ className: "live-pin", html: s.pin, iconSize: [34, 34] });
+      const marker = L.marker([s.lat, s.lng], { icon, title: s.title, keyboard: true })
+        .bindPopup(s.popup, {
+          closeButton: false, offset: [0, -12], minWidth: 210, maxWidth: 270,
+          autoPanPadding: [16, 16],
+        })
         .addTo(map);
+      // The time sits under the pin all the time, so it's there to read.
+      if (s.at) {
+        marker.bindTooltip(s.at, {
+          permanent: true, direction: "bottom", offset: [0, 14], className: "live-tip",
+        });
+      }
+      markers.set(s.number, marker);
     }
-    map.fitBounds(points, { padding: [36, 36], maxZoom: cfg.zoom });
+    // Popup -> its card. The popup stops clicks reaching the map, so the
+    // button gets its own listener each time one opens.
+    map.on("popupopen", (e) => {
+      const button = e.popup.getElement().querySelector("[data-goto]");
+      if (!button) return;
+      button.addEventListener("click", () => {
+        const card = document.getElementById("stop-" + button.dataset.goto);
+        if (!card) return;
+        card.scrollIntoView({ behavior: motion, block: "center" });
+        card.classList.remove("flash");
+        void card.offsetWidth;
+        card.classList.add("flash");
+      });
+    });
+    const frame = live.closest(".frame");
+    // Card -> its pin.
+    for (const button of document.querySelectorAll("[data-locate]")) {
+      button.addEventListener("click", () => {
+        const marker = markers.get(Number(button.dataset.locate));
+        if (!marker) return;
+        frame.scrollIntoView({ behavior: motion, block: "start" });
+        map.panTo(marker.getLatLng());
+        marker.openPopup();
+      });
+    }
+    const points = cfg.stops.map((s) => [s.lat, s.lng]);
+    map.fitBounds(points, { padding: [44, 44], maxZoom: cfg.zoom });
     base.once("load", () => {
-      const frame = live.closest(".frame");
       frame.classList.add("is-live");
+      for (const button of document.querySelectorAll("[data-locate]")) button.hidden = false;
       // No longer a picture: let the pins and the zoom buttons through.
       frame.removeAttribute("role");
       frame.removeAttribute("aria-label");
@@ -373,6 +569,14 @@ LIVE_JS = """
   }
 })();
 """
+
+
+def _leg_tag(stop: PreviewStop) -> str:
+    """The short label on the leg into `stop`: its icon and minutes."""
+    if not stop.travel_min_from_prev:
+        return ""
+    icon = WALK if stop.travel_mode is TravelMode.WALKING else CAR
+    return f"{icon}{stop.travel_min_from_prev} min"
 
 
 def _live(data: PreviewData) -> str:
@@ -385,6 +589,14 @@ def _live(data: PreviewData) -> str:
     if data.tiles is None or not stops:
         return ""
     tiles = data.tiles
+    # A stop's travel fields describe the leg from the stop before it in the
+    # day. When that one isn't on the map, the line drawn here skips it, so
+    # the leg's minutes and mode don't describe the line: leave them off.
+    position = {id(s): i for i, s in enumerate(data.stops)}
+    direct = [
+        bool(i) and position[id(s)] == position[id(stops[i - 1])] + 1
+        for i, s in enumerate(stops)
+    ]
     config = {
         "url": TILE_URL,
         "minZoom": tiles.min_zoom,
@@ -402,10 +614,14 @@ def _live(data: PreviewData) -> str:
                 "title": s.title,
                 "lat": s.lat,
                 "lng": s.lng,
-                "when": _hours(s),
-                "maps": apple_place(s),
+                # Under the pin, where it can be read without tapping.
+                "at": clock(s.start_at) if s.start_at else "",
+                "pin": _disc(s),
+                "popup": _popup(s),
+                "walking": direct[i] and s.travel_mode is TravelMode.WALKING,
+                "leg": _leg_tag(s) if direct[i] else "",
             }
-            for s in stops
+            for i, s in enumerate(stops)
         ],
     }
     # No "<" at all inside <script>, so no title can end the block early.

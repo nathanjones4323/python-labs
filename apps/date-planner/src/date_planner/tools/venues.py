@@ -328,6 +328,7 @@ def register(mcp: FastMCP) -> None:
             filled: list[str] = []
             if match is not None:
                 venue.google_place_id = match.place.place_id
+                venue.google_place_data = match.place.raw
                 location = match.place.location
                 if location is not None and not venue.has_coordinates:
                     venue.lat, venue.lng = location.lat, location.lng

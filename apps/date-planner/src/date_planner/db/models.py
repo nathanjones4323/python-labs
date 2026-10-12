@@ -26,6 +26,7 @@ import enum
 import uuid
 from collections.abc import Iterable
 from datetime import date, datetime, time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
@@ -43,7 +44,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from date_planner.booking.channels import BookingChannel, WindowUnit
@@ -204,6 +205,8 @@ class Venue(Base):
     # Google's id for the place; the Resy connector's widget takes nothing
     # else. Set by `find_google_place`.
     google_place_id: Mapped[str | None] = mapped_column(Text)
+    # The place as Places returned it when `find_google_place` matched it.
+    google_place_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     window_amount: Mapped[int | None] = mapped_column(SmallInteger)
     window_unit: Mapped[WindowUnit | None] = mapped_column(
