@@ -44,7 +44,7 @@ DEEPEST = 16
 MARGIN = 96
 # The largest map the page shows (its 560px column less the gutters, at the
 # frame's aspect), so zoomed right out the view is still all tiles.
-VIEW_W, VIEW_H = 560, 364
+VIEW_W, VIEW_H = 560, 476
 # Past the deepest level that covers the whole area, only the tiles around
 # each stop are fetched, and Leaflet scales that level up elsewhere: by 4x
 # at most, beyond which it's a blur.
