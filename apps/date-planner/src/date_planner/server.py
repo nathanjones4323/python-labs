@@ -11,6 +11,7 @@ good enough for a server bound to localhost, not for public hosting.
 """
 
 import argparse
+import logging
 from typing import Any
 
 from fastmcp import FastMCP
@@ -18,6 +19,7 @@ from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 from date_planner.config import get_settings
+from date_planner.logs import ToolCallLogging, log_crash, setup_logging
 from date_planner.tools import register_all
 
 INSTRUCTIONS = """
@@ -39,6 +41,7 @@ def create_server(auth: AuthProvider | None = None) -> FastMCP[Any]:
     mcp: FastMCP[Any] = FastMCP(
         name="date-planner", instructions=INSTRUCTIONS, auth=auth
     )
+    mcp.add_middleware(ToolCallLogging())
 
     @mcp.tool
     async def ping() -> str:
@@ -58,8 +61,22 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
+    log_file = setup_logging(get_settings())
+    log = logging.getLogger("date_planner")
+    transport = "http" if args.http else "stdio"
+    log.info("server starting (%s), logging to %s", transport, log_file)
+    try:
+        _serve(args.http)
+    except Exception:
+        log_crash()
+        raise
+    finally:
+        log.info("server stopped")
+
+
+def _serve(http: bool) -> None:
     settings = get_settings()
-    if not args.http:
+    if not http:
         create_server().run()
         return
 

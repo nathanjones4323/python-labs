@@ -109,6 +109,27 @@ as a custom connector later. It refuses to start without
 <token>`. One static token bound to localhost is the whole auth story — it is
 not ready for public hosting.
 
+## Logs
+
+The server writes `logs/date-planner.log` (relative to where it starts, so
+`apps/date-planner/logs/` from the project config), rotated at 20 MB with
+25 old files kept, about 500 MB of history. Each tool call gets a line in (`→ add_stop {...arguments}`) and
+one out (`← add_stop 42ms`, or `✗` if it failed). Our own errors
+(`NotFound`, `IncompleteStop`, …) and arguments that didn't validate are a
+one-line warning; anything else is logged with the full traceback, which
+the client never sees. Failed page fetches during detection and map tiles
+that didn't load are logged too, and tile URLs have their `key=` masked.
+
+```sh
+tail -f logs/date-planner.log
+grep -A30 ' ERROR ' logs/date-planner.log   # unexpected failures
+```
+
+`DATE_PLANNER_LOG_LEVEL=DEBUG` adds every outgoing HTTP request;
+`DATE_PLANNER_LOG_DIR` moves the file; `DATE_PLANNER_LOG_MAX_MB` and
+`DATE_PLANNER_LOG_BACKUPS` change how much is kept. Several sessions' servers can share
+it; the number in brackets is the process.
+
 ## The tools
 
 | Tool | What it's for |

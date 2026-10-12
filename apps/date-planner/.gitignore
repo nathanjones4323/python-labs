@@ -9,3 +9,6 @@
 
 # Date preview pages and the map tiles behind them.
 /previews/
+
+# The server log; see src/date_planner/logs.py.
+/logs/

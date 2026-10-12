@@ -93,6 +93,14 @@ class Settings(BaseSettings):
     shared_calendar_id: str | None = None
     seed_member_emails: str = ""
 
+    # The server's log file, `log_dir/date-planner.log`; see `logs`.
+    # Relative to where the server starts, like `preview_dir`.
+    log_dir: Path = Path("logs")
+    log_level: str = "INFO"
+    # Rotated at `log_max_mb`, with `log_backups` old files kept.
+    log_max_mb: int = 20
+    log_backups: int = 25
+
     # `--http` only. Without a token the HTTP transport refuses to start, so
     # a stray `--http` can't expose the database unauthenticated.
     http_token: str | None = None

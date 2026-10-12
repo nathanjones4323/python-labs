@@ -18,6 +18,7 @@ unreachable site (`DetectionFailed`) stops it.
 """
 
 import asyncio
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -31,6 +32,8 @@ from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.booking.window import BookingWindow
 from date_planner.config import Settings, get_settings
 from date_planner.errors import DetectionFailed
+
+log = logging.getLogger(__name__)
 
 # Paths worth trying even when nothing on the homepage links to them.
 GUESS_PATHS = ("/reservations", "/reserve", "/book")
@@ -230,7 +233,8 @@ async def _fetch(client: httpx.AsyncClient, url: str) -> Page | None:
     try:
         response = await client.get(url)
         response.raise_for_status()
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        log.info("fetch %s failed: %r", url, exc)
         return None
     html = response.text
     return Page(url=str(response.url), html=html, text=_text(html))
