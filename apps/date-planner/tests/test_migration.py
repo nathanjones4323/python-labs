@@ -1,4 +1,4 @@
-"""The single migration: it builds the schema, tears it down, and matches the models.
+"""The migrations: they build the schema, tear it down, and match the models.
 
 Synchronous on purpose: Alembic's env.py runs its own event loop, which it
 can't do inside an async test's.
