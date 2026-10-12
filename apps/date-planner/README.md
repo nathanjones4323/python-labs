@@ -42,9 +42,10 @@ dietary needs, and the likes nobody vetoes) unless the user says it's one
 person's turn, which sets the date's `planned_for`. `next_turn` is derived from
 which member was planned for least recently.
 
-The schema is a single migration. If you have a database from before the
-members table, drop and recreate it rather than upgrading
-(`docker compose down -v && docker compose up -d`, then `alembic upgrade head`).
+The schema is built by `001` (tables) then `002` (unique `google_place_id`).
+If you have a database from before the members table, drop and recreate it
+rather than upgrading (`docker compose down -v && docker compose up -d`,
+then `alembic upgrade head`).
 
 To wipe the local data and seed again (schema kept, localhost only):
 
@@ -292,15 +293,6 @@ uv run --package date-planner python scripts/verify_links.py --from-db
 A 404 or "not found" from the platform itself can mean the sample slug is
 stale or the venue isn't currently taking reservations there, rather than the
 template being wrong — check the platform's own error message first.
-
-## Migrating from v1
-
-`alembic upgrade head` runs migration `002`, which renames `restaurants` to
-`venues` (backfilling `venue_type=restaurant`), turns each v1 date into a day
-with one stop carrying its restaurant, times and booking fields, and maps the
-statuses across (see the migration's docstring). It's reversible:
-`alembic downgrade 001` puts the first stop back onto each date, and v1 data
-survives the round trip unchanged (`tests/test_migration.py`).
 
 ## Tests
 
