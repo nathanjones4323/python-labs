@@ -131,6 +131,31 @@ sunset dinner somewhere"): one `add_stop` per item, in their order.
 - A link they gave (AllTrails, a museum page) → find or create the venue
   with `upsert_venue`, putting a trail's page in `external_url`.
 
+**Check the shared calendar for the day** before placing anything:
+`list_events` on the profile's `shared_calendar_id` from the day's start to
+its end, in the couple's timezone. Leave out the events this date already
+owns (a description with `dp:date={this date_id}`), all-day events, events
+marked free, and events the couple declined. What's left is **busy**:
+
+- **Look for available times.** Plan flexible stops into the gaps. Set
+  `start_after` / `end_before` on the date to the free stretch you're using,
+  and say why in one line ("starting after your 11:00 brunch").
+- **Point out conflicts the user creates.** If the user names a time that
+  overlaps a busy event, still use their time, but name the clash in one
+  line ("7pm overlaps *Sam's birthday drinks* 6:30–8:30"), and offer the
+  nearest free time. Don't move a time the user chose without asking.
+- Pass the busy events to every `plan_timeline` call as `busy=[{title,
+  start, end, event_id}]`. Times need their UTC offset. With `event_id`
+  set, the date's own holds are skipped. It reports `calendar_conflict`
+  for any stop that lands on one. Move a flexible stop off it. For a fixed
+  stop, point out the clash as above.
+
+**Idea board — skip the calendar check.** When the user is choosing between
+several separate dates shown side by side ("give me three options for
+Saturday"), don't check the calendar. Don't flag the options against each
+other or against existing events, and put up no holds. Run the check above
+only once they've picked one.
+
 **The user wants ideas**: propose 2–4 stops that work as a sequence — a
 shape for the day, not a list of unrelated places. Use web search for what's
 on and seasonal. Say briefly why it suits them. This is the one place to
@@ -187,6 +212,7 @@ It never reorders; it places and reports violations:
 | `overlap` | shorten a stop, drop one, or move a flexible stop after the anchor |
 | `outside_window` | reorder or shorten; or ask whether the window can move |
 | `daylight` | move the trail earlier — never leave a hike ending after sunset |
+| `calendar_conflict` | flexible stop: move it into a free gap (`start_after` / `end_before`); a time the user gave: keep it, point out the clash, offer the nearest free time |
 | `missing_duration` / `missing_coordinates` | fill them in (steps 2–3) |
 
 `plan_timeline` starts a flexible stop as soon as the previous leg ends. A
@@ -300,6 +326,8 @@ and puts any stop that was booked (or had a link or reminder out) back to
 
 - check the new day with `plan_timeline(date_id)`: sunset moves, and a
   `daylight` violation can appear;
+- check the new day's shared calendar for conflicts (step 2) and name any
+  clash;
 - move each stop's calendar event to its new time and put `[TENTATIVE]`
   back on any that lose their booking. A call reminder for the old day is
   moved to the new day's `compute_booking_window`, not deleted;

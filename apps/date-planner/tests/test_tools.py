@@ -661,3 +661,38 @@ async def test_applying_keeps_a_booked_stops_end_without_a_duration(
     stored = await call("get_date", date_id=str(planned.id))
     assert stored.stops[0].end_at == datetime.fromisoformat("2026-10-24T20:30:00-07:00")
     assert stored.status == "confirmed"
+
+
+async def test_timeline_flags_calendar_conflicts_but_not_its_own_holds(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    planned = await new_date(seeded)
+    planned = await add(
+        planned.id,
+        title="Getty Villa",
+        kind="ticketed",
+        venue_id=str(seeded["getty_id"]),
+        anchor="fixed",
+        start_at="2026-10-24T13:00:00-07:00",
+        est_duration_min=120,
+    )
+    getty = planned.stops[0].id
+    await call("update_stop", stop_id=getty, patch={"calendar_event_id": "hold-1"})
+    busy = [
+        {
+            "title": "[TENTATIVE] Getty Villa",
+            "start": "2026-10-24T13:00:00-07:00",
+            "end": "2026-10-24T15:00:00-07:00",
+            "event_id": "hold-1",
+        },
+        {
+            "title": "Birthday lunch",
+            "start": "2026-10-24T12:00:00-07:00",
+            "end": "2026-10-24T13:30:00-07:00",
+        },
+    ]
+    result = await call("plan_timeline", date_id=str(planned.id), busy=busy)
+    assert [(v.type, v.stop_id) for v in result.violations] == [
+        ("calendar_conflict", getty)
+    ]
+    assert '"Birthday lunch", 12:00-13:30' in result.violations[0].message

@@ -24,6 +24,7 @@ from date_planner.db.models import (
 from date_planner.errors import MissingCoordinates
 from date_planner.planning import sunset, timeline, travel
 from date_planner.schemas import (
+    BusyEventIn,
     LegOut,
     PlacedStopOut,
     SunsetOut,
@@ -107,7 +108,10 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool
     @as_tool_error
     async def plan_timeline(
-        date_id: uuid.UUID, buffer_min: int = 10, apply: bool = False
+        date_id: uuid.UUID,
+        buffer_min: int = 10,
+        apply: bool = False,
+        busy: list[BusyEventIn] | None = None,
     ) -> TimelineOut:
         """Work out every stop's time in the current order, and what's wrong.
 
@@ -120,7 +124,12 @@ def register(mcp: FastMCP) -> None:
         Violations: `leg_exceeds_max` (a leg over the date's
         `max_leg_minutes`), `overlap` (a stop can't fit before the next
         anchor), `outside_window`, `missing_duration`,
-        `missing_coordinates`, `daylight` (a trail ending after sunset).
+        `missing_coordinates`, `daylight` (a trail ending after sunset),
+        `calendar_conflict` (a stop overlapping one of `busy`).
+
+        `busy` is the day's events from the shared calendar. Events whose
+        `event_id` is one of this date's own holds or call reminders are
+        skipped, so a date never conflicts with itself.
 
         Nothing is written unless `apply=True`; do that once the user has
         approved the timeline.
@@ -227,6 +236,18 @@ def register(mcp: FastMCP) -> None:
                     )
                 )
 
+            own_events = {
+                event_id
+                for stop in stops
+                for event_id in (stop.calendar_event_id, stop.reminder_event_id)
+                if event_id
+            }
+            blocks = [
+                timeline.Busy(title=event.title, start=event.start, end=event.end)
+                for event in busy or []
+                if event.event_id is None or event.event_id not in own_events
+            ]
+
             result = timeline.plan(
                 inputs,
                 leg_minutes,
@@ -236,6 +257,7 @@ def register(mcp: FastMCP) -> None:
                 max_leg_minutes=planned.max_leg_minutes,
                 start_after=planned.start_after,
                 end_before=planned.end_before,
+                busy=blocks,
             )
             violations += [
                 ViolationOut(type=v.type, message=v.message, stop_id=v.stop_id)

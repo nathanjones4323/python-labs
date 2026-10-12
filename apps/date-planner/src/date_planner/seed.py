@@ -27,6 +27,7 @@ from date_planner.db import open_session, repo
 from date_planner.db.models import VenueType
 from date_planner.schemas import CoupleProfileIn, VenueIn
 
+
 def build_couple() -> CoupleProfileIn:
     settings = get_settings()
     return CoupleProfileIn(

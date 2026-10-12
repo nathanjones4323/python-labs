@@ -10,7 +10,7 @@ import uuid
 from datetime import date, datetime, time
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, WithJsonSchema
 
 from date_planner.booking.channels import (
     BookingChannel,
@@ -379,6 +379,21 @@ class LegOut(BaseModel):
     provider: str | None
     is_estimate: bool | None
     mode: TravelMode
+
+
+class BusyEventIn(BaseModel):
+    """An event already on the shared calendar, from `list_events`.
+
+    Times carry their UTC offset, as the connector returns them. Pass
+    `event_id` so the date's own holds are recognised and skipped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    start: AwareDatetime
+    end: AwareDatetime
+    event_id: str | None = None
 
 
 class ViolationOut(BaseModel):

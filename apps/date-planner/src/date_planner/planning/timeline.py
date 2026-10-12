@@ -16,6 +16,9 @@ so the rounding never eats into a leg. Problems come back as violations,
 never as silent fixes: it's the agent's job to change the order or a
 duration and run it again.
 
+Busy blocks — events already on the shared calendar — are only checked
+against: a stop that lands on one is a `calendar_conflict`, never moved.
+
 Missing data doesn't stop the rest of the day being worked out. A leg that
 couldn't be timed counts as zero minutes (the caller reports
 `missing_coordinates`), and a stop with no duration has no end, so a
@@ -41,6 +44,7 @@ class ViolationType(enum.StrEnum):
     MISSING_DURATION = "missing_duration"
     MISSING_COORDINATES = "missing_coordinates"
     DAYLIGHT = "daylight"
+    CALENDAR_CONFLICT = "calendar_conflict"
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,15 @@ class StopInput:
     sunset: datetime | None = None
     # Trails get the daylight check.
     is_trail: bool = False
+
+
+@dataclass(frozen=True)
+class Busy:
+    """An event already on the calendar that the day has to fit around."""
+
+    title: str
+    start: datetime
+    end: datetime
 
 
 @dataclass(frozen=True)
@@ -123,6 +136,7 @@ def plan(
     max_leg_minutes: int = 25,
     start_after: time | None = None,
     end_before: time | None = None,
+    busy: list[Busy] | None = None,
 ) -> Timeline:
     """Times for `stops`, in order; `legs[i]` is the drive from stop i to i+1.
 
@@ -270,6 +284,31 @@ def plan(
                     stop.id,
                 )
             )
+
+    for i, stop in enumerate(stops):
+        start, end = starts[i], ends[i]
+        if start is None:
+            continue
+        # A stop with no end still occupies its start.
+        until = end if end is not None else start + timedelta(minutes=1)
+        for block in busy or []:
+            if start < block.end and block.start < until:
+                chosen = (
+                    "the time given for it"
+                    if stop.anchor is Anchor.FIXED
+                    else "the time worked out for it"
+                )
+                violations.append(
+                    Violation(
+                        ViolationType.CALENDAR_CONFLICT,
+                        f'"{stop.title}" at {_clock(start)}'
+                        + (f"-{_clock(end)}" if end is not None else "")
+                        + f' ({chosen}) overlaps "{block.title}", '
+                        f"{_clock(block.start.astimezone(tz))}-"
+                        f"{_clock(block.end.astimezone(tz))}.",
+                        stop.id,
+                    )
+                )
 
     return Timeline(
         stops=[
