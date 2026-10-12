@@ -60,7 +60,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 24
+    assert len(tools) == 26
     assert all(tool.description for tool in tools)
 
 
@@ -226,6 +226,133 @@ async def test_booking_link_for_an_online_venue(
     # (A TÍ); this test's own "bestia" slug is a fixture, not a real one.
     assert link.verified is True
     assert link.local_start == datetime(2026, 10, 24, 19, 0, tzinfo=LA)
+
+
+# --- the Resy connector ----------------------------------------------------
+
+PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
+BESTIA_PLACE = {
+    "id": "ChIJ-bestia",
+    "displayName": {"text": "Bestia"},
+    "formattedAddress": "2121 E 7th Pl, Los Angeles, CA 90021, USA",
+    "location": {"latitude": 34.0337, "longitude": -118.2294},
+}
+
+
+async def test_find_google_place_saves_the_match_once(
+    db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "k3y")
+    namesake = {"id": "ChIJ-bavel", "displayName": {"text": "Bavel"}}
+    with respx.mock() as router:
+        route = router.post(PLACES_URL).respond(
+            200, json={"places": [namesake, BESTIA_PLACE]}
+        )
+        found = await call("find_google_place", venue_id=str(seeded["bestia_id"]))
+        assert found.google_place_id == "ChIJ-bestia"
+        assert [c.is_match for c in found.candidates] == [False, True]
+        # Bestia had no coordinates or address on file.
+        assert found.filled == ["lat", "lng", "address"]
+
+        again = await call("find_google_place", venue_id=str(seeded["bestia_id"]))
+        assert again.from_cache is True
+        assert again.google_place_id == "ChIJ-bestia"
+        assert route.call_count == 1
+
+    venue = await call("find_venue", name="Bestia", city="Los Angeles")
+    assert venue.google_place_id == "ChIJ-bestia"
+    assert venue.lat == 34.0337
+
+
+async def test_find_google_place_saves_nothing_without_a_match(
+    db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "k3y")
+    with respx.mock() as router:
+        router.post(PLACES_URL).respond(
+            200, json={"places": [{"id": "x", "displayName": {"text": "Bavel"}}]}
+        )
+        found = await call("find_google_place", venue_id=str(seeded["bestia_id"]))
+    assert found.google_place_id is None
+    assert found.filled == []
+    venue = await call("find_venue", name="Bestia", city="Los Angeles")
+    assert venue.google_place_id is None
+
+
+async def test_find_google_place_needs_a_key(
+    db: Factory, seeded: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "")
+    with pytest.raises(ToolError, match="PlacesFailed: GOOGLE_PLACES_API_KEY"):
+        await call("find_google_place", venue_id=str(seeded["bestia_id"]))
+
+
+async def bestia_stop(seeded: dict[str, Any], **stop: Any) -> str:
+    planned = await new_date(seeded)
+    planned = await add(
+        planned.id,
+        title="Dinner at Bestia",
+        kind="meal",
+        venue_id=str(seeded["bestia_id"]),
+        start_at="2026-10-24T19:00:00",
+        **stop,
+    )
+    return str(planned.stops[0].id)
+
+
+async def test_resy_widget_args(db: Factory, seeded: dict[str, Any]) -> None:
+    stop_id = await bestia_stop(seeded, party_size=4)
+    with pytest.raises(ToolError, match="MissingGooglePlace"):
+        await call("resy_widget_args", stop_id=stop_id, now="2026-10-11T09:00:00")
+
+    await call(
+        "upsert_venue",
+        venue={"id": str(seeded["bestia_id"]), "google_place_id": "ChIJ-bestia"},
+    )
+    args = await call("resy_widget_args", stop_id=stop_id, now="2026-10-11T09:00:00")
+    assert args.google_places_id == "ChIJ-bestia"
+    assert args.restaurant_name == "Bestia"
+    assert args.date == "2026-10-24"
+    assert args.party_size == 4
+    assert args.resy_url == (
+        "https://resy.com/cities/los-angeles-ca/venues/bestia?date=2026-10-24&seats=4"
+    )
+    assert args.local_start == datetime(2026, 10, 24, 19, 0, tzinfo=LA)
+
+
+@pytest.mark.parametrize(
+    ("now", "party_size", "reason"),
+    [
+        ("2026-08-24T09:00:00", 2, "comes into range on 2026-08-25"),
+        ("2026-10-25T09:00:00", 2, "has passed"),
+        ("2026-10-11T09:00:00", 16, "1–15 people, not 16"),
+    ],
+)
+async def test_resy_widget_range(
+    db: Factory, seeded: dict[str, Any], now: str, party_size: int, reason: str
+) -> None:
+    await call(
+        "upsert_venue",
+        venue={"id": str(seeded["bestia_id"]), "google_place_id": "ChIJ-bestia"},
+    )
+    stop_id = await bestia_stop(seeded, party_size=party_size)
+    with pytest.raises(ToolError, match=f"OutsideWidgetRange: .*{reason}"):
+        await call("resy_widget_args", stop_id=stop_id, now=now)
+
+
+async def test_resy_widget_is_for_resy_venues(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    planned = await new_date(seeded)
+    planned = await add(
+        planned.id,
+        title="Dinner at Nobu",
+        kind="meal",
+        venue_id=str(seeded["nobu_id"]),
+        start_at="2026-10-24T19:00:00",
+    )
+    with pytest.raises(ToolError, match="UnsupportedChannel: .*phone, not Resy"):
+        await call("resy_widget_args", stop_id=str(planned.stops[0].id))
 
 
 async def test_a_ticketed_link_is_the_venues_own_page(

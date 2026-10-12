@@ -1,28 +1,39 @@
 """Tools about venues: what we know, how they book, when they book.
 
-`detect_booking_channel` is the only tool here that reaches out to the
-internet, and it caches what it learns on the venue row so the next question
-is free. The booking tools take a stop, not a venue: the stop says when and
-for how many.
+`detect_booking_channel` and `find_google_place` are the only tools here
+that reach out to the internet, and both cache what they learn on the venue
+row so the next question is free. The booking tools take a stop, not a
+venue: the stop says when and for how many.
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastmcp import FastMCP
 
 from date_planner.booking import detect as detection_mod
-from date_planner.booking import links, window
+from date_planner.booking import links, places, window
 from date_planner.booking.channels import ONLINE_CHANNELS, BookingChannel
 from date_planner.config import get_settings
 from date_planner.db import open_session, repo
 from date_planner.db.models import DateStop, ReservationNeed, Venue
-from date_planner.errors import DetectionFailed, IncompleteStop
+from date_planner.errors import (
+    DetectionFailed,
+    IncompleteStop,
+    MissingGooglePlace,
+    OutsideWidgetRange,
+    PlacesFailed,
+    UnsupportedChannel,
+)
+from date_planner.planning.travel import LatLng
 from date_planner.schemas import (
     BookingLinkOut,
     BookingWindowOut,
     DetectionOut,
+    GooglePlaceOut,
+    PlaceCandidateOut,
     ReservationNeedOut,
+    ResyWidgetOut,
     VenueIn,
     VenueOut,
 )
@@ -74,6 +85,30 @@ def _stop_start(stop: DateStop) -> datetime:
             "or set the booked time with update_stop."
         )
     return stop.start_at
+
+
+# The Resy connector's own limits for its availability widget.
+RESY_WIDGET_DAYS_AHEAD = 60
+RESY_WIDGET_MAX_PARTY = 15
+
+
+def check_resy_widget_range(day: date, today: date, party_size: int) -> None:
+    """Raise `OutsideWidgetRange` unless the Resy widget will take this."""
+    last = today + timedelta(days=RESY_WIDGET_DAYS_AHEAD)
+    if day < today:
+        raise OutsideWidgetRange(f"{day} has passed.")
+    if day > last:
+        opens = day - timedelta(days=RESY_WIDGET_DAYS_AHEAD)
+        raise OutsideWidgetRange(
+            f"The Resy widget shows {RESY_WIDGET_DAYS_AHEAD} days ahead at most "
+            f"({day} comes into range on {opens}); hand over build_booking_link "
+            "for now."
+        )
+    if not 1 <= party_size <= RESY_WIDGET_MAX_PARTY:
+        raise OutsideWidgetRange(
+            f"The Resy widget takes 1–{RESY_WIDGET_MAX_PARTY} people, not "
+            f"{party_size}; hand over build_booking_link."
+        )
 
 
 def suggest_need(
@@ -245,6 +280,132 @@ def register(mcp: FastMCP) -> None:
             verified=link.verified,
             local_start=link.local_start,
         )
+
+    @mcp.tool
+    @as_tool_error
+    async def find_google_place(
+        venue_id: uuid.UUID, force: bool = False
+    ) -> GooglePlaceOut:
+        """Look up the venue's Google Place ID and save it on the venue.
+
+        The Resy connector's widget needs this id and refuses a guessed one,
+        so never type one in yourself. Searches Google Places for the
+        venue's name and address (or city) near its saved coordinates, and
+        saves the first result whose name matches and that lies within
+        300 m of those coordinates. It fills in an empty lat/lng or address
+        from Google while it's there (`filled`). An id already on the venue
+        is reused unless `force`.
+
+        A null `google_place_id` means nothing matched: `candidates` shows
+        what Google found. If one is clearly the venue (say, a different
+        name on Google), say so and save its id with `upsert_venue`;
+        otherwise leave it and hand over the link.
+        """
+        settings = get_settings()
+        async with open_session() as session:
+            venue = await repo.get_venue(session, venue_id)
+            if venue.google_place_id and not force:
+                return GooglePlaceOut(
+                    venue_id=venue.id,
+                    google_place_id=venue.google_place_id,
+                    from_cache=True,
+                )
+            if not settings.google_places_api_key:
+                raise PlacesFailed(
+                    "GOOGLE_PLACES_API_KEY isn't set in the server's .env, so the "
+                    "Resy widget can't be used; hand over build_booking_link."
+                )
+            near = (
+                LatLng(venue.lat, venue.lng)
+                if venue.lat is not None and venue.lng is not None
+                else None
+            )
+            found = await places.search(
+                f"{venue.name}, {venue.address or venue.city}",
+                settings.google_places_api_key,
+                near,
+            )
+            candidates = places.rank(venue.name, near, found)
+            match = next((c for c in candidates if c.is_match), None)
+            filled: list[str] = []
+            if match is not None:
+                venue.google_place_id = match.place.place_id
+                location = match.place.location
+                if location is not None and not venue.has_coordinates:
+                    venue.lat, venue.lng = location.lat, location.lng
+                    filled += ["lat", "lng"]
+                if match.place.address and not venue.address:
+                    venue.address = match.place.address
+                    filled.append("address")
+            return GooglePlaceOut(
+                venue_id=venue.id,
+                google_place_id=venue.google_place_id if match else None,
+                filled=filled,
+                candidates=[
+                    PlaceCandidateOut(
+                        google_place_id=c.place.place_id,
+                        name=c.place.name,
+                        address=c.place.address,
+                        lat=c.place.location.lat if c.place.location else None,
+                        lng=c.place.location.lng if c.place.location else None,
+                        distance_m=(
+                            round(c.distance_m) if c.distance_m is not None else None
+                        ),
+                        is_match=c.is_match,
+                    )
+                    for c in candidates
+                ],
+            )
+
+    @mcp.tool
+    @as_tool_error
+    async def resy_widget_args(
+        stop_id: uuid.UUID, now: datetime | None = None
+    ) -> ResyWidgetOut:
+        """The arguments for the Resy connector's availability widget
+        (`display_resy_restaurant_availabilities_app`), for one Resy stop.
+
+        Pass every argument field through unchanged — `google_places_id`,
+        `restaurant_name`, `date`, `party_size`, `latitude`, `longitude`,
+        `phone_number`. `resy_url` and `local_start` are for you, not the
+        widget.
+
+        Raises `UnsupportedChannel` if the venue isn't on Resy,
+        `MissingGooglePlace` if `find_google_place` hasn't found its id, and
+        `OutsideWidgetRange` when the day is past, more than 60 days out, or
+        the party isn't 1–15: the widget can't show those, so hand over
+        `build_booking_link` instead. `now` without an offset is the venue's
+        local time.
+        """
+        async with open_session() as session:
+            stop = await repo.get_stop(session, stop_id)
+            venue = _stop_venue(stop)
+            if venue.booking_channel is not BookingChannel.RESY:
+                raise UnsupportedChannel(
+                    f"{venue.name} books by {venue.booking_channel}, not Resy."
+                )
+            if not venue.google_place_id:
+                raise MissingGooglePlace(
+                    f"{venue.name} has no Google Place ID yet; run find_google_place."
+                )
+            tz = venue.tz
+            start = _stop_start(stop).astimezone(tz)
+            today = (localize(now, tz) if now else datetime.now(tz)).date()
+            check_resy_widget_range(start.date(), today, stop.party_size)
+            resy_url = None
+            if venue.platform_slug and venue.platform_city_slug:
+                resy_url = links.build(venue.link_target, start, stop.party_size).url
+            return ResyWidgetOut(
+                google_places_id=venue.google_place_id,
+                restaurant_name=venue.name,
+                date=start.date().isoformat(),
+                party_size=stop.party_size,
+                latitude=venue.lat,
+                longitude=venue.lng,
+                phone_number=venue.phone,
+                resy_url=resy_url,
+                local_start=start,
+            )
 
     @mcp.tool
     @as_tool_error

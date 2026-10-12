@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     travel_padding_pct: float = Field(default=20.0, alias="TRAVEL_PADDING_PCT")
     travel_cache_ttl_days: int = 30
 
+    # Google Places (New), for a venue's Place ID — the one thing the Resy
+    # connector's widget needs. Unprefixed, like ORS_API_KEY. Without it
+    # `find_google_place` says so and the skill falls back to the link.
+    google_places_api_key: str | None = Field(
+        default=None, alias="GOOGLE_PLACES_API_KEY"
+    )
+
     # The date preview page; see `preview`. Pages are written under
     # `preview_dir` (relative to where the server starts, which is the
     # Claude Code project) so the session can publish them as an Artifact.
