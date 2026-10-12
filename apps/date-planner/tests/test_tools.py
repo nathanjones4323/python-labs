@@ -60,7 +60,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 26
+    assert len(tools) == 28
     assert all(tool.description for tool in tools)
 
 
@@ -71,37 +71,87 @@ async def test_profile_round_trip(db: Factory, seeded: dict[str, Any]) -> None:
     profile = await call("get_couple_profile", couple_id=str(seeded["couple_id"]))
     assert profile.name == "Test couple"
     assert profile.budget_per_date == 250
-    assert profile.dietary == ["no shellfish"]
+    assert [m.name for m in profile.members] == ["Alex", "Sam"]
+    assert profile.members[0].dietary == ["no shellfish"]
+    # Sam's dislike and Alex's dietary need bind a date for both.
+    assert profile.shared.likes == ["sushi", "hiking"]
+    assert profile.shared.dislikes == ["loud rooms"]
+    assert profile.shared.dietary == ["no shellfish"]
 
     updated = await call(
         "upsert_couple_profile",
         profile={"id": str(seeded["couple_id"]), "budget_per_date": 180},
     )
     assert updated.budget_per_date == 180
-    assert updated.dietary == ["no shellfish"]
+    assert [m.name for m in updated.members] == ["Alex", "Sam"]
 
 
 async def test_a_new_profile_can_be_created_from_nothing(db: Factory) -> None:
-    created = await call(
-        "upsert_couple_profile",
-        profile={"name": "New couple", "likes": ["tacos"]},
-    )
-    assert created.likes == ["tacos"]
+    created = await call("upsert_couple_profile", profile={"name": "New couple"})
+    assert created.members == []
+    assert created.next_turn is None
     listed = await call("list_couples")
     assert [c.id for c in listed] == [created.id]
 
+    with_member = await call(
+        "upsert_member", couple_id=str(created.id), member={"name": "Cy"}
+    )
+    assert [m.name for m in with_member.members] == ["Cy"]
+    assert with_member.next_turn.name == "Cy"
+    members = await call("list_members", couple_id=str(created.id))
+    assert [m.name for m in members] == ["Cy"]
 
-async def test_preferences_can_be_edited_an_item_at_a_time(
+
+async def test_preferences_are_edited_per_member(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     edited = await call(
-        "edit_couple_preferences",
+        "edit_member_preferences",
         couple_id=str(seeded["couple_id"]),
+        member="sam",
         edit={"add_likes": ["tapas"], "add_dislikes": ["sushi"]},
     )
-    assert edited.likes == ["tapas"]
-    assert edited.dislikes == ["loud rooms", "sushi"]
-    assert edited.dietary == ["no shellfish"]
+    alex, sam = edited.members
+    assert sam.likes == ["hiking", "tapas"]
+    assert sam.dislikes == ["loud rooms", "sushi"]
+    # Alex is untouched; sushi is now vetoed for a date for both.
+    assert alex.likes == ["sushi"]
+    assert edited.shared.likes == ["hiking", "tapas"]
+
+
+async def test_editing_an_unknown_member_is_a_not_found_error(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    with pytest.raises(ToolError, match="NotFound.*members: Alex, Sam"):
+        await call(
+            "edit_member_preferences",
+            couple_id=str(seeded["couple_id"]),
+            member="Cy",
+            edit={"add_likes": ["tapas"]},
+        )
+
+
+async def test_planning_for_a_member_passes_the_turn_on(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    couple_id = str(seeded["couple_id"])
+    before = await call("get_couple_profile", couple_id=couple_id)
+    assert before.next_turn.name == "Alex"
+
+    with pytest.raises(ToolError, match="NotFound"):
+        await new_date(seeded, planned_for="nobody")
+
+    both = await new_date(seeded)
+    assert both.planned_for is None
+    assert (
+        await call("get_couple_profile", couple_id=couple_id)
+    ).next_turn.name == "Alex"
+
+    hers = await new_date(seeded, planned_for="a@example.com")
+    assert hers.planned_for == "Alex"
+    after = await call("get_couple_profile", couple_id=couple_id)
+    assert after.next_turn.name == "Sam"
+    assert after.next_turn.last_planned_for is None  # Sam hasn't had one yet
 
 
 async def test_past_dates_come_back_with_ratings_and_stops(

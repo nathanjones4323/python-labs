@@ -25,6 +25,7 @@ from date_planner.db.models import (
     PENDING_BOOKING,
     STICKY_STATUSES,
     Couple,
+    CoupleMember,
     DateStatus,
     DateStop,
     PlannedDate,
@@ -39,7 +40,10 @@ from date_planner.errors import InvalidTransition, NotFound
 from date_planner.schemas import (
     CoupleProfileIn,
     DatePatch,
+    MemberIn,
+    NextTurn,
     PreferenceEdit,
+    Preferences,
     StopIn,
     StopPatch,
     VenueIn,
@@ -63,9 +67,7 @@ def _assign(row: object, values: dict[str, object], required: frozenset[str]) ->
 
 
 # Columns with no sensible empty value; see `_assign`.
-COUPLE_REQUIRED = frozenset(
-    {"name", "timezone", "member_emails", "dietary", "likes", "dislikes"}
-)
+COUPLE_REQUIRED = frozenset({"name", "timezone"})
 
 
 async def get_couple(session: AsyncSession, couple_id: uuid.UUID) -> Couple:
@@ -93,7 +95,8 @@ async def upsert_couple(session: AsyncSession, profile: CoupleProfileIn) -> Coup
     else:
         if not values.get("name"):
             raise ValueError("A new couple needs a name")
-        couple = Couple(name=values.pop("name"))
+        # `members` set so it reads as loaded: an async session can't lazy-load it.
+        couple = Couple(name=values.pop("name"), members=[])
         session.add(couple)
     _assign(couple, values, COUPLE_REQUIRED)
     await session.flush()
@@ -119,24 +122,126 @@ def _with(items: list[str], add: list[str]) -> list[str]:
     return out
 
 
+async def resolve_member(
+    session: AsyncSession, couple_id: uuid.UUID, ref: str
+) -> CoupleMember:
+    """The couple's member `ref` names: by name, email or id, ignoring case."""
+    couple = await get_couple(session, couple_id)
+    wanted = _key(ref)
+    for member in couple.members:
+        if wanted in {
+            _key(member.name),
+            _key(member.email or ""),
+            str(member.id),
+        }:
+            return member
+    known = ", ".join(m.name for m in couple.members) or "none yet"
+    raise NotFound(f"No member {ref!r} in couple {couple_id} (members: {known})")
+
+
+async def upsert_member(
+    session: AsyncSession, couple_id: uuid.UUID, member: MemberIn
+) -> CoupleMember:
+    """Update the member `member.id` (or the same name) names, or add one."""
+    couple = await get_couple(session, couple_id)
+    values = member.model_dump(exclude_unset=True, exclude={"id"})
+    row: CoupleMember | None = None
+    if member.id is not None:
+        row = next((m for m in couple.members if m.id == member.id), None)
+        if row is None:
+            raise NotFound(f"No member {member.id} in couple {couple_id}")
+    elif values.get("name"):
+        row = next(
+            (m for m in couple.members if _key(m.name) == _key(values["name"])), None
+        )
+        if row is not None:
+            values.pop("name")  # matched by it; don't re-case the stored one
+    if row is None:
+        if not values.get("name"):
+            raise ValueError("A new member needs a name")
+        row = CoupleMember(
+            couple_id=couple_id,
+            name=values.pop("name"),
+            likes=[],
+            dislikes=[],
+            dietary=[],
+        )
+        couple.members.append(row)
+    _assign(row, values, frozenset({"name"}))
+    await session.flush()
+    return row
+
+
 async def edit_preferences(
-    session: AsyncSession, couple_id: uuid.UUID, edit: PreferenceEdit
+    session: AsyncSession, couple_id: uuid.UUID, member_ref: str, edit: PreferenceEdit
 ) -> Couple:
-    """Add and drop single preference items; see `PreferenceEdit`.
+    """Add and drop single preference items on one member; see `PreferenceEdit`.
 
     Each list is assigned anew rather than mutated, so the ORM sees the
-    change to the ARRAY column.
+    change to the ARRAY column. Returns the couple, so both members show.
     """
-    couple = await get_couple(session, couple_id)
-    likes = _without(couple.likes, edit.remove_likes + edit.add_dislikes)
-    dislikes = _without(couple.dislikes, edit.remove_dislikes + edit.add_likes)
-    couple.likes = _with(likes, edit.add_likes)
-    couple.dislikes = _with(dislikes, edit.add_dislikes)
-    couple.dietary = _with(
-        _without(couple.dietary, edit.remove_dietary), edit.add_dietary
+    member = await resolve_member(session, couple_id, member_ref)
+    likes = _without(member.likes, edit.remove_likes + edit.add_dislikes)
+    dislikes = _without(member.dislikes, edit.remove_dislikes + edit.add_likes)
+    member.likes = _with(likes, edit.add_likes)
+    member.dislikes = _with(dislikes, edit.add_dislikes)
+    member.dietary = _with(
+        _without(member.dietary, edit.remove_dietary), edit.add_dietary
     )
     await session.flush()
-    return couple
+    return await get_couple(session, couple_id)
+
+
+def _pool(lists: list[list[str]]) -> list[str]:
+    out: list[str] = []
+    for items in lists:
+        out = _with(out, items)
+    return out
+
+
+def effective_preferences(
+    couple: Couple, member: CoupleMember | None = None
+) -> Preferences:
+    """The taste to plan a date by.
+
+    Dislikes and dietary needs are always pooled across the members: a date
+    for one person still has to work for the other. Likes are the member's
+    own when a date is theirs, else everyone's; either way a like that
+    anybody dislikes is left out.
+    """
+    dislikes = _pool([m.dislikes for m in couple.members])
+    dietary = _pool([m.dietary for m in couple.members])
+    liked = (
+        member.likes if member is not None else _pool([m.likes for m in couple.members])
+    )
+    return Preferences(
+        likes=_without(liked, dislikes), dislikes=dislikes, dietary=dietary
+    )
+
+
+async def next_turn(session: AsyncSession, couple: Couple) -> NextTurn | None:
+    """The member planned for least recently, never-planned first.
+
+    Dates planned for both don't count, and neither do cancelled ones — they
+    never happened. Ties go to the member who was added first.
+    """
+    if not couple.members:
+        return None
+    result = await session.execute(
+        select(PlannedDate.planned_for_member_id, func.max(PlannedDate.day))
+        .where(
+            PlannedDate.couple_id == couple.id,
+            PlannedDate.planned_for_member_id.is_not(None),
+            PlannedDate.status != DateStatus.CANCELLED,
+        )
+        .group_by(PlannedDate.planned_for_member_id)
+    )
+    last = {member_id: day for member_id, day in result}
+    # min() keeps the first of equals, and `members` is in the order added.
+    chosen = min(couple.members, key=lambda m: last.get(m.id, date.min))
+    return NextTurn(
+        member_id=chosen.id, name=chosen.name, last_planned_for=last.get(chosen.id)
+    )
 
 
 # --- venues ----------------------------------------------------------------
@@ -275,11 +380,18 @@ async def create_date(
     start_after: time | None = None,
     end_before: time | None = None,
     notes: str | None = None,
+    planned_for: str | None = None,
 ) -> PlannedDate:
     await get_couple(session, couple_id)  # 404 now, not on a later update
     _check_window(start_after, end_before)
+    member = (
+        await resolve_member(session, couple_id, planned_for)
+        if planned_for is not None
+        else None
+    )
     planned = PlannedDate(
         couple_id=couple_id,
+        planned_for_member=member,
         title=title,
         day=day,
         max_leg_minutes=max_leg_minutes,
@@ -333,6 +445,13 @@ async def update_date(
     planned = await get_date(session, date_id)
     values = patch.model_dump(exclude_unset=True)
     status = values.pop("status", None)
+    if "planned_for" in values:
+        ref = values.pop("planned_for")
+        planned.planned_for_member = (
+            await resolve_member(session, planned.couple_id, ref)
+            if ref is not None
+            else None
+        )
     new_day = values.get("day")
     if new_day is not None and new_day != planned.day:
         _move_stops(

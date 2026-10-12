@@ -12,6 +12,7 @@ from date_planner.booking.detect import Detection
 from date_planner.booking.window import BookingWindow
 from date_planner.db import repo
 from date_planner.db.models import (
+    Couple,
     DateStatus,
     ReservationNeed,
     StopBookingStatus,
@@ -23,6 +24,7 @@ from date_planner.errors import InvalidTransition, NotFound
 from date_planner.schemas import (
     CoupleProfileIn,
     DatePatch,
+    MemberIn,
     PreferenceEdit,
     StopIn,
     StopPatch,
@@ -43,7 +45,7 @@ DAY = date(2026, 10, 24)
 async def test_upsert_couple_inserts_then_updates(db: Factory) -> None:
     async with db() as session, session.begin():
         couple = await repo.upsert_couple(
-            session, CoupleProfileIn(name="A & B", likes=["sushi"])
+            session, CoupleProfileIn(name="A & B", home_area="Ventura")
         )
         couple_id = couple.id
     async with db() as session, session.begin():
@@ -51,8 +53,8 @@ async def test_upsert_couple_inserts_then_updates(db: Factory) -> None:
             session, CoupleProfileIn(id=couple_id, budget_per_date=300)
         )
         assert again.id == couple_id
-        # The preference it didn't mention is still there.
-        assert again.likes == ["sushi"]
+        # The field it didn't mention is still there.
+        assert again.home_area == "Ventura"
         assert again.budget_per_date == 300
         assert len(await repo.list_couples(session)) == 1
 
@@ -60,7 +62,7 @@ async def test_upsert_couple_inserts_then_updates(db: Factory) -> None:
 async def test_a_new_couple_needs_a_name(db: Factory) -> None:
     async with db() as session, session.begin():
         with pytest.raises(ValueError, match="needs a name"):
-            await repo.upsert_couple(session, CoupleProfileIn(likes=["sushi"]))
+            await repo.upsert_couple(session, CoupleProfileIn(home_area="Ventura"))
 
 
 async def test_an_explicit_null_clears_an_optional_field(db: Factory) -> None:
@@ -85,48 +87,167 @@ async def test_a_null_name_is_ignored_rather_than_breaking_the_row(
         assert same.name == "A & B"
 
 
+async def _couple_of_two(session: AsyncSession) -> Couple:
+    couple = await repo.upsert_couple(session, CoupleProfileIn(name="A & B"))
+    await repo.upsert_member(session, couple.id, MemberIn(name="Ann", email="ann@x.io"))
+    await repo.upsert_member(session, couple.id, MemberIn(name="Bo"))
+    return couple
+
+
+async def test_upserting_a_member_matches_by_name_then_adds(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await _couple_of_two(session)
+        same = await repo.upsert_member(
+            session, couple.id, MemberIn(name="ANN", email="new@x.io")
+        )
+        assert same.email == "new@x.io"
+        assert [m.name for m in couple.members] == ["Ann", "Bo"]
+        with pytest.raises(ValueError, match="needs a name"):
+            await repo.upsert_member(session, couple.id, MemberIn(email="c@x.io"))
+
+
+async def test_members_are_found_by_name_email_or_id(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await _couple_of_two(session)
+        ann = await repo.resolve_member(session, couple.id, " ann ")
+        assert (await repo.resolve_member(session, couple.id, "ANN@x.io")) is ann
+        assert (await repo.resolve_member(session, couple.id, str(ann.id))) is ann
+        with pytest.raises(NotFound, match="members: Ann, Bo"):
+            await repo.resolve_member(session, couple.id, "Cy")
+
+
 async def test_editing_preferences_keeps_what_it_doesnt_name(db: Factory) -> None:
     async with db() as session, session.begin():
-        couple = await repo.upsert_couple(
-            session,
-            CoupleProfileIn(name="A & B", likes=["sushi", "wine bars"]),
+        couple = await _couple_of_two(session)
+        await repo.edit_preferences(
+            session, couple.id, "Ann", PreferenceEdit(add_likes=["sushi", "wine bars"])
         )
         edited = await repo.edit_preferences(
-            session, couple.id, PreferenceEdit(add_likes=["tapas", " Sushi "])
+            session, couple.id, "Ann", PreferenceEdit(add_likes=["tapas", " Sushi "])
         )
+        ann = await repo.resolve_member(session, couple.id, "Ann")
+        bo = await repo.resolve_member(session, couple.id, "Bo")
         # Re-adding an item already there, in another case, doesn't duplicate it.
-        assert edited.likes == ["sushi", "wine bars", "tapas"]
+        assert ann.likes == ["sushi", "wine bars", "tapas"]
+        assert bo.likes == []
+        assert edited.id == couple.id
     async with db() as session:
-        stored = await repo.get_couple(session, couple.id)
+        stored = await repo.resolve_member(session, couple.id, "Ann")
         assert stored.likes == ["sushi", "wine bars", "tapas"]
 
 
 async def test_disliking_something_takes_it_off_the_likes(db: Factory) -> None:
     async with db() as session, session.begin():
-        couple = await repo.upsert_couple(
-            session,
-            CoupleProfileIn(name="A & B", likes=["sushi"], dislikes=["jazz"]),
-        )
-        edited = await repo.edit_preferences(
+        couple = await _couple_of_two(session)
+        await repo.edit_preferences(
             session,
             couple.id,
+            "Ann",
+            PreferenceEdit(add_likes=["sushi"], add_dislikes=["jazz"]),
+        )
+        await repo.edit_preferences(
+            session,
+            couple.id,
+            "Ann",
             PreferenceEdit(add_dislikes=["SUSHI"], add_likes=["jazz"]),
         )
-        assert edited.likes == ["jazz"]
-        assert edited.dislikes == ["SUSHI"]
+        ann = await repo.resolve_member(session, couple.id, "Ann")
+        assert ann.likes == ["jazz"]
+        assert ann.dislikes == ["SUSHI"]
 
 
 async def test_dietary_needs_can_be_added_and_dropped(db: Factory) -> None:
     async with db() as session, session.begin():
-        couple = await repo.upsert_couple(
-            session, CoupleProfileIn(name="A & B", dietary=["no shellfish"])
+        couple = await _couple_of_two(session)
+        await repo.edit_preferences(
+            session, couple.id, "Bo", PreferenceEdit(add_dietary=["no shellfish"])
         )
-        edited = await repo.edit_preferences(
+        await repo.edit_preferences(
             session,
             couple.id,
+            "Bo",
             PreferenceEdit(remove_dietary=["No Shellfish"], add_dietary=["vegetarian"]),
         )
-        assert edited.dietary == ["vegetarian"]
+        bo = await repo.resolve_member(session, couple.id, "Bo")
+        assert bo.dietary == ["vegetarian"]
+
+
+async def test_shared_taste_pools_dislikes_and_drops_vetoed_likes(
+    db: Factory,
+) -> None:
+    async with db() as session, session.begin():
+        couple = await _couple_of_two(session)
+        await repo.edit_preferences(
+            session,
+            couple.id,
+            "Ann",
+            PreferenceEdit(add_likes=["sushi", "hiking"], add_dietary=["vegan"]),
+        )
+        await repo.edit_preferences(
+            session,
+            couple.id,
+            "Bo",
+            PreferenceEdit(add_likes=["jazz"], add_dislikes=["Sushi"]),
+        )
+        shared = repo.effective_preferences(couple)
+        assert shared.likes == ["hiking", "jazz"]
+        assert shared.dislikes == ["Sushi"]
+        assert shared.dietary == ["vegan"]
+        # A date that's Ann's keeps only her likes, but Bo's dislikes still bind.
+        ann = await repo.resolve_member(session, couple.id, "Ann")
+        hers = repo.effective_preferences(couple, ann)
+        assert hers.likes == ["hiking"]
+        assert hers.dislikes == ["Sushi"]
+
+
+async def test_next_turn_goes_to_whoever_was_planned_for_least_recently(
+    db: Factory,
+) -> None:
+    async with db() as session, session.begin():
+        couple = await _couple_of_two(session)
+        first = await repo.next_turn(session, couple)
+        # Nobody's had a turn: the member added first.
+        assert first is not None and first.name == "Ann"
+        assert first.last_planned_for is None
+
+        await repo.create_date(
+            session, couple_id=couple.id, title="Hers", day=DAY, planned_for="ann"
+        )
+        # A date for both doesn't count towards anyone's turn.
+        await repo.create_date(session, couple_id=couple.id, title="Both", day=DAY)
+        turn = await repo.next_turn(session, couple)
+        assert turn is not None and turn.name == "Bo"
+
+        his = await repo.create_date(
+            session,
+            couple_id=couple.id,
+            title="His",
+            day=DAY + timedelta(days=7),
+            planned_for="Bo",
+        )
+        turn = await repo.next_turn(session, couple)
+        assert turn is not None and turn.name == "Ann"
+        assert turn.last_planned_for == DAY
+
+        # A cancelled date never happened, so it hands the turn back.
+        await repo.update_date(session, his.id, DatePatch(status="cancelled"))
+        turn = await repo.next_turn(session, couple)
+        assert turn is not None and turn.name == "Bo"
+
+
+async def test_a_date_can_be_made_shared_again(db: Factory) -> None:
+    async with db() as session, session.begin():
+        couple = await _couple_of_two(session)
+        planned = await repo.create_date(
+            session, couple_id=couple.id, title="Hers", day=DAY, planned_for="Ann"
+        )
+        assert planned.planned_for == "Ann"
+        patched = await repo.update_date(
+            session, planned.id, DatePatch(planned_for=None)
+        )
+        assert patched.planned_for is None
+        with pytest.raises(NotFound):
+            await repo.update_date(session, planned.id, DatePatch(planned_for="Cy"))
 
 
 async def test_unknown_couple_is_not_found(db: Factory) -> None:

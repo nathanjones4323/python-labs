@@ -27,7 +27,14 @@ from date_planner.db.models import (
     StopKind,
     VenueType,
 )
-from date_planner.schemas import CoupleProfileIn, DatePatch, StopIn, VenueIn
+from date_planner.schemas import (
+    CoupleProfileIn,
+    DatePatch,
+    MemberIn,
+    PreferenceEdit,
+    StopIn,
+    VenueIn,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -94,16 +101,30 @@ async def seeded(db: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
             session,
             CoupleProfileIn(
                 name="Test couple",
-                member_emails=["a@example.com", "b@example.com"],
                 shared_calendar_id="shared@group.calendar.google.com",
                 home_area="Santa Monica",
                 timezone="America/Los_Angeles",
                 budget_per_date=250,
-                dietary=["no shellfish"],
-                likes=["sushi"],
-                dislikes=["loud rooms"],
                 max_travel_minutes=45,
             ),
+        )
+        alex = await repo.upsert_member(
+            session, couple.id, MemberIn(name="Alex", email="a@example.com")
+        )
+        sam = await repo.upsert_member(
+            session, couple.id, MemberIn(name="Sam", email="b@example.com")
+        )
+        await repo.edit_preferences(
+            session,
+            couple.id,
+            "Alex",
+            PreferenceEdit(add_likes=["sushi"], add_dietary=["no shellfish"]),
+        )
+        await repo.edit_preferences(
+            session,
+            couple.id,
+            "Sam",
+            PreferenceEdit(add_likes=["hiking"], add_dislikes=["loud rooms"]),
         )
         nobu = await repo.upsert_venue(
             session,
@@ -198,6 +219,8 @@ async def seeded(db: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
             past[key] = planned.id
         return {
             "couple_id": couple.id,
+            "alex_id": alex.id,
+            "sam_id": sam.id,
             "nobu_id": nobu.id,
             "bestia_id": bestia.id,
             "solstice_id": solstice.id,

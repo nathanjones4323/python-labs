@@ -2,10 +2,12 @@
 
     uv run --package date-planner python -m date_planner.seed
 
-Idempotent: it upserts, so running it twice changes nothing. The couple's
-emails and shared calendar id come from DATE_PLANNER_SEED_MEMBER_EMAILS
-(comma-separated) and DATE_PLANNER_SHARED_CALENDAR_ID. A reseed with those
-unset overwrites the stored values, so keep them in .env.
+Idempotent: it upserts, so running it twice changes nothing. The members'
+emails and the shared calendar id come from DATE_PLANNER_SEED_MEMBER_EMAILS
+(comma-separated, in the order of SEED_MEMBERS) and
+DATE_PLANNER_SHARED_CALENDAR_ID. A reseed with those unset overwrites the
+stored values, so keep them in .env. Seed likes are only ever added to a
+member, never reset, so a reseed keeps what the skill has learned since.
 
 The venues are the Malibu day the multi-stop planner was built around: a
 hike, a timed museum entry, a sunset dinner. Coordinates were looked up, not
@@ -25,23 +27,22 @@ from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.config import get_settings
 from date_planner.db import open_session, repo
 from date_planner.db.models import VenueType
-from date_planner.schemas import CoupleProfileIn, VenueIn
+from date_planner.schemas import CoupleProfileIn, MemberIn, PreferenceEdit, VenueIn
+
+# The two people, and the likes the couple started with (all Nathan's, until
+# his partner adds their own).
+SEED_MEMBERS = ("Nathan", "Partner")
+SEED_LIKES = ["sushi", "ocean views", "live music", "scenic locations"]
 
 
 def build_couple() -> CoupleProfileIn:
     settings = get_settings()
     return CoupleProfileIn(
         name="Nathan & partner",
-        member_emails=[
-            e.strip() for e in settings.seed_member_emails.split(",") if e.strip()
-        ],
         shared_calendar_id=settings.shared_calendar_id or None,
         home_area="Ventura, CA",
         timezone="America/Los_Angeles",
         budget_per_date=250,
-        dietary=[],
-        likes=["sushi", "ocean views", "live music", "scenic locations"],
-        dislikes=[],
         max_travel_minutes=45,
     )
 
@@ -116,6 +117,19 @@ async def seed() -> None:
         )
         couple = await repo.upsert_couple(session, profile)
         print(f"couple  {couple.id}  {couple.name}")
+        emails = [
+            e.strip() for e in get_settings().seed_member_emails.split(",") if e.strip()
+        ]
+        for i, name in enumerate(SEED_MEMBERS):
+            member = await repo.upsert_member(
+                session,
+                couple.id,
+                MemberIn(name=name, email=emails[i] if i < len(emails) else None),
+            )
+            print(f"member  {member.id}  {member.name}")
+        await repo.edit_preferences(
+            session, couple.id, SEED_MEMBERS[0], PreferenceEdit(add_likes=SEED_LIKES)
+        )
         # Venues are keyed on (name, city), so these upsert themselves.
         for data in (NOBU_MALIBU, SOLSTICE_CANYON, GETTY_VILLA):
             venue = await repo.upsert_venue(session, data)
