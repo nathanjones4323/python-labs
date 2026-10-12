@@ -19,7 +19,7 @@ from date_planner.db.models import (
     TravelMode,
     VenueType,
 )
-from date_planner.errors import InvalidTransition, NotFound
+from date_planner.errors import DuplicateVenue, InvalidTransition, NotFound
 from date_planner.schemas import (
     CoupleProfileIn,
     DatePatch,
@@ -161,6 +161,81 @@ async def test_find_venue_ignores_case_and_padding(db: Factory) -> None:
         await repo.upsert_venue(session, _venue("Bestia", "Los Angeles"))
         assert await repo.find_venue(session, " bestia ", "los angeles")
         assert await repo.find_venue(session, "Bestia", "Malibu") is None
+
+
+async def test_find_venue_forgives_wording_in_the_same_city(db: Factory) -> None:
+    async with db() as session, session.begin():
+        nobu = await repo.upsert_venue(session, _venue("Nobu Malibu", "Malibu"))
+        for asked in ("Nobu", "NOBU Malibu Restaurant", "The Nobu Malibu"):
+            found = await repo.find_venue(session, asked, "malibu")
+            assert found is not None and found.id == nobu.id
+        # A different venue sharing no words is not it.
+        assert await repo.find_venue(session, "Bavel", "Malibu") is None
+        assert await repo.find_venue(session, "Nobu", "Los Angeles") is None
+
+
+async def test_find_venue_crosses_cities_only_by_coordinates(db: Factory) -> None:
+    async with db() as session, session.begin():
+        getty = await repo.upsert_venue(
+            session,
+            VenueIn(
+                name="Getty Villa",
+                city="Pacific Palisades",
+                venue_type=VenueType.MUSEUM,
+                lat=34.0449819,
+                lng=-118.5650197,
+            ),
+        )
+        found = await repo.find_venue(
+            session, "Getty Villa", "Malibu", 34.0452, -118.5651
+        )
+        assert found is not None and found.id == getty.id
+        assert await repo.find_venue(session, "Getty Villa", "Malibu") is None
+        far = await repo.find_venue(session, "Getty Villa", "Malibu", 34.2, -118.9)
+        assert far is None
+
+
+async def test_upserting_a_reworded_venue_updates_it_and_keeps_its_name(
+    db: Factory,
+) -> None:
+    async with db() as session, session.begin():
+        first = await repo.upsert_venue(session, _venue("Nobu Malibu", "Malibu"))
+        again = await repo.upsert_venue(
+            session, VenueIn(name="Nobu", city="Malibu", notes="Ask for the bar")
+        )
+        assert again.id == first.id
+        assert (again.name, again.notes) == ("Nobu Malibu", "Ask for the bar")
+        assert len(await repo.list_venues(session)) == 1
+
+
+PLACE = {
+    "id": "ChIJ-nobu",
+    "displayName": {"text": "Nobu Malibu"},
+    "formattedAddress": "22706 Pacific Coast Hwy, Malibu, CA 90265, USA",
+    "location": {"latitude": 34.039, "longitude": -118.6696},
+}
+
+
+async def test_apply_place_fills_gaps_and_refuses_a_place_held_elsewhere(
+    db: Factory,
+) -> None:
+    async with db() as session, session.begin():
+        nobu = await repo.upsert_venue(session, _venue("Nobu Malibu", "Malibu"))
+        other = await repo.upsert_venue(session, _venue("Matsuhisa", "Beverly Hills"))
+        assert await repo.apply_place(session, nobu, PLACE) == [
+            "lat",
+            "lng",
+            "address",
+        ]
+        assert nobu.google_place_data == PLACE
+        with pytest.raises(DuplicateVenue, match="Nobu Malibu"):
+            await repo.apply_place(session, other, PLACE)
+        with pytest.raises(DuplicateVenue):
+            await repo.upsert_venue(
+                session, VenueIn(id=other.id, google_place_id="ChIJ-nobu")
+            )
+        # Re-applying to the venue that holds it is fine.
+        await repo.apply_place(session, nobu, PLACE)
 
 
 async def test_a_new_venue_needs_a_name_city_and_type(db: Factory) -> None:

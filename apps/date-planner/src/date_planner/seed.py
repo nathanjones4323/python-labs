@@ -16,15 +16,25 @@ guessed (2026-10-11):
   NPS figure for the same intersection.
 * Getty Villa — OpenStreetMap's museum point (way 23014640).
 * Nobu Malibu — OpenStreetMap's point for 22706 Pacific Coast Hwy.
+
+Each venue also carries its Google Place ID and the Places response, taken
+from a real Text Search on 2026-10-11 (`PLACES` below). Seeding writes them
+straight onto the row, so neither a seed nor `date-planner-reset` calls the
+API. A venue with no snapshot is looked up live when GOOGLE_PLACES_API_KEY is
+set, then cached on its row; a failed lookup is reported and skipped.
 """
 
 import asyncio
 from datetime import time
+from typing import Any
 
+from date_planner.booking import places
 from date_planner.booking.channels import BookingChannel, WindowUnit
 from date_planner.config import get_settings
 from date_planner.db import open_session, repo
 from date_planner.db.models import VenueType
+from date_planner.errors import PlacesFailed
+from date_planner.planning import travel
 from date_planner.schemas import CoupleProfileIn, VenueIn
 
 
@@ -99,10 +109,48 @@ GETTY_VILLA = VenueIn(
 )
 
 
+def _place(
+    place_id: str, name: str, address: str, lat: float, lng: float
+) -> dict[str, Any]:
+    return {
+        "id": place_id,
+        "displayName": {"languageCode": "en", "text": name},
+        "formattedAddress": address,
+        "location": {"latitude": lat, "longitude": lng},
+    }
+
+
+# Google's answer for each venue above, keyed by (name, city).
+PLACES: dict[tuple[str, str], dict[str, Any]] = {
+    ("Nobu Malibu", "Malibu"): _place(
+        "ChIJewC2XzIe6IARgQhofffh6fE",
+        "Nobu Malibu",
+        "22706 Pacific Coast Hwy, Malibu, CA 90265, USA",
+        34.0390391,
+        -118.66964770000001,
+    ),
+    ("Solstice Canyon", "Malibu"): _place(
+        "ChIJ_yGlV0Yf6IARWsIYviajiVg",
+        "Solstice Canyon",
+        "3455 Solstice Canyon Rd, Malibu, CA 90265, USA",
+        34.0378636,
+        -118.7474877,
+    ),
+    ("Getty Villa", "Pacific Palisades"): _place(
+        "ChIJBw1wGumjwoARsKRsr2WJ-eQ",
+        "The Getty Villa",
+        "17985 Pacific Coast Hwy, Pacific Palisades, CA 90272, USA",
+        34.0458857,
+        -118.56486079999999,
+    ),
+}
+
+
 async def seed() -> None:
     couple_profile = build_couple()
     if couple_profile.shared_calendar_id is None:
         print("warning: DATE_PLANNER_SHARED_CALENDAR_ID is unset")
+    api_key = get_settings().google_places_api_key
     async with open_session() as session:
         # `upsert_couple` keys on the id, so find this couple by name to
         # keep a second run from creating a second one.
@@ -123,6 +171,33 @@ async def seed() -> None:
                 f"venue   {venue.id}  {venue.name} "
                 f"({venue.venue_type}, {venue.booking_channel})"
             )
+            snapshot = PLACES.get((venue.name, venue.city))
+            if venue.google_place_id:
+                print(f"place   {venue.google_place_id}  cached, no API call")
+            elif snapshot is not None:
+                await repo.apply_place(session, venue, snapshot)
+                print(f"place   {venue.google_place_id}  from the seed snapshot")
+            elif not api_key:
+                print("place   skipped: GOOGLE_PLACES_API_KEY is unset")
+            else:
+                try:
+                    near = travel.coordinates(venue) if venue.has_coordinates else None
+                    result = await places.lookup(
+                        venue.name,
+                        f"{venue.name}, {venue.address or venue.city}",
+                        near,
+                        api_key,
+                    )
+                    if result.match:
+                        await repo.apply_place(session, venue, result.match.place.raw)
+                except PlacesFailed as exc:
+                    print(f"place   failed: {exc}")
+                else:
+                    print(
+                        f"place   {venue.google_place_id}  looked up"
+                        if result.match
+                        else f"place   no match among {len(result.candidates)} results"
+                    )
 
 
 def main() -> None:

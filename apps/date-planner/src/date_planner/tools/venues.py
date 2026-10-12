@@ -25,7 +25,6 @@ from date_planner.errors import (
     PlacesFailed,
     UnsupportedChannel,
 )
-from date_planner.planning import travel
 from date_planner.schemas import (
     BookingLinkOut,
     BookingWindowOut,
@@ -37,6 +36,7 @@ from date_planner.schemas import (
     VenueIn,
     VenueOut,
 )
+from date_planner.planning import travel
 from date_planner.tools import as_tool_error, localize
 
 
@@ -155,17 +155,28 @@ def suggest_need(
 
 
 def register(mcp: FastMCP) -> None:
+    def venue_out(row: Venue, asked: str | None) -> VenueOut:
+        out = VenueOut.model_validate(row)
+        if asked and asked.strip().casefold() != row.name.strip().casefold():
+            out.matched_name = asked.strip()
+        return out
+
     @mcp.tool
     @as_tool_error
-    async def find_venue(name: str, city: str) -> VenueOut | None:
+    async def find_venue(
+        name: str, city: str, lat: float | None = None, lng: float | None = None
+    ) -> VenueOut | None:
         """The venue we have on file for this name and city, or null.
 
-        Capitalisation doesn't matter. A null means we've never recorded it:
-        follow with `upsert_venue`.
+        Capitalisation doesn't matter, and neither does exact wording: "Nobu"
+        finds "Nobu Malibu". A venue in another city is found only if `lat`/
+        `lng` put it within 300 m. When the stored name differs from the one
+        asked for, `matched_name` echoes what you asked. A null means we've
+        never recorded it: follow with `upsert_venue`.
         """
         async with open_session() as session:
-            row = await repo.find_venue(session, name, city)
-            return None if row is None else VenueOut.model_validate(row)
+            row = await repo.find_venue(session, name, city, lat, lng)
+            return None if row is None else venue_out(row, name)
 
     @mcp.tool
     @as_tool_error
@@ -175,14 +186,17 @@ def register(mcp: FastMCP) -> None:
 
         With an `id` it updates that row; without one, `name` and `city`
         identify it, so upserting "Nobu Malibu" twice updates rather than
-        duplicates. A new venue needs `venue_type`. Give `lat`/`lng` (for a
+        duplicates. Wording needn't be exact: "Nobu" updates "Nobu Malibu"
+        (keeping its stored name and city), and `matched_name` then echoes the
+        name you gave. A new venue needs `venue_type`. Give `lat`/`lng` (for a
         trail, the trailhead) so legs to and from it can be timed, and
         `default_duration_min` if you know how long a visit takes. Anything a
         person tells you here outranks what detection later reads off the
         website.
         """
         async with open_session() as session:
-            return VenueOut.model_validate(await repo.upsert_venue(session, venue))
+            row = await repo.upsert_venue(session, venue)
+            return venue_out(row, venue.name)
 
     @mcp.tool
     @as_tool_error
@@ -318,24 +332,16 @@ def register(mcp: FastMCP) -> None:
                     "Resy widget can't be used; hand over build_booking_link."
                 )
             near = travel.coordinates(venue) if venue.has_coordinates else None
-            found = await places.search(
+            result = await places.lookup(
+                venue.name,
                 f"{venue.name}, {venue.address or venue.city}",
-                settings.google_places_api_key,
                 near,
+                settings.google_places_api_key,
             )
-            candidates = places.rank(venue.name, near, found)
-            match = next((c for c in candidates if c.is_match), None)
+            match, candidates = result.match, result.candidates
             filled: list[str] = []
             if match is not None:
-                venue.google_place_id = match.place.place_id
-                venue.google_place_data = match.place.raw
-                location = match.place.location
-                if location is not None and not venue.has_coordinates:
-                    venue.lat, venue.lng = location.lat, location.lng
-                    filled += ["lat", "lng"]
-                if match.place.address and not venue.address:
-                    venue.address = match.place.address
-                    filled.append("address")
+                filled = await repo.apply_place(session, venue, match.place.raw)
             return GooglePlaceOut(
                 venue_id=venue.id,
                 google_place_id=venue.google_place_id if match else None,
