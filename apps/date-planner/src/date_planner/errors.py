@@ -53,6 +53,11 @@ class PlacesFailed(DatePlannerError):
     key, the API not enabled, or no answer."""
 
 
+class AmbiguousVenue(DatePlannerError):
+    """A venue name fits several stored venues (branches of a chain). Pass
+    `lat`/`lng` or the venue's id to say which."""
+
+
 class DuplicateVenue(DatePlannerError):
     """Google says this venue is a place we already have under another row.
     Use that venue instead of recording a second one."""

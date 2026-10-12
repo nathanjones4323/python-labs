@@ -36,7 +36,12 @@ from date_planner.db.models import (
     Venue,
     derive_status,
 )
-from date_planner.errors import DuplicateVenue, InvalidTransition, NotFound
+from date_planner.errors import (
+    AmbiguousVenue,
+    DuplicateVenue,
+    InvalidTransition,
+    NotFound,
+)
 from date_planner.matching import SAME_PLACE_M, names_match
 from date_planner.schemas import (
     CoupleProfileIn,
@@ -172,8 +177,10 @@ async def find_venue(
 
     Claude doesn't word a venue the same way every chat, so after an exact
     match (whatever the capitalisation) comes a fuzzy one: a stored venue
-    whose name plausibly is this one (`matching.names_match`) and that is in
-    the same city, or within `SAME_PLACE_M` of the given coordinates.
+    whose name plausibly is this one (`matching.names_match`). With
+    coordinates on both sides the venue must be within `SAME_PLACE_M`,
+    whatever the city; otherwise it must be in the same city. More than one
+    fuzzy fit raises `AmbiguousVenue` rather than guessing a branch.
     """
     exact: Venue | None = await session.scalar(
         select(Venue).where(
@@ -187,19 +194,24 @@ async def find_venue(
     from date_planner.planning.travel import LatLng, great_circle_m
 
     here = LatLng(lat, lng) if lat is not None and lng is not None else None
+    fits: list[Venue] = []
     for venue in await list_venues(session):
         if not names_match(name, venue.name):
             continue
-        if venue.city.strip().casefold() == city.strip().casefold():
-            return venue
-        if (
-            here is not None
-            and venue.lat is not None
-            and venue.lng is not None
-            and great_circle_m(here, LatLng(venue.lat, venue.lng)) <= SAME_PLACE_M
-        ):
-            return venue
-    return None
+        if here is not None and venue.lat is not None and venue.lng is not None:
+            # Both pinned: where it is settles it, so two branches of a chain
+            # in one city stay two venues.
+            if great_circle_m(here, LatLng(venue.lat, venue.lng)) <= SAME_PLACE_M:
+                fits.append(venue)
+        elif venue.city.strip().casefold() == city.strip().casefold():
+            fits.append(venue)
+    if len(fits) > 1:
+        raise AmbiguousVenue(
+            f"'{name}' in {city} fits more than one venue: "
+            + "; ".join(f"{v.name} ({v.id})" for v in fits)
+            + ". Pass lat/lng, or the venue's id."
+        )
+    return fits[0] if fits else None
 
 
 async def _place_owner(

@@ -58,6 +58,10 @@ select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp
 
 - Coordinates, address and website belong to the **venue**, never the stop.
   Create the venue first, then add the stop with its `venue_id`.
+- `find_venue` / `upsert_venue` forgive wording ("Nobu" finds "Nobu Malibu")
+  and say so in `matched_name`. Always pass `lat`/`lng` when you have them:
+  it keeps branches of a chain apart. On `AmbiguousVenue`, pass the pin or
+  the venue's `id`.
 - Numbers are numbers: `lat: 34.48`, not `"34.48"`.
 - `venue_type`: `restaurant`, `trail`, `museum`, `bar`, `park`, `viewpoint`,
   `other` (a swimming hole or beach is `park` or `other`).

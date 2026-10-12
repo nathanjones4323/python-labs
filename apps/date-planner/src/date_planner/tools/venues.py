@@ -169,9 +169,12 @@ def register(mcp: FastMCP) -> None:
         """The venue we have on file for this name and city, or null.
 
         Capitalisation doesn't matter, and neither does exact wording: "Nobu"
-        finds "Nobu Malibu". A venue in another city is found only if `lat`/
-        `lng` put it within 300 m. When the stored name differs from the one
-        asked for, `matched_name` echoes what you asked. A null means we've
+        finds "Nobu Malibu". Pass `lat`/`lng` whenever you have them: with a
+        pin on both sides the venue must be within 300 m, in any city, which
+        keeps branches of a chain apart. Without one it must be in the same
+        city, and if several fit (`AmbiguousVenue`) pass the pin or use the
+        venue's id. When the stored name differs from the one asked for,
+        `matched_name` echoes what you asked. A null means we've
         never recorded it: follow with `upsert_venue`.
         """
         async with open_session() as session:
