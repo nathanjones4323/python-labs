@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import re
 import uuid
 from datetime import date, datetime
@@ -278,6 +279,36 @@ async def test_the_pyramid_is_fetched_as_webp(tmp_path: Path) -> None:
     # @2x tiles are halved to the 256px Leaflet shows.
     assert (image.format, image.size) == ("WEBP", (256, 256))
     assert sum(map(len, tiles.values())) < 3_000_000
+
+
+@respx.mock
+async def test_a_rerender_reuses_each_webp_until_its_source_changes(
+    tmp_path: Path,
+) -> None:
+    respx.get(url__regex=r"https://tiles\.example\.com/.*").mock(
+        return_value=httpx.Response(200, content=_png("#336699"))
+    )
+    pyramid = basemap.plan(basemap.fit([GETTY], 400, 260), [GETTY])
+    cache = basemap.TileCache(tmp_path, TILES, ttl_days=30)
+    async with httpx.AsyncClient() as client:
+        first = await basemap.fetch(pyramid, cache, client)
+        z, x, y = pyramid.tiles[0]
+        converted = cache.converted(z, x, y)
+        made_at = converted.stat().st_mtime_ns
+        assert await basemap.fetch(pyramid, cache, client) == first
+        assert converted.stat().st_mtime_ns == made_at
+
+        # A refetched source is newer than its WebP, which is made again.
+        cache.store(z, x, y, _png("#993333"))
+        later = converted.stat().st_mtime + 10
+        os.utime(cache.path(z, x, y), (later, later))
+        again = await basemap.fetch(pyramid, cache, client)
+    assert first is not None and again is not None
+    name = f"tiles/{z}/{x}/{y}.webp"
+    assert again[name] != first[name]
+    assert {k: v for k, v in again.items() if k != name} == {
+        k: v for k, v in first.items() if k != name
+    }
 
 
 @respx.mock
