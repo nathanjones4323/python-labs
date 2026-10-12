@@ -23,7 +23,7 @@ from date_planner.planning import sunset
 from date_planner.preview import basemap, page
 
 MAP_WIDTH = 400
-MAP_HEIGHT = 260
+MAP_HEIGHT = 340
 OVERVIEW = "tiles-overview.jpg"
 
 

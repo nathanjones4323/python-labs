@@ -489,8 +489,10 @@ LIVE_JS = """
     const map = L.map(live, {
       minZoom: cfg.minZoom, maxZoom: cfg.maxZoom,
       maxBounds: box(cfg.bounds), maxBoundsViscosity: 1,
-      attributionControl: false, scrollWheelZoom: false,
+      attributionControl: false, scrollWheelZoom: false, zoomSnap: 0.5, zoomControl: false,
     });
+    // Bottom right: top left is where a popup from a pin near the edge lands.
+    L.control.zoom({ position: "bottomright" }).addTo(map);
     const base = L.tileLayer(cfg.url, {
       minZoom: cfg.minZoom, maxZoom: cfg.maxZoom, maxNativeZoom: cfg.fullZoom,
     }).addTo(map);
@@ -519,7 +521,7 @@ LIVE_JS = """
       const marker = L.marker([s.lat, s.lng], { icon, title: s.title, keyboard: true })
         .bindPopup(s.popup, {
           closeButton: false, offset: [0, -12], minWidth: 210, maxWidth: 270,
-          autoPanPadding: [16, 16],
+          autoPanPadding: [12, 12],
         })
         .addTo(map);
       // The time sits under the pin all the time, so it's there to read.
@@ -532,8 +534,22 @@ LIVE_JS = """
     }
     // Popup -> its card. The popup stops clicks reaching the map, so the
     // button gets its own listener each time one opens.
+    // The pan limit is the edge of the fetched tiles, which a pin near it
+    // can sit too close to for its popup to fit. Lift it while a popup is
+    // open and bring the whole popup into view; it goes back on close.
+    const limit = box(cfg.bounds);
+    map.on("popupclose", () => map.setMaxBounds(limit));
     map.on("popupopen", (e) => {
-      const button = e.popup.getElement().querySelector("[data-goto]");
+      const el = e.popup.getElement();
+      const wrap = el.querySelector(".leaflet-popup-content-wrapper");
+      const room = map.getSize();
+      const w = wrap.offsetWidth, h = wrap.offsetHeight;
+      map.setMaxBounds(null);
+      map.panInside(e.popup.getLatLng(), {
+        paddingTopLeft: [Math.min(w / 2 + 8, room.x / 2), h + 40],
+        paddingBottomRight: [Math.min(w / 2 + 8, room.x / 2), 36],
+      });
+      const button = el.querySelector("[data-goto]");
       if (!button) return;
       button.addEventListener("click", () => {
         const card = document.getElementById("stop-" + button.dataset.goto);
@@ -556,7 +572,7 @@ LIVE_JS = """
       });
     }
     const points = cfg.stops.map((s) => [s.lat, s.lng]);
-    map.fitBounds(points, { padding: [44, 44], maxZoom: cfg.zoom });
+    map.fitBounds(points, { paddingTopLeft: [32, 40], paddingBottomRight: [56, 40], maxZoom: cfg.zoom });
     base.once("load", () => {
       frame.classList.add("is-live");
       for (const button of document.querySelectorAll("[data-locate]")) button.hidden = false;
