@@ -113,8 +113,8 @@ not ready for public hosting.
 
 | Tool | What it's for |
 | --- | --- |
-| `list_couples`, `get_couple_profile`, `upsert_couple_profile` | The couple: logistics, their members, the pooled `shared` taste, and whose turn is next |
-| `list_members`, `upsert_member` | The two people, each with their own likes, dislikes and dietary needs |
+| `list_couples`, `upsert_couple_profile` | The couple: logistics, their members, the pooled `shared` taste, and whose turn is next |
+| `upsert_member` | The two people, each with their own likes, dislikes and dietary needs |
 | `edit_member_preferences` | Add or drop single likes, dislikes or dietary needs for one member without resending the list |
 | `list_past_dates` | Recent dates with ratings and every stop, so no venue repeats |
 | `find_venue`, `upsert_venue` | Venues of any type: restaurant, trail, museum, bar, park, viewpoint |

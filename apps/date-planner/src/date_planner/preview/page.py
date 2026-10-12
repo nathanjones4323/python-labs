@@ -147,6 +147,8 @@ class PreviewStop:
     place: tuple[float, float] | None
     venue_type: VenueType | None = None
     website: str | None = None
+    # The venue's page elsewhere, e.g. a trail on AllTrails.
+    external_url: str | None = None
     duration_min: int | None = None
     # How the venue takes a booking, and the prefilled link for it when one
     # can be built: what a stop still `needed` offers instead of a dead chip.
@@ -256,9 +258,26 @@ def tel_link(phone: str | None) -> str | None:
     return "tel:" + ("+" if (phone or "").strip().startswith("+") else "") + digits
 
 
+def phone_label(phone: str) -> str:
+    """A US number as people write it — "+13103179140" reads as
+    "(310) 317-9140" — and anything else as it was saved."""
+    digits = "".join(c for c in phone if c.isdigit())
+    if phone.strip().startswith("+") and not digits.startswith("1"):
+        return phone
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return phone
+    return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+
+
 def _call(stop: PreviewStop) -> str:
     """"Call to book" with the number: a tap-to-dial link when there is one."""
-    number = f' <span class="ref">{_e(stop.phone)}</span>' if stop.phone else ""
+    number = (
+        f' <span class="ref">{_e(phone_label(stop.phone))}</span>'
+        if stop.phone
+        else ""
+    )
     href = tel_link(stop.phone)
     if href:
         return f'<a class="chip todo act" href="{_e(href)}">Call to book{number}</a>'
@@ -356,20 +375,49 @@ def _web_link(website: str | None) -> str | None:
     return website if scheme in ("http", "https") else None
 
 
+def alltrails_link(stop: PreviewStop) -> str | None:
+    """The trail's AllTrails page. It's a universal link, so on a phone with
+    the app installed it opens there rather than in the browser."""
+    url = _web_link(stop.external_url)
+    if url is None:
+        return None
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "alltrails.com" or host.endswith(".alltrails.com"):
+        return url
+    return None
+
+
+def _links(stop: PreviewStop) -> str:
+    """The stop's ways out of the page: Apple Maps, then its AllTrails page
+    or its website. The card and the pin's popup both use this, so they
+    offer the same places."""
+    links = []
+    place = apple_place(stop)
+    if place:
+        links.append((place, "Apple Maps"))
+    # A trail's AllTrails page says more than a park's homepage, so it
+    # takes the Website link's place.
+    trail = alltrails_link(stop)
+    website = _web_link(stop.website)
+    if trail:
+        links.append((trail, "AllTrails"))
+    elif website:
+        links.append((website, "Website"))
+    return "".join(
+        f'<a href="{_e(href)}" target="_blank" rel="noopener">{label}</a>'
+        for href, label in links
+    )
+
+
 def _popup(stop: PreviewStop) -> str:
     """What opens when the stop's pin is tapped. Every control is a button
     or link sized for a thumb: there's no hover on a phone."""
     style = type_style(stop.venue_type)
     when = " · ".join(b for b in (_hours(stop), _length(stop)) if b)
-    place = apple_place(stop)
-    actions = f'<button type="button" data-goto="{stop.number}">Details</button>'
-    if place:
-        actions += (
-            f'<a href="{_e(place)}" target="_blank" rel="noopener">Apple Maps</a>'
-        )
-    website = _web_link(stop.website)
-    if website:
-        actions += f'<a href="{_e(website)}" target="_blank" rel="noopener">Website</a>'
+    actions = (
+        f'<button type="button" data-goto="{stop.number}">Details</button>'
+        + _links(stop)
+    )
     booking = _booking(stop)
     return (
         # The popup sits outside the card, so it carries the type colour too.
@@ -393,10 +441,7 @@ def _stop(stop: PreviewStop, live: bool = False) -> str:
         when = f"<time>{clock(stop.start_at)}</time>{end}"
     else:
         when = "<time>Time TBD</time>"
-    place = apple_place(stop)
-    row = _booking(stop)
-    if place:
-        row += f'<a href="{_e(place)}" target="_blank" rel="noopener">Apple Maps</a>'
+    row = _booking(stop) + _links(stop)
     row = f'<div class="row">{row}</div>' if row else ""
     cancelled = (
         " cancelled" if stop.booking_status is StopBookingStatus.CANCELLED else ""
@@ -591,16 +636,17 @@ LIVE_JS = """
       });
     });
     const frame = live.closest(".frame");
-    // Card -> its pin.
-    for (const button of document.querySelectorAll("[data-locate]")) {
-      button.addEventListener("click", () => {
-        const marker = markers.get(Number(button.dataset.locate));
-        if (!marker) return;
-        frame.scrollIntoView({ behavior: motion, block: "start" });
-        map.panTo(marker.getLatLng());
-        marker.openPopup();
-      });
-    }
+    // Card -> its pin. This script runs inside the map, before the cards
+    // below it are parsed, so it listens on the document, not the buttons.
+    document.addEventListener("click", (e) => {
+      const button = e.target.closest("[data-locate]");
+      if (!button) return;
+      const marker = markers.get(Number(button.dataset.locate));
+      if (!marker) return;
+      frame.scrollIntoView({ behavior: motion, block: "start" });
+      map.panTo(marker.getLatLng());
+      marker.openPopup();
+    });
     const points = cfg.stops.map((s) => [s.lat, s.lng]);
     map.fitBounds(points, { paddingTopLeft: [32, 40], paddingBottomRight: [56, 40], maxZoom: cfg.zoom });
     base.once("load", () => {

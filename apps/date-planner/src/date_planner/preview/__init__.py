@@ -164,6 +164,7 @@ async def write(
                 place=place,
                 venue_type=venue.venue_type if venue else None,
                 website=venue.website if venue else None,
+                external_url=venue.external_url if venue else None,
                 duration_min=_minutes(stop),
                 channel=venue.booking_channel if venue else None,
                 book_url=_book_url(stop),

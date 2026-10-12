@@ -193,7 +193,8 @@ def register(mcp: FastMCP) -> None:
         (keeping its stored name and city), and `matched_name` then echoes the
         name you gave. A new venue needs `venue_type`. Give `lat`/`lng` (for a
         trail, the trailhead) so legs to and from it can be timed, and
-        `default_duration_min` if you know how long a visit takes. Anything a
+        `default_duration_min` if you know how long a visit takes. A trail's
+        AllTrails page goes in `external_url`; the preview links to it. Anything a
         person tells you here outranks what detection later reads off the
         website.
         """

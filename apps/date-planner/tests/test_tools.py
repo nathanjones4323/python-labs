@@ -49,6 +49,11 @@ async def new_date(seeded: dict[str, Any], **extra: Any) -> Any:
     )
 
 
+async def profile_of(couple_id: Any) -> Any:
+    """The couple's profile, as `list_couples` hands it back."""
+    return next(c for c in await call("list_couples") if str(c.id) == str(couple_id))
+
+
 async def add(date_id: Any, position: int | None = None, **stop: Any) -> Any:
     return await call("add_stop", date_id=str(date_id), stop=stop, position=position)
 
@@ -60,7 +65,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 28
+    assert len(tools) == 26
     assert all(tool.description for tool in tools)
 
 
@@ -68,7 +73,7 @@ async def test_every_tool_has_a_description() -> None:
 
 
 async def test_profile_round_trip(db: Factory, seeded: dict[str, Any]) -> None:
-    profile = await call("get_couple_profile", couple_id=str(seeded["couple_id"]))
+    profile = await profile_of(seeded["couple_id"])
     assert profile.name == "Test couple"
     assert profile.budget_per_date == 250
     assert [m.name for m in profile.members] == ["Alex", "Sam"]
@@ -98,8 +103,6 @@ async def test_a_new_profile_can_be_created_from_nothing(db: Factory) -> None:
     )
     assert [m.name for m in with_member.members] == ["Cy"]
     assert with_member.next_turn.name == "Cy"
-    members = await call("list_members", couple_id=str(created.id))
-    assert [m.name for m in members] == ["Cy"]
 
 
 async def test_preferences_are_edited_per_member(
@@ -135,7 +138,7 @@ async def test_planning_for_a_member_passes_the_turn_on(
     db: Factory, seeded: dict[str, Any]
 ) -> None:
     couple_id = str(seeded["couple_id"])
-    before = await call("get_couple_profile", couple_id=couple_id)
+    before = await profile_of(couple_id)
     assert before.next_turn.name == "Alex"
 
     with pytest.raises(ToolError, match="NotFound"):
@@ -143,13 +146,11 @@ async def test_planning_for_a_member_passes_the_turn_on(
 
     both = await new_date(seeded)
     assert both.planned_for is None
-    assert (
-        await call("get_couple_profile", couple_id=couple_id)
-    ).next_turn.name == "Alex"
+    assert (await profile_of(couple_id)).next_turn.name == "Alex"
 
     hers = await new_date(seeded, planned_for="a@example.com")
     assert hers.planned_for == "Alex"
-    after = await call("get_couple_profile", couple_id=couple_id)
+    after = await profile_of(couple_id)
     assert after.next_turn.name == "Sam"
     assert after.next_turn.last_planned_for is None  # Sam hasn't had one yet
 
@@ -166,8 +167,9 @@ async def test_past_dates_come_back_with_ratings_and_stops(
 async def test_an_unknown_couple_is_a_not_found_error(db: Factory) -> None:
     with pytest.raises(ToolError, match="NotFound"):
         await call(
-            "get_couple_profile",
+            "upsert_member",
             couple_id="00000000-0000-0000-0000-000000000000",
+            member={"name": "Cy"},
         )
 
 
