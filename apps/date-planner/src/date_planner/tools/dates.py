@@ -28,8 +28,13 @@ def register(mcp: FastMCP) -> None:
         start_after: LocalTime | None = None,
         end_before: LocalTime | None = None,
         notes: str | None = None,
+        planned_for: str | None = None,
     ) -> DateOut:
         """Start a date: a day, with no stops yet. It starts `planning`.
+
+        Leave `planned_for` out for a date meant for both. Give a member's
+        name or email only when the user says the date is one person's pick
+        ("it's Sam's turn"); it counts towards `next_turn`.
 
         `max_leg_minutes` is "nearby" for this date — the longest drive or
         walk between consecutive stops before `plan_timeline` flags it. Pick
@@ -47,6 +52,7 @@ def register(mcp: FastMCP) -> None:
                 start_after=start_after,
                 end_before=end_before,
                 notes=notes,
+                planned_for=planned_for,
             )
             return DateOut.model_validate(row)
 
@@ -54,7 +60,8 @@ def register(mcp: FastMCP) -> None:
     @as_tool_error
     async def update_date(date_id: uuid.UUID, patch: DatePatch) -> DateOut:
         """Change the date's own fields: title, day, window, nearby limit,
-        rating, notes.
+        rating, notes, `planned_for` (a member's name or email; null makes it a
+        date for both again).
 
         A new `day` moves every stop to the same clock times that day. A
         booking was for the old day, so a stop that was `link_sent`,

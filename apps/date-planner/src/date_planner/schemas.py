@@ -51,50 +51,92 @@ class Out(BaseModel):
 # --- couples ---------------------------------------------------------------
 
 
-class CoupleProfile(Out):
-    """Everything the skill needs to pick an idea and hold a slot."""
+class MemberProfile(Out):
+    """One person's taste. Dislikes and dietary needs are hard constraints."""
 
     id: uuid.UUID
     name: str
-    member_emails: list[str]
+    email: str | None
+    likes: list[str]
+    dislikes: list[str]
+    dietary: list[str]
+
+
+class Preferences(BaseModel):
+    """Likes, dislikes and dietary needs pooled from the members."""
+
+    likes: list[str]
+    dislikes: list[str]
+    dietary: list[str]
+
+
+class NextTurn(BaseModel):
+    """The member whose pick is due: the one planned for least recently."""
+
+    member_id: uuid.UUID
+    name: str
+    last_planned_for: date | None
+
+
+class CoupleProfile(Out):
+    """Everything the skill needs to pick an idea and hold a slot.
+
+    `shared` pools the members' taste for a date meant for both: every like
+    nobody vetoes, and every dislike and dietary need of either. `next_turn`
+    is a suggestion only — a date is for both unless the user says otherwise.
+    """
+
+    id: uuid.UUID
+    name: str
     shared_calendar_id: str | None
     home_area: str | None
     timezone: str
     budget_per_date: int | None
-    dietary: list[str]
-    likes: list[str]
-    dislikes: list[str]
     max_travel_minutes: int | None
+    members: list[MemberProfile]
+    shared: Preferences | None = None
+    next_turn: NextTurn | None = None
 
 
 class CoupleProfileIn(BaseModel):
     """A profile to insert, or — with `id` — one to update.
 
-    Only the fields present are written, so a correction to one preference
-    doesn't wipe the rest. A list given here replaces the stored one whole;
-    to add or drop single items use `PreferenceEdit`.
+    Only the fields present are written, so a correction to one field
+    doesn't wipe the rest. Taste belongs to the members; see `MemberIn` and
+    `PreferenceEdit`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     id: uuid.UUID | None = None
     name: str | None = None
-    member_emails: list[str] | None = None
     shared_calendar_id: str | None = None
     home_area: str | None = None
     timezone: str | None = None
     budget_per_date: int | None = None
-    dietary: list[str] | None = None
-    likes: list[str] | None = None
-    dislikes: list[str] | None = None
     max_travel_minutes: int | None = None
 
 
+class MemberIn(BaseModel):
+    """A member to add, or — with `id` — one to update.
+
+    Without an `id`, a member of the same name (ignoring case) is updated,
+    else a new one is added and `name` is required. Likes, dislikes and
+    dietary needs change through `PreferenceEdit`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID | None = None
+    name: str | None = None
+    email: str | None = None
+
+
 class PreferenceEdit(BaseModel):
-    """Items to add to or drop from the couple's preference lists.
+    """Items to add to or drop from one member's preference lists.
 
     Matching ignores case and surrounding spaces. Liking something takes it
-    off `dislikes`, and disliking it takes it off `likes`, so "we've gone off
+    off `dislikes`, and disliking it takes it off `likes`, so "I've gone off
     sushi" is one `add_dislikes`. Removals run before additions.
     """
 
@@ -297,6 +339,8 @@ class StopOut(Out):
 class DateOut(Out):
     id: uuid.UUID
     couple_id: uuid.UUID
+    # The member whose pick it was; null for a date planned for both.
+    planned_for: str | None
     title: str
     day: date
     max_leg_minutes: int
@@ -387,6 +431,9 @@ class DatePatch(BaseModel):
     notes: str | None = None
     # The Artifact link the preview page was published to.
     preview_url: str | None = None
+    # A member's name or email: whose pick this date is. Null makes it a
+    # date for both again.
+    planned_for: str | None = None
 
 
 # --- planning --------------------------------------------------------------

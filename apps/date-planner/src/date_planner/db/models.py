@@ -1,8 +1,13 @@
 """The tables, and how a date's status follows from its stops.
 
-    couples ──── dates ──── date_stops ──── venues
-                                              │
-                                        travel_cache
+    couples ──┬── couple_members
+              └── dates ──── date_stops ──── venues
+                                               │
+                                         travel_cache
+
+Likes, dislikes and dietary needs belong to a `CoupleMember`, not the couple,
+so a date can be built around one person's taste. A date's
+`planned_for_member_id` says whose pick it was; null means it was for both.
 
 A `PlannedDate` is a day: a title, a window, and how far apart its stops may
 be (`max_leg_minutes`). Everything bookable lives on its ordered
@@ -133,25 +138,20 @@ class TravelMode(enum.StrEnum):
 
 
 class Couple(Base):
-    """Who the dates are for, and what they like.
+    """Who the dates are for, and the logistics they share.
 
     One row is enough for now; the table is keyed by couple anyway so a
-    second one costs nothing.
+    second one costs nothing. Taste lives on the `members`.
     """
 
     __tablename__ = "couples"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200))
-    # Invited as calendar guests — but only once the user says so.
-    member_emails: Mapped[list[str]] = mapped_column(default=list)
     shared_calendar_id: Mapped[str | None] = mapped_column(String(320))
     home_area: Mapped[str | None] = mapped_column(String(200))
     timezone: Mapped[str] = mapped_column(String(64), default=DEFAULT_TIMEZONE)
     budget_per_date: Mapped[int | None] = mapped_column(Integer)  # USD
-    dietary: Mapped[list[str]] = mapped_column(default=list)
-    likes: Mapped[list[str]] = mapped_column(default=list)
-    dislikes: Mapped[list[str]] = mapped_column(default=list)
     max_travel_minutes: Mapped[int | None] = mapped_column(SmallInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -159,10 +159,50 @@ class Couple(Base):
     )
 
     dates: Mapped[list["PlannedDate"]] = relationship(back_populates="couple")
+    # selectin: profiles are built from the row alone, and an async session
+    # can't lazy-load on attribute access.
+    members: Mapped[list["CoupleMember"]] = relationship(
+        back_populates="couple",
+        order_by="(CoupleMember.created_at, CoupleMember.name)",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
+
+
+class CoupleMember(Base):
+    """One of the two people, with their own taste."""
+
+    __tablename__ = "couple_members"
+    __table_args__ = (
+        # A name is how the user refers to a member, so it's unique per couple.
+        Index(
+            "ix_couple_members_couple_name",
+            "couple_id",
+            text("lower(name)"),
+            unique=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    couple_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("couples.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(String(100))
+    # Invited as a calendar guest — but only once the user says so.
+    email: Mapped[str | None] = mapped_column(String(320))
+    likes: Mapped[list[str]] = mapped_column(default=list)
+    dislikes: Mapped[list[str]] = mapped_column(default=list)
+    dietary: Mapped[list[str]] = mapped_column(default=list)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now()
+    )
+
+    couple: Mapped[Couple] = relationship(back_populates="members")
 
 
 class Venue(Base):
@@ -270,6 +310,10 @@ class PlannedDate(Base):
     couple_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("couples.id", ondelete="CASCADE"), index=True
     )
+    # Null: planned for both. Set when the date is one person's pick.
+    planned_for_member_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("couple_members.id", ondelete="SET NULL")
+    )
     title: Mapped[str] = mapped_column(String(300))
     day: Mapped[date]
     # The agent's "nearby" for this date: no leg between stops longer.
@@ -290,6 +334,7 @@ class PlannedDate(Base):
     )
 
     couple: Mapped[Couple] = relationship(back_populates="dates")
+    planned_for_member: Mapped[CoupleMember | None] = relationship(lazy="selectin")
     # selectin: the tools always want the stops, and an async session can't
     # lazy-load them on attribute access.
     stops: Mapped[list["DateStop"]] = relationship(
@@ -298,6 +343,12 @@ class PlannedDate(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+
+    @property
+    def planned_for(self) -> str | None:
+        """The member the date was planned for, or None if for both."""
+        member = self.planned_for_member
+        return member.name if member is not None else None
 
 
 class DateStop(Base):

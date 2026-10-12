@@ -14,8 +14,9 @@ final tap or phone call is always the user's.
 ## Tools you rely on
 
 - **date-planner MCP server**
-  - couple: `list_couples`, `get_couple_profile`, `upsert_couple_profile`,
-    `edit_couple_preferences`, `list_past_dates`
+  - couple: `list_couples`, `get_couple_profile`, `list_members`,
+    `upsert_couple_profile`, `upsert_member`, `edit_member_preferences`,
+    `list_past_dates`
   - venues: `find_venue`, `upsert_venue`, `detect_booking_channel`,
     `suggest_reservation_need`, `build_booking_link`, `compute_booking_window`,
     `find_google_place`, `resy_widget_args`
@@ -43,7 +44,7 @@ The MCP tools may be deferred. If they are, load every one you'll need in
 real schemas instead of guessing:
 
 ```
-select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__edit_couple_preferences,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,WebSearch
+select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp__date-planner__list_past_dates,mcp__date-planner__list_members,mcp__date-planner__edit_member_preferences,mcp__date-planner__upsert_member,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,WebSearch
 ```
 
 ### Argument shapes
@@ -54,7 +55,9 @@ select:mcp__date-planner__list_couples,mcp__date-planner__get_couple_profile,mcp
 | `add_stop` | `date_id`, `stop={title, kind, venue_id?, start_at?, est_duration_min?, anchor?, reservation_need?, booking_status?}` |
 | `update_stop` | `stop_id`, `patch={...}` — only the fields to change |
 | `update_date` | `date_id`, `patch={...}` |
-| `upsert_couple_profile` | `profile={...}` |
+| `upsert_couple_profile` | `profile={...}` — logistics only (budget, travel limit, home area, calendar) |
+| `upsert_member` | `couple_id`, `member={name, email?}` |
+| `edit_member_preferences` | `couple_id`, `member` (name or email), `edit={add_likes?, remove_likes?, add_dislikes?, remove_dislikes?, add_dietary?, remove_dietary?}` |
 
 - Coordinates, address and website belong to the **venue**, never the stop.
   Create the venue first, then add the stop with its `venue_id`.
@@ -97,25 +100,36 @@ round trips for real decisions:
 ### 1. Load context
 
 `list_couples` → `get_couple_profile` and `list_past_dates`. If there's no
-profile, ask for the basics (names, emails, shared calendar id, home area,
-budget, dietary needs, likes, travel limit) and save them with
-`upsert_couple_profile`. Everything you say from here uses the couple's
-timezone.
+profile, ask for the basics (home area, budget, travel limit, shared calendar
+id) and save them with `upsert_couple_profile`; then add each person with
+`upsert_member` (name, email) and ask each for their own likes, dislikes and
+dietary needs. Everything you say from here uses the couple's timezone.
+
+**Plan for both by default.** The profile's `shared` block is the taste to
+plan by: every like nobody vetoes, and every dislike and dietary need of
+*either* person. Only plan around one person when the user says so — "it's my
+turn", "this one's for Sam". Then pass `planned_for` (their name or email) to
+`create_date`, lean on that member's own likes (from `list_members`), and
+keep honouring both people's dislikes and dietary needs. `next_turn` names
+whoever was planned for least recently: at most mention it in one line
+("Sam's due a turn — want this one to be theirs?") and carry on as a date for
+both unless they say yes. Never set `planned_for` on your own.
 
 **Keep the profile current.** Whenever the user states a preference at any
-point in the conversation — "we've gone off sushi", "she's vegetarian now",
+point in the conversation — "I've gone off sushi", "she's vegetarian now",
 "budget's tighter this month", "nothing more than 30 minutes away" — save it
-before carrying on:
+before carrying on. Work out whose it is: "I" is whoever you're talking to if
+you know, otherwise ask; "we" means both members, so edit each.
 
-- single likes, dislikes or dietary needs → `edit_couple_preferences`
-  (add/remove items; the rest of the list is kept);
-- budget, travel limit, home area, calendar, emails →
-  `upsert_couple_profile` with only that field set.
+- single likes, dislikes or dietary needs → `edit_member_preferences` for
+  that member (add/remove items; the rest of their lists is kept);
+- budget, travel limit, home area, calendar →
+  `upsert_couple_profile` with only that field set;
+- a name or email → `upsert_member`.
 
-Never send `likes`, `dislikes` or `dietary` through `upsert_couple_profile`
-to change one item — it replaces the whole list. Tell the user in one line
-what changed ("Saved: sushi moved to dislikes"). A one-off ("let's skip
-Italian tonight") is not a preference; don't save it.
+Tell the user in one line what changed ("Saved: sushi moved to Sam's
+dislikes"). A one-off ("let's skip Italian tonight") is not a preference;
+don't save it.
 
 `list_past_dates` returns every stop, so avoid repeating a venue of any type
 — trail, museum or restaurant — from the last 60 days unless it was rated 5.
@@ -380,8 +394,9 @@ and puts any stop that was booked (or had a link or reminder out) back to
 If asked, `update_date(status="completed", rating=...)`. That rating is what
 `list_past_dates` feeds back into step 1. If the rating is a **5** or a
 **1–2**, ask once whether it should change their preferences — naming the
-specific thing (a cuisine, a trail type, an area) rather than the venue — and
-save with `edit_couple_preferences` only on a yes.
+specific thing (a cuisine, a trail type, an area) rather than the venue, and
+whose it should change (one of them, or both) — and save with
+`edit_member_preferences` only on a yes.
 
 ## Status
 

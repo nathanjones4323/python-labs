@@ -37,6 +37,15 @@ from 10:00 local). Set `DATE_PLANNER_SEED_MEMBER_EMAILS` (comma-separated) and
 `DATE_PLANNER_SHARED_CALENDAR_ID` in `.env` before seeding; a reseed with them
 unset overwrites the stored values.
 
+Taste is per member: a date is planned for both (the union of dislikes and
+dietary needs, and the likes nobody vetoes) unless the user says it's one
+person's turn, which sets the date's `planned_for`. `next_turn` is derived from
+which member was planned for least recently.
+
+The schema is a single migration. If you have a database from before the
+members table, drop and recreate it rather than upgrading
+(`docker compose down -v && docker compose up -d`, then `alembic upgrade head`).
+
 To wipe the local data and seed again (schema kept, localhost only):
 
 ```sh
@@ -103,8 +112,9 @@ not ready for public hosting.
 
 | Tool | What it's for |
 | --- | --- |
-| `list_couples`, `get_couple_profile`, `upsert_couple_profile` | The couple and their preferences |
-| `edit_couple_preferences` | Add or drop single likes, dislikes or dietary needs without resending the list |
+| `list_couples`, `get_couple_profile`, `upsert_couple_profile` | The couple: logistics, their members, the pooled `shared` taste, and whose turn is next |
+| `list_members`, `upsert_member` | The two people, each with their own likes, dislikes and dietary needs |
+| `edit_member_preferences` | Add or drop single likes, dislikes or dietary needs for one member without resending the list |
 | `list_past_dates` | Recent dates with ratings and every stop, so no venue repeats |
 | `find_venue`, `upsert_venue` | Venues of any type: restaurant, trail, museum, bar, park, viewpoint |
 | `detect_booking_channel` | Read the venue's website: Resy / OpenTable / Tock / SevenRooms / ticketed / phone / walk-in / unknown, with evidence and a confidence |
