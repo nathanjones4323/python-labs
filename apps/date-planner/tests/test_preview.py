@@ -6,6 +6,7 @@ import os
 import re
 import uuid
 from datetime import date, datetime
+from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
@@ -616,7 +617,9 @@ def test_leaflet_comes_pinned_from_cdnjs_with_its_tiles() -> None:
     assert config["bounds"] == pytest.approx(list(tiles.bounds), abs=1e-6)
     assert len(config["patches"]) == len(tiles.patches)
     assert [s["number"] for s in config["stops"]] == [1, 2, 3]
-    assert config["stops"][1]["maps"] == page.apple_place(data.stops[1])
+    place = page.apple_place(data.stops[1])
+    assert place is not None
+    assert escape(place, quote=True) in config["stops"][1]["popup"]
     assert config["stops"][0]["when"] == "10:00 AM"
 
 
