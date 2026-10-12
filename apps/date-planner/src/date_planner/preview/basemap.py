@@ -12,7 +12,9 @@ drawn by the page on top, so they stay sharp and follow the theme.
 
 Tiles are cached on disk (`preview_dir/.tiles`), fetched two at a time with
 an honest User-Agent, as tile servers' usage policies ask, and never past
-zoom 16: OpenStreetMap's policy forbids bulk fetching at 17 and up.
+zoom 16: OpenStreetMap's policy forbids bulk fetching at 17 and up. Each
+tile's WebP is cached beside it, so a re-render of an unchanged area does no
+image work; what work there is runs off the event loop.
 """
 
 import asyncio
@@ -270,6 +272,10 @@ class TileCache:
     def path(self, zoom: int, x: int, y: int) -> Path:
         return self.root / str(zoom) / str(x) / f"{y}.png"
 
+    def converted(self, zoom: int, x: int, y: int) -> Path:
+        """Where the tile's WebP for the page goes, next to its source."""
+        return self.path(zoom, x, y).with_suffix(f".{TILE_FORMAT}")
+
     def fresh(self, zoom: int, x: int, y: int) -> bytes | None:
         path = self.path(zoom, x, y)
         try:
@@ -369,17 +375,40 @@ async def fetch(
         )
     except httpx.HTTPError:
         return None
+    # Encoding a full pyramid takes seconds; keep the server answering.
+    return await asyncio.to_thread(_convert_all, cache, keys, images)
+
+
+def _convert_all(
+    cache: TileCache, keys: list[TileKey], images: list[bytes]
+) -> dict[str, bytes] | None:
     out: dict[str, bytes] = {}
     for (z, x, y), data in zip(keys, images):
-        try:
-            tile = Image.open(io.BytesIO(data)).convert("RGB")
-        except OSError:
+        webp = _convert(cache, z, x, y, data)
+        if webp is None:
             return None
-        # @2x tiles are halved: Leaflet shows 256px tiles, and four times
-        # the pixels would be four times the bytes.
-        if tile.size != (TILE, TILE):
-            tile = tile.resize((TILE, TILE), Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        tile.save(buffer, "WEBP", quality=80, method=6)
-        out[f"tiles/{z}/{x}/{y}.{TILE_FORMAT}"] = buffer.getvalue()
+        out[f"tiles/{z}/{x}/{y}.{TILE_FORMAT}"] = webp
     return out
+
+
+def _convert(cache: TileCache, z: int, x: int, y: int, data: bytes) -> bytes | None:
+    """The tile as the page's WebP, reused while its source is unchanged: a
+    refetched source is newer than the WebP made from the old one."""
+    path = cache.converted(z, x, y)
+    try:
+        if path.stat().st_mtime >= cache.path(z, x, y).stat().st_mtime:
+            return path.read_bytes()
+    except FileNotFoundError:
+        pass
+    try:
+        tile = Image.open(io.BytesIO(data)).convert("RGB")
+    except OSError:
+        return None
+    # @2x tiles are halved: Leaflet shows 256px tiles, and four times
+    # the pixels would be four times the bytes.
+    if tile.size != (TILE, TILE):
+        tile = tile.resize((TILE, TILE), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    tile.save(buffer, "WEBP", quality=80, method=6)
+    path.write_bytes(buffer.getvalue())
+    return buffer.getvalue()

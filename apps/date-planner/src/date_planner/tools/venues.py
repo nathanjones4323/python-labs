@@ -25,7 +25,7 @@ from date_planner.errors import (
     PlacesFailed,
     UnsupportedChannel,
 )
-from date_planner.planning.travel import LatLng
+from date_planner.planning import travel
 from date_planner.schemas import (
     BookingLinkOut,
     BookingWindowOut,
@@ -60,6 +60,23 @@ def _from_row(
         window_open_time=venue.window_open_time,
         from_cache=from_cache,
         pages_fetched=pages_fetched or [],
+    )
+
+
+def _from_detection(found: detection_mod.Detection) -> DetectionOut:
+    """A fresh detection that isn't recorded against any venue."""
+    window = found.window
+    return DetectionOut(
+        channel=found.channel,
+        platform_slug=found.platform_slug,
+        platform_city_slug=found.platform_city_slug,
+        phone=found.phone,
+        confidence=found.confidence,
+        evidence=found.evidence,
+        window_amount=window.amount if window else None,
+        window_unit=window.unit if window else None,
+        window_open_time=window.open_time if window else None,
+        pages_fetched=list(found.pages_fetched),
     )
 
 
@@ -192,18 +209,8 @@ def register(mcp: FastMCP) -> None:
         if venue_id is None:
             if not website_url:
                 raise DetectionFailed("Pass a venue_id or a website_url to detect")
-            found = await detection_mod.detect(website_url, settings=settings)
-            return DetectionOut(
-                channel=found.channel,
-                platform_slug=found.platform_slug,
-                platform_city_slug=found.platform_city_slug,
-                phone=found.phone,
-                confidence=found.confidence,
-                evidence=found.evidence,
-                window_amount=found.window.amount if found.window else None,
-                window_unit=found.window.unit if found.window else None,
-                window_open_time=(found.window.open_time if found.window else None),
-                pages_fetched=list(found.pages_fetched),
+            return _from_detection(
+                await detection_mod.detect(website_url, settings=settings)
             )
 
         async with open_session() as session:
@@ -274,12 +281,7 @@ def register(mcp: FastMCP) -> None:
                 _stop_start(stop).astimezone(venue.tz),
                 stop.party_size,
             )
-        return BookingLinkOut(
-            url=link.url,
-            platform=link.platform,
-            verified=link.verified,
-            local_start=link.local_start,
-        )
+        return BookingLinkOut.model_validate(link)
 
     @mcp.tool
     @as_tool_error
@@ -315,11 +317,7 @@ def register(mcp: FastMCP) -> None:
                     "GOOGLE_PLACES_API_KEY isn't set in the server's .env, so the "
                     "Resy widget can't be used; hand over build_booking_link."
                 )
-            near = (
-                LatLng(venue.lat, venue.lng)
-                if venue.lat is not None and venue.lng is not None
-                else None
-            )
+            near = travel.coordinates(venue) if venue.has_coordinates else None
             found = await places.search(
                 f"{venue.name}, {venue.address or venue.city}",
                 settings.google_places_api_key,

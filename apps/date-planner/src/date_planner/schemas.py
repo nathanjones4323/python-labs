@@ -188,7 +188,7 @@ class DetectionOut(BaseModel):
     pages_fetched: list[str] = Field(default_factory=list)
 
 
-class BookingLinkOut(BaseModel):
+class BookingLinkOut(Out):
     url: str
     platform: BookingChannel
     # False while this platform's URL template is still untested against a
@@ -390,7 +390,7 @@ class DatePatch(BaseModel):
 # --- planning --------------------------------------------------------------
 
 
-class SunsetOut(BaseModel):
+class SunsetOut(Out):
     """All in the venue's (or the given) timezone."""
 
     sunset: datetime
@@ -398,7 +398,7 @@ class SunsetOut(BaseModel):
     golden_hour_start: datetime
 
 
-class TravelOut(BaseModel):
+class TravelOut(Out):
     """One leg. `minutes` includes the driving padding and is rounded up."""
 
     minutes: int
@@ -443,7 +443,7 @@ class BusyEventIn(BaseModel):
     event_id: str | None = None
 
 
-class ViolationOut(BaseModel):
+class ViolationOut(Out):
     type: str
     message: str
     stop_id: uuid.UUID | None = None

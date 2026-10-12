@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from date_planner.config import get_settings
 from date_planner.errors import PlacesFailed
 from date_planner.planning.travel import LatLng, great_circle_m
 
@@ -96,7 +97,6 @@ async def search(
     query: str,
     api_key: str,
     near: LatLng | None = None,
-    client: httpx.AsyncClient | None = None,
 ) -> list[Place]:
     """Google's best few places for `query`, biased towards `near`."""
     body: dict[str, Any] = {"textQuery": query, "pageSize": MAX_RESULTS}
@@ -109,11 +109,8 @@ async def search(
         }
     headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": FIELD_MASK}
     try:
-        if client is not None:
+        async with httpx.AsyncClient(timeout=get_settings().fetch_timeout) as client:
             response = await client.post(SEARCH_URL, json=body, headers=headers)
-        else:
-            async with httpx.AsyncClient(timeout=10.0) as owned:
-                response = await owned.post(SEARCH_URL, json=body, headers=headers)
     except httpx.HTTPError as exc:
         raise PlacesFailed(f"Google Places request failed: {exc}") from exc
     if response.status_code != 200:

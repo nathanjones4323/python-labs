@@ -278,12 +278,11 @@ def _map(data: PreviewData) -> str:
     )
     images = ""
     if data.has_light_map:
-        images += f'<img class="tiles light" src="{LIGHT_MAP}" alt="">'
+        # No dark tiles: the page darkens the light ones (see page.css).
+        dimmed = "" if data.has_dark_map else " dimmed"
+        images += f'<img class="tiles light{dimmed}" src="{LIGHT_MAP}" alt="">'
     if data.has_dark_map:
         images += f'<img class="tiles dark" src="{DARK_MAP}" alt="">'
-    elif data.has_light_map:
-        # No dark tiles: the page darkens the light ones (see page.css).
-        images = images.replace('class="tiles light"', 'class="tiles light dimmed"')
     credit = (
         _e(data.map_credit)
         if data.has_light_map

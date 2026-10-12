@@ -6,6 +6,7 @@ image per theme, and the interactive map's tiles under `tiles/` — under
 Artifact tool; this server never publishes anything itself.
 """
 
+import asyncio
 import io
 import shutil
 from dataclasses import dataclass
@@ -177,7 +178,7 @@ async def write(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
             files[name] = path
-        overview.write_bytes(_overview(tiles))
+        overview.write_bytes(await asyncio.to_thread(_overview, tiles))
 
     return Written(
         page=index,
