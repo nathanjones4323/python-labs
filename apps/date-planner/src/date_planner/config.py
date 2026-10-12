@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     map_user_agent: str = "date-planner/0.1 (personal date preview)"
     map_tile_ttl_days: int = 30
 
+    # Read only by `date_planner.seed`, so a wiped database comes back with
+    # the real couple. `seed_member_emails` is comma-separated.
+    shared_calendar_id: str | None = None
+    seed_member_emails: str = ""
+
     # `--http` only. Without a token the HTTP transport refuses to start, so
     # a stray `--http` can't expose the database unauthenticated.
     http_token: str | None = None

@@ -32,8 +32,9 @@ uv run --package date-planner python -m date_planner.seed
 The seed prints the couple id and inserts the venues for a Malibu day:
 Solstice Canyon (trail, trailhead coordinates), the Getty Villa (museum,
 timed entry) and Nobu Malibu (phone-only, bookable one calendar month ahead
-from 10:00 local). Edit the placeholder couple with `upsert_couple_profile`
-once you know the real names, emails and shared calendar id.
+from 10:00 local). Set `DATE_PLANNER_SEED_MEMBER_EMAILS` (comma-separated) and
+`DATE_PLANNER_SHARED_CALENDAR_ID` in `.env` before seeding; a reseed with them
+unset overwrites the stored values.
 
 ## Claude Code project
 
