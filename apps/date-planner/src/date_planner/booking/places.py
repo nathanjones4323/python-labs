@@ -15,7 +15,7 @@ of them — two restaurants of the same name across town don't.
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -40,6 +40,8 @@ class Place:
     name: str
     address: str | None
     location: LatLng | None
+    # Everything Google returned for the place, as it came.
+    raw: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -90,6 +92,7 @@ def _parse(raw: dict[str, Any]) -> Place | None:
         name=(raw.get("displayName") or {}).get("text") or "",
         address=raw.get("formattedAddress"),
         location=LatLng(lat, lng) if lat is not None and lng is not None else None,
+        raw=raw,
     )
 
 

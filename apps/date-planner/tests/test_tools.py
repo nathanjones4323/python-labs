@@ -262,6 +262,9 @@ async def test_find_google_place_saves_the_match_once(
     venue = await call("find_venue", name="Bestia", city="Los Angeles")
     assert venue.google_place_id == "ChIJ-bestia"
     assert venue.lat == 34.0337
+    async with db() as session:
+        row = await repo.get_venue(session, seeded["bestia_id"])
+        assert row.google_place_data == BESTIA_PLACE
 
 
 async def test_find_google_place_saves_nothing_without_a_match(
