@@ -20,6 +20,7 @@ image work; what work there is runs off the event loop.
 import asyncio
 import hashlib
 import io
+import logging
 import math
 import time
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from pathlib import Path
 
 import httpx
 from PIL import Image
+
+log = logging.getLogger(__name__)
 
 TILE = 256  # logical pixels per tile; @2x tiles are twice that
 MIN_ZOOM = 3
@@ -334,12 +337,14 @@ async def render(
         images = await asyncio.gather(
             *(_tile(client, cache, gate, frame.zoom, x % count, y) for x, y in wanted)
         )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        log.warning("basemap picture skipped, a tile failed: %r", exc)
         return None
 
     try:
         tiles = [Image.open(io.BytesIO(data)).convert("RGB") for data in images]
-    except OSError:
+    except OSError as exc:
+        log.warning("basemap picture skipped, a tile didn't decode: %r", exc)
         return None
     # 256px tiles make a 1x picture, @2x tiles a 2x one; the page shows
     # either at the frame's size.
@@ -373,7 +378,8 @@ async def fetch(
         images = await asyncio.gather(
             *(_tile(client, cache, gate, z, x, y) for z, x, y in keys)
         )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        log.warning("interactive map skipped, a tile failed: %r", exc)
         return None
     # Encoding a full pyramid takes seconds; keep the server answering.
     return await asyncio.to_thread(_convert_all, cache, keys, images)
@@ -402,7 +408,8 @@ def _convert(cache: TileCache, z: int, x: int, y: int, data: bytes) -> bytes | N
         pass
     try:
         tile = Image.open(io.BytesIO(data)).convert("RGB")
-    except OSError:
+    except OSError as exc:
+        log.warning("tile %d/%d/%d didn't decode: %r", z, x, y, exc)
         return None
     # @2x tiles are halved: Leaflet shows 256px tiles, and four times
     # the pixels would be four times the bytes.
