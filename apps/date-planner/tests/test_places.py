@@ -9,6 +9,7 @@ import respx
 from date_planner.booking import places
 from date_planner.booking.places import Place
 from date_planner.errors import PlacesFailed
+from date_planner.matching import names_match
 from date_planner.planning.travel import LatLng
 
 BESTIA = LatLng(34.0336, -118.2293)
@@ -27,7 +28,7 @@ BESTIA = LatLng(34.0336, -118.2293)
     ],
 )
 def test_names_match(ours: str, theirs: str, expected: bool) -> None:
-    assert places.names_match(ours, theirs) is expected
+    assert names_match(ours, theirs) is expected
 
 
 def test_a_namesake_across_town_is_not_a_match() -> None:

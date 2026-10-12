@@ -135,6 +135,8 @@ class VenueOut(Out):
     channel_confidence: float | None
     channel_checked_at: datetime | None
     notes: str | None
+    # The name asked for, when it found this venue under a different one.
+    matched_name: str | None = None
 
 
 class VenueIn(BaseModel):

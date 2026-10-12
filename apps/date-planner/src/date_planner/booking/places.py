@@ -13,8 +13,6 @@ matches and, if the venue has coordinates, it sits within `MATCH_RADIUS_M`
 of them — two restaurants of the same name across town don't.
 """
 
-import re
-import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,15 +20,14 @@ import httpx
 
 from date_planner.config import get_settings
 from date_planner.errors import PlacesFailed
+from date_planner.matching import SAME_PLACE_M, names_match
 from date_planner.planning.travel import LatLng, great_circle_m
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = "places.id,places.displayName,places.formattedAddress,places.location"
 # Search near the venue, not only inside this circle: a bias, not a filter.
 BIAS_RADIUS_M = 5_000.0
-# A pin dropped from the venue's own site and Google's can disagree by a
-# car park's width; a different branch is further than this.
-MATCH_RADIUS_M = 300.0
+MATCH_RADIUS_M = SAME_PLACE_M
 MAX_RESULTS = 5
 
 
@@ -58,30 +55,7 @@ class Candidate:
         return self.distance_m is None or self.distance_m <= MATCH_RADIUS_M
 
 
-_FILLER = {"the", "restaurant", "bar", "and", "cafe", "kitchen"}
-
-
-def _words(name: str) -> set[str]:
-    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
-    words = set(re.findall(r"[a-z0-9]+", plain.lower().replace("&", " and ")))
-    return (words - _FILLER) or words
-
-
-def names_match(ours: str, theirs: str) -> bool:
-    """Whether Google's name is plausibly our venue's.
-
-    Every significant word of the shorter name has to appear in the longer:
-    "Nobu" is "Nobu Malibu", "A Tí" is "A TÍ Restaurant", but "Bestia" is
-    not "Bavel".
-    """
-    a, b = _words(ours), _words(theirs)
-    if not a or not b:
-        return False
-    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    return shorter <= longer
-
-
-def _parse(raw: dict[str, Any]) -> Place | None:
+def parse(raw: dict[str, Any]) -> Place | None:
     place_id = raw.get("id")
     if not isinstance(place_id, str) or not place_id:
         return None
@@ -128,7 +102,7 @@ async def search(
     except ValueError as exc:
         raise PlacesFailed("Google Places returned something other than JSON") from exc
     raw_places = data.get("places", []) if isinstance(data, dict) else []
-    return [place for raw in raw_places if (place := _parse(raw)) is not None]
+    return [place for raw in raw_places if (place := parse(raw)) is not None]
 
 
 def rank(name: str, near: LatLng | None, places: list[Place]) -> list[Candidate]:
@@ -146,3 +120,19 @@ def rank(name: str, near: LatLng | None, places: list[Place]) -> list[Candidate]
         )
         for place in places
     ]
+
+
+@dataclass(frozen=True)
+class Lookup:
+    candidates: list[Candidate]
+    match: Candidate | None
+
+
+async def lookup(
+    name: str, query: str, near: LatLng | None, api_key: str
+) -> Lookup:
+    """Search Google for the venue `name` and pick the candidate that is it."""
+    candidates = rank(name, near, await search(query, api_key, near))
+    return Lookup(
+        candidates=candidates, match=next((c for c in candidates if c.is_match), None)
+    )
