@@ -12,3 +12,7 @@
 
 # The server log; see src/date_planner/logs.py.
 /logs/
+
+# Per-checkout overrides read after .env, e.g. the main checkout pointing
+# DATABASE_URL at prod. Never copied into worktrees.
+.env.local
