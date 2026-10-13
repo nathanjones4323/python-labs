@@ -40,8 +40,8 @@ from date_planner.planning import travel
 from date_planner.schemas import CoupleProfileIn, MemberIn, PreferenceEdit, VenueIn
 
 # The two people, and the likes the couple started with (all Nathan's, until
-# his partner adds their own).
-SEED_MEMBERS = ("Nathan", "Partner")
+# Jacqui adds their own).
+SEED_MEMBERS = ("Nathan", "Jacqui")
 SEED_LIKES = ["sushi", "ocean views", "live music", "scenic locations"]
 
 
