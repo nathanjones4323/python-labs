@@ -47,6 +47,38 @@ If you have a database from before the members table, drop and recreate it
 rather than upgrading (`docker compose down -v && docker compose up -d`,
 then `alembic upgrade head`).
 
+## Dev and prod databases
+
+There are two Postgres containers, so dev work can't touch the dates you
+actually plan:
+
+| | compose | port / database | used by |
+| --- | --- | --- | --- |
+| dev | `docker-compose.yml` (project `date-planner`) | 5434 `date_planner`, plus `date_planner_test` | worktrees, tests, `date-planner-reset` |
+| prod | `docker-compose.prod.yml` (project `date-planner-prod`) | 5435 `date_planner_prod` | the main checkout, Remote Control included |
+
+The server reads `DATABASE_URL` from the environment, then `.env.local`,
+then `.env`. `.env` is copied into every new worktree (`.worktreeinclude`),
+so it holds the dev URL. Only the main checkout has a `.env.local`, which
+points it at prod:
+
+```sh
+# apps/date-planner/.env.local in the main checkout, and nowhere else
+DATABASE_URL=postgresql://postgres:postgres@localhost:5435/date_planner_prod
+```
+
+The server's log names the database it connected to on its first line. Prod
+is a separate compose project, so `docker compose down -v` in this directory
+leaves it alone. `date-planner-reset` refuses any database whose name ends
+in `_prod`, with or without `--force`. A schema change reaches prod only
+when you run it there yourself, once the change is merged:
+
+```sh
+# in the main checkout
+docker compose -f docker-compose.prod.yml up -d   # restarts with Docker after that
+uv run --package date-planner alembic upgrade head
+```
+
 To wipe the local data and seed again (schema kept, localhost only):
 
 ```sh
@@ -61,7 +93,7 @@ config below lives in:
 
 | file | what it does |
 | --- | --- |
-| `.mcp.json` | Registers this server (`uv run date-planner-mcp`). `DATABASE_URL` comes from your environment, falling back to the local compose database. |
+| `.mcp.json` | Registers this server (`uv run date-planner-mcp`). It sets no `DATABASE_URL`, so the server picks dev or prod from `.env` / `.env.local` (see "Dev and prod databases"). |
 | `.claude/skills/date-planner/SKILL.md` | The skill, invocable as `/date-planner`. |
 | `.claude/settings.json` | `PreToolUse` hooks that enforce the hard rules in code. |
 | `.claude/hooks/calendar_guard.py` | Denies calendar deletes; asks before any create/update that adds attendees; allows the rest. |

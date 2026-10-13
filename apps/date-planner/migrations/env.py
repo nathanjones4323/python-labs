@@ -1,22 +1,21 @@
 """Alembic environment: migrate the schema in `date_planner.db.models`.
 
-The URL comes from DATABASE_URL (or `-x url=...`), never from alembic.ini, so
-the same config runs locally, in CI and against a hosted database. The engine
+The URL comes from `-x url=...`, else DATABASE_URL as the server reads it
+(the environment, then `.env.local`, then `.env`), never from alembic.ini, so
+the same config runs locally, in CI and against a hosted database — and in
+the main checkout, against prod. The engine
 is async (asyncpg), so the online path drives the migrations through
 `run_sync`.
 """
 
 import asyncio
-import os
 from logging.config import fileConfig
 
 from alembic import context
+from date_planner.config import get_settings
 from date_planner.db import make_engine, normalize_url
 from date_planner.db.models import Base
-from dotenv import load_dotenv
 from sqlalchemy import Connection
-
-load_dotenv()
 
 config = context.config
 if config.config_file_name is not None:
@@ -26,8 +25,9 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    url = context.get_x_argument(as_dictionary=True).get("url") or os.environ.get(
-        "DATABASE_URL", ""
+    url = (
+        context.get_x_argument(as_dictionary=True).get("url")
+        or get_settings().database_url
     )
     if not url:
         raise RuntimeError("Set DATABASE_URL (or pass -x url=...) to run migrations")

@@ -5,7 +5,8 @@
 
 Truncates every table but keeps the schema (and alembic_version), so no
 migration is needed afterwards. Refuses a DATABASE_URL that isn't on
-localhost; pass --force if you really mean it.
+localhost unless you pass --force, and the prod database (`*_prod`) always:
+there's no flag for that.
 """
 
 import argparse
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import text
 
-from date_planner.config import get_settings
+from date_planner.config import get_settings, is_prod_database
 from date_planner.db import open_session
 from date_planner.db.models import Base
 from date_planner.seed import seed
@@ -44,6 +45,8 @@ def main() -> None:
     args = parser.parse_args()
 
     url = get_settings().require_database_url()
+    if is_prod_database(url):
+        raise SystemExit(f"refusing to wipe {urlparse(url).path[1:]!r}: it's prod")
     host = urlparse(url).hostname
     if host not in LOCAL_HOSTS and not args.force:
         raise SystemExit(f"refusing to wipe {host!r}: not localhost (use --force)")

@@ -64,7 +64,12 @@ def main(argv: list[str] | None = None) -> None:
     log_file = setup_logging(get_settings())
     log = logging.getLogger("date_planner")
     transport = "http" if args.http else "stdio"
-    log.info("server starting (%s), logging to %s", transport, log_file)
+    log.info(
+        "server starting (%s) on database %s, logging to %s",
+        transport,
+        get_settings().database_label(),
+        log_file,
+    )
     try:
         _serve(args.http)
     except Exception:

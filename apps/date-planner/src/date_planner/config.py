@@ -7,7 +7,7 @@ environment-specific knobs land here.
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -29,7 +29,10 @@ OSM_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DATE_PLANNER_",
-        env_file=".env",
+        # `.env.local` wins over `.env`. It's this checkout's alone: worktrees
+        # get a copy of `.env` (`.worktreeinclude`) but not this, which is
+        # how the main checkout points at the prod database and they don't.
+        env_file=(".env", ".env.local"),
         extra="ignore",
     )
 
@@ -122,10 +125,22 @@ class Settings(BaseSettings):
             return "© OpenStreetMap contributors © CARTO"
         return "© OpenStreetMap contributors"
 
+    def database_label(self) -> str:
+        """host:port/name of the database, without the password, for logs."""
+        if not self.database_url:
+            return "none"
+        url = urlparse(self.database_url)
+        return f"{url.hostname}:{url.port}{url.path}"
+
     def require_database_url(self) -> str:
         if not self.database_url:
             raise RuntimeError("Missing required environment variable DATABASE_URL")
         return self.database_url
+
+
+def is_prod_database(url: str) -> bool:
+    """The prod database is named `*_prod`; nothing that wipes may touch it."""
+    return urlparse(url).path.rstrip("/").endswith("_prod")
 
 
 @lru_cache(maxsize=1)

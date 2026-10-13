@@ -1,0 +1,35 @@
+# The prod Postgres: the dates you actually plan, from the main checkout
+# (Remote Control included). Its own compose project, so nothing run against
+# the dev stack — `docker compose down -v`, `date-planner-reset`, a fresh
+# volume for a schema change — can reach it.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Port 5435, database date_planner_prod (the `_prod` suffix is what
+# `date-planner-reset` refuses). The main checkout selects it in .env.local:
+#   DATABASE_URL=postgresql://postgres:postgres@localhost:5435/date_planner_prod
+# Schema changes reach it only by `alembic upgrade head`, run on purpose from
+# the main checkout once the change is merged.
+
+name: date-planner-prod
+
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: date_planner_prod
+    ports:
+      - "${DATE_PLANNER_PROD_DB_PORT:-5435}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d date_planner_prod"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  db_data:
