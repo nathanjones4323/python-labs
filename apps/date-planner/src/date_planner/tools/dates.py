@@ -12,8 +12,16 @@ from datetime import date
 from fastmcp import FastMCP
 
 from date_planner.db import open_session, repo
-from date_planner.db.models import DateStatus
-from date_planner.schemas import DateOut, DatePatch, LocalTime, StopIn, StopPatch
+from date_planner.db.models import DateStatus, RatingSource
+from date_planner.schemas import (
+    DateOut,
+    DatePatch,
+    LocalTime,
+    Score,
+    StopIn,
+    StopPatch,
+    StopRatingIn,
+)
 from date_planner.tools import as_tool_error, localize
 
 
@@ -60,7 +68,7 @@ def register(mcp: FastMCP) -> None:
     @as_tool_error
     async def update_date(date_id: uuid.UUID, patch: DatePatch) -> DateOut:
         """Change the date's own fields: title, day, window, nearby limit,
-        rating, notes, `planned_for` (a member's name or email; null makes it a
+        notes, `planned_for` (a member's name or email; null makes it a
         date for both again).
 
         A new `day` moves every stop to the same clock times that day. A
@@ -72,8 +80,8 @@ def register(mcp: FastMCP) -> None:
 
         Stops change through `add_stop` / `update_stop` / `reorder_stops` /
         `remove_stop`. `status` is derived from the stops, so here it only
-        takes `completed` (with a `rating`, afterwards) or `cancelled` — and
-        those two stick.
+        takes `completed` or `cancelled` — and those two stick. Ratings go
+        through `rate_date`.
         """
         async with open_session() as session:
             return DateOut.model_validate(
@@ -191,3 +199,49 @@ def register(mcp: FastMCP) -> None:
         """
         async with open_session() as session:
             return DateOut.model_validate(await repo.remove_stop(session, stop_id))
+
+    @mcp.tool
+    @as_tool_error
+    async def rate_date(
+        date_id: uuid.UUID,
+        member: str,
+        score: Score | None = None,
+        notes: str | None = None,
+        stops: list[StopRatingIn] | None = None,
+        source: RatingSource = RatingSource.CHAT,
+    ) -> DateOut:
+        """Record how one member rated a date that has happened: the whole
+        day and/or any of its stops, each 0–10, with `notes` in their own
+        words on why.
+
+        `member` is their name or email; call once per person. Rating again
+        changes that member's rating, and only the fields given — a later
+        "the dinner was more of a 4" is one stop with a `score`. A first
+        rating of the date or a stop needs a `score`. `source` is `preview`
+        when it came from the preview page's feedback form. The date becomes
+        `completed`; a cancelled or future date can't be rated.
+        """
+        async with open_session() as session:
+            return DateOut.model_validate(
+                await repo.rate_date(
+                    session,
+                    date_id,
+                    member,
+                    score=score,
+                    notes=notes,
+                    stops=stops,
+                    source=source,
+                )
+            )
+
+    @mcp.tool
+    @as_tool_error
+    async def clear_rating(
+        date_id: uuid.UUID, member: str, stop_id: uuid.UUID | None = None
+    ) -> DateOut:
+        """Remove one member's rating of the date, or of one stop with
+        `stop_id` — for a rating given to the wrong date, stop or person."""
+        async with open_session() as session:
+            return DateOut.model_validate(
+                await repo.clear_rating(session, date_id, member, stop_id)
+            )

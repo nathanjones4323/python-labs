@@ -1,6 +1,7 @@
 """The tables, and how a date's status follows from its stops.
 
-    couples ──┬── couple_members
+    couples ──┬── couple_members ──┬── date_ratings
+              │                    └── stop_ratings
               └── dates ──── date_stops ──── venues
                                                │
                                          travel_cache
@@ -25,6 +26,10 @@ needs) and when they book (`window_amount` / `window_unit` /
 `window_open_time`), plus where they are (`lat` / `lng`) so legs between
 stops can be timed. Detection results are cached with `channel_checked_at`,
 travel times in `travel_cache`.
+
+After the date each member scores it, and each stop, 0–10 with a note on
+why: one `DateRating` per (date, member) and one `StopRating` per (stop,
+member), overwritten when they change their mind.
 """
 
 import enum
@@ -35,6 +40,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -130,6 +136,16 @@ PENDING_BOOKING = frozenset(
     }
 )
 SETTLED_BOOKING = frozenset({StopBookingStatus.NOT_NEEDED, StopBookingStatus.CONFIRMED})
+
+
+class RatingSource(enum.StrEnum):
+    CHAT = "chat"  # told to Claude in conversation
+    PREVIEW = "preview"  # left on the preview page's feedback form
+
+
+# Scores run 0–10, both ends included.
+RATING_MIN = 0
+RATING_MAX = 10
 
 
 class TravelMode(enum.StrEnum):
@@ -324,7 +340,7 @@ class PlannedDate(Base):
     status: Mapped[DateStatus] = mapped_column(
         _enum(DateStatus, "date_status"), default=DateStatus.PLANNING, index=True
     )
-    rating: Mapped[int | None] = mapped_column(SmallInteger)  # 1-5, after the date
+    # Planning notes; what they thought of it afterwards is in `ratings`.
     notes: Mapped[str | None] = mapped_column(Text)
     # The Artifact the preview page was published to, to republish in place.
     preview_url: Mapped[str | None] = mapped_column(Text)
@@ -340,6 +356,13 @@ class PlannedDate(Base):
     stops: Mapped[list["DateStop"]] = relationship(
         back_populates="date",
         order_by="DateStop.position",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    ratings: Mapped[list["DateRating"]] = relationship(
+        back_populates="date",
+        order_by="DateRating.created_at",
         cascade="all, delete-orphan",
         lazy="selectin",
     )
@@ -409,10 +432,74 @@ class DateStop(Base):
 
     date: Mapped[PlannedDate] = relationship(back_populates="stops")
     venue: Mapped[Venue | None] = relationship(lazy="selectin")
+    ratings: Mapped[list["StopRating"]] = relationship(
+        back_populates="stop",
+        order_by="StopRating.created_at",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
     @property
     def venue_name(self) -> str | None:
         return self.venue.name if self.venue is not None else None
+
+
+def _score_check(table: str) -> CheckConstraint:
+    return CheckConstraint(
+        f"score BETWEEN {RATING_MIN} AND {RATING_MAX}", name=f"ck_{table}_score"
+    )
+
+
+class _Rating:
+    """What a date rating and a stop rating share: whose, how good, and why."""
+
+    member_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("couple_members.id", ondelete="CASCADE"), primary_key=True
+    )
+    score: Mapped[int] = mapped_column(SmallInteger)
+    # Why they gave it, in their words.
+    notes: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[RatingSource] = mapped_column(_enum(RatingSource, "rating_source"))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DateRating(_Rating, Base):
+    """One member's score for a whole date."""
+
+    __tablename__ = "date_ratings"
+    __table_args__ = (_score_check("date_ratings"),)
+
+    date_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("dates.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    date: Mapped[PlannedDate] = relationship(back_populates="ratings")
+    member: Mapped[CoupleMember] = relationship(lazy="selectin")
+
+    @property
+    def member_name(self) -> str:
+        return self.member.name
+
+
+class StopRating(_Rating, Base):
+    """One member's score for one stop of a date."""
+
+    __tablename__ = "stop_ratings"
+    __table_args__ = (_score_check("stop_ratings"),)
+
+    stop_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("date_stops.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    stop: Mapped[DateStop] = relationship(back_populates="ratings")
+    member: Mapped[CoupleMember] = relationship(lazy="selectin")
+
+    @property
+    def member_name(self) -> str:
+        return self.member.name
 
 
 class TravelCache(Base):

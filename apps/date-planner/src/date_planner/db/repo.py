@@ -27,11 +27,14 @@ from date_planner.db.models import (
     STICKY_STATUSES,
     Couple,
     CoupleMember,
+    DateRating,
     DateStatus,
     DateStop,
     PlannedDate,
+    RatingSource,
     ReservationNeed,
     StopBookingStatus,
+    StopRating,
     TravelCache,
     TravelMode,
     Venue,
@@ -40,6 +43,7 @@ from date_planner.db.models import (
 from date_planner.errors import (
     AmbiguousVenue,
     DuplicateVenue,
+    IncompleteRating,
     InvalidTransition,
     NotFound,
 )
@@ -53,6 +57,7 @@ from date_planner.schemas import (
     Preferences,
     StopIn,
     StopPatch,
+    StopRatingIn,
     VenueIn,
 )
 
@@ -499,6 +504,8 @@ async def create_date(
         end_before=end_before,
         notes=notes,
         status=DateStatus.PLANNING,
+        # Loaded and empty, so the output can read it without a query.
+        ratings=[],
     )
     session.add(planned)
     return await _settle(session, planned)
@@ -621,6 +628,134 @@ async def list_past_dates(
         .limit(limit)
     )
     return list(result)
+
+
+# --- ratings ---------------------------------------------------------------
+
+
+async def _load_ratings(session: AsyncSession, planned: PlannedDate) -> None:
+    """Make sure the date's and its stops' ratings are loaded: a date made
+    earlier in this session has neither, and an async session can't
+    lazy-load them."""
+    await session.refresh(planned, ["ratings"])
+    await session.scalars(
+        select(DateStop)
+        .where(DateStop.date_id == planned.id)
+        .options(selectinload(DateStop.ratings))
+        .execution_options(populate_existing=True)
+    )
+
+
+def _rate(
+    row: DateRating | StopRating,
+    score: int | None,
+    notes: str | None,
+    source: RatingSource,
+) -> None:
+    """Write what was given onto `row`; a None leaves the stored value."""
+    if score is not None:
+        row.score = score
+    if notes is not None:
+        row.notes = notes
+    row.source = source
+
+
+async def rate_date(
+    session: AsyncSession,
+    date_id: uuid.UUID,
+    member: str,
+    *,
+    score: int | None = None,
+    notes: str | None = None,
+    stops: list[StopRatingIn] | None = None,
+    source: RatingSource = RatingSource.CHAT,
+    today: date | None = None,
+) -> PlannedDate:
+    """Record one member's scores for the date and any of its stops.
+
+    Each (date or stop, member) has one rating, so a second call changes it.
+    Only what's given is written; a rating that doesn't exist yet needs a
+    score. A date can only be rated once its day has come, and never once
+    cancelled; rating it marks it `completed`.
+    """
+    planned = await get_date(session, date_id)
+    who = await resolve_member(session, planned.couple_id, member)
+    await _load_ratings(session, planned)
+    if planned.status is DateStatus.CANCELLED:
+        raise InvalidTransition(f"Date {planned.id} was cancelled; it can't be rated")
+    if today is None:
+        today = datetime.now((await get_couple(session, planned.couple_id)).tz).date()
+    if planned.day > today:
+        raise InvalidTransition(
+            f"Date {planned.id} is on {planned.day}; rate it once it has happened"
+        )
+    stops = stops or []
+    if score is None and notes is None and not stops:
+        raise IncompleteRating("Give a score or notes for the date, or rate a stop")
+    by_id = {stop.id: stop for stop in planned.stops}
+    for given in stops:
+        if given.stop_id not in by_id:
+            raise NotFound(
+                f"No stop {given.stop_id} on date {planned.id} (stops: "
+                + ", ".join(f"{s.title} = {s.id}" for s in planned.stops)
+                + ")"
+            )
+
+    if score is not None or notes is not None:
+        rating = next((r for r in planned.ratings if r.member_id == who.id), None)
+        if rating is None:
+            if score is None:
+                raise IncompleteRating(
+                    f"{who.name} hasn't rated this date yet; give a score 0–10"
+                )
+            rating = DateRating(member=who)
+            planned.ratings.append(rating)
+        _rate(rating, score, notes, source)
+    for given in stops:
+        stop = by_id[given.stop_id]
+        stop_rating = next((r for r in stop.ratings if r.member_id == who.id), None)
+        if stop_rating is None:
+            if given.score is None:
+                raise IncompleteRating(
+                    f"{who.name} hasn't rated {stop.title!r} yet; give a score 0–10"
+                )
+            stop_rating = StopRating(member=who)
+            stop.ratings.append(stop_rating)
+        _rate(stop_rating, given.score, given.notes, source)
+
+    planned.status = DateStatus.COMPLETED
+    await session.flush()
+    # `updated_at` is set by the database on write; read it back.
+    for row in [*planned.ratings, *(r for s in planned.stops for r in s.ratings)]:
+        await session.refresh(row, ["created_at", "updated_at"])
+    return planned
+
+
+async def clear_rating(
+    session: AsyncSession,
+    date_id: uuid.UUID,
+    member: str,
+    stop_id: uuid.UUID | None = None,
+) -> PlannedDate:
+    """Take back one member's rating of the date, or of one of its stops."""
+    planned = await get_date(session, date_id)
+    who = await resolve_member(session, planned.couple_id, member)
+    await _load_ratings(session, planned)
+    if stop_id is None:
+        ratings: list[Any] = planned.ratings
+        what = f"date {planned.id}"
+    else:
+        stop = next((s for s in planned.stops if s.id == stop_id), None)
+        if stop is None:
+            raise NotFound(f"No stop {stop_id} on date {planned.id}")
+        ratings = stop.ratings
+        what = f"stop {stop.title!r}"
+    rating = next((r for r in ratings if r.member_id == who.id), None)
+    if rating is None:
+        raise NotFound(f"{who.name} hasn't rated {what}")
+    ratings.remove(rating)
+    await session.flush()
+    return planned
 
 
 # --- stops -----------------------------------------------------------------

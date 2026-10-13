@@ -18,8 +18,11 @@ from date_planner.booking.channels import (
     WindowUnit,
 )
 from date_planner.db.models import (
+    RATING_MAX,
+    RATING_MIN,
     Anchor,
     DateStatus,
+    RatingSource,
     ReservationNeed,
     StopBookingStatus,
     StopKind,
@@ -28,7 +31,7 @@ from date_planner.db.models import (
 )
 
 PartySize = Annotated[int, Field(ge=1, le=20)]
-Rating = Annotated[int, Field(ge=1, le=5)]
+Score = Annotated[int, Field(ge=RATING_MIN, le=RATING_MAX)]
 # A wall-clock time in the couple's or venue's own timezone, kept naive.
 # JSON Schema's `format: time` is RFC 3339 full-time, which needs a UTC
 # offset these never carry, so a strict client rejected "09:00:00".
@@ -312,6 +315,17 @@ class ReservationNeedOut(BaseModel):
 # --- dates and stops -------------------------------------------------------
 
 
+class RatingOut(Out):
+    """One member's score, 0–10, and why they gave it."""
+
+    member_id: uuid.UUID
+    member: str = Field(validation_alias="member_name")
+    score: int
+    notes: str | None
+    source: RatingSource
+    updated_at: datetime
+
+
 class StopOut(Out):
     id: uuid.UUID
     position: int
@@ -334,6 +348,8 @@ class StopOut(Out):
     travel_min_from_prev: int | None
     travel_mode: TravelMode
     notes: str | None
+    # Each member's score for this stop, once the date has happened.
+    ratings: list[RatingOut]
 
 
 class DateOut(Out):
@@ -348,8 +364,10 @@ class DateOut(Out):
     end_before: LocalTime | None
     # Derived from the stops, except `completed` / `cancelled`.
     status: DateStatus
-    rating: int | None
+    # Planning notes; what they thought afterwards is in `ratings`.
     notes: str | None
+    # Each member's score for the whole day, 0–10.
+    ratings: list[RatingOut]
     # The published preview page; republish to it after a change.
     preview_url: str | None
     stops: list[StopOut]
@@ -427,13 +445,23 @@ class DatePatch(BaseModel):
     max_leg_minutes: Annotated[int, Field(gt=0)] | None = None
     start_after: LocalTime | None = None
     end_before: LocalTime | None = None
-    rating: Rating | None = None
     notes: str | None = None
     # The Artifact link the preview page was published to.
     preview_url: str | None = None
     # A member's name or email: whose pick this date is. Null makes it a
     # date for both again.
     planned_for: str | None = None
+
+
+class StopRatingIn(BaseModel):
+    """One member's score for one stop. Left-out fields keep what's stored;
+    a stop they haven't rated before needs a `score`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stop_id: uuid.UUID
+    score: Score | None = None
+    notes: str | None = None
 
 
 # --- planning --------------------------------------------------------------
@@ -498,6 +526,10 @@ class ViolationOut(Out):
     stop_id: uuid.UUID | None = None
 
 
+def _page_db() -> dict[str, dict[str, object]]:
+    return {"db": {}}
+
+
 class PreviewOut(BaseModel):
     """A date's preview page, written to disk for the session to publish."""
 
@@ -519,6 +551,9 @@ class PreviewOut(BaseModel):
     # False when the tiles couldn't be fetched; the pins sit on a plain grid,
     # and the map can't be panned or zoomed.
     basemap: bool
+    # Pass as the Artifact tool's `capabilities` on every publish: the
+    # feedback form keeps what's entered in the artifact's database.
+    capabilities: dict[str, dict[str, object]] = Field(default_factory=_page_db)
 
 
 class TimelineOut(BaseModel):

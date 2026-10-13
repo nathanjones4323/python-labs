@@ -42,7 +42,9 @@ dietary needs, and the likes nobody vetoes) unless the user says it's one
 person's turn, which sets the date's `planned_for`. `next_turn` is derived from
 which member was planned for least recently.
 
-The schema is built by `001` (tables) then `002` (unique `google_place_id`).
+The schema is built by `001` (tables), `002` (unique `google_place_id`)
+and `003` (per-member ratings; an old 1–5 `dates.rating` becomes a 0–10 for
+each member, noted as migrated).
 If you have a database from before the members table, drop and recreate it
 rather than upgrading (`docker compose down -v && docker compose up -d`,
 then `alembic upgrade head`).
@@ -169,7 +171,7 @@ it; the number in brackets is the process.
 | `list_couples`, `upsert_couple_profile` | The couple: logistics, their members, the pooled `shared` taste, and whose turn is next |
 | `upsert_member` | The two people, each with their own likes, dislikes and dietary needs |
 | `edit_member_preferences` | Add or drop single likes, dislikes or dietary needs for one member without resending the list |
-| `list_past_dates` | Recent dates with ratings and every stop, so no venue repeats |
+| `list_past_dates` | Recent dates with every stop and each member's ratings, so no venue repeats and taste carries forward |
 | `find_venue`, `upsert_venue` | Venues of any type: restaurant, trail, museum, bar, park, viewpoint |
 | `detect_booking_channel` | Read the venue's website: Resy / OpenTable / Tock / SevenRooms / ticketed / phone / walk-in / unknown, with evidence and a confidence |
 | `suggest_reservation_need` | The default need for a stop, from its venue's channel |
@@ -179,10 +181,23 @@ it; the number in brackets is the process.
 | `resy_widget_args` | A Resy stop's arguments for the Resy connector's widget, checked against its limits |
 | `create_date`, `update_date`, `get_date`, `list_dates` | The day itself |
 | `add_stop`, `update_stop`, `reorder_stops`, `remove_stop` | Its stops |
+| `rate_date`, `clear_rating` | Afterwards: one member's 0–10 for the day and any of its stops, with notes on why |
 | `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
 | `estimate_travel` | One leg's time and distance, cached |
 | `plan_timeline` | Place every stop in the current order and report what's wrong |
 | `render_date_preview` | Write the day as a phone-sized page: a map of the stops and the route you can pan and zoom, then the timeline with drives, sunset, bookings still to make and Apple Maps links |
+
+### Ratings
+
+After a date each member scores the whole day and each stop **0–10**, with
+optional notes on why: one row per (date, member) in `date_ratings` and per
+(stop, member) in `stop_ratings`. `rate_date` writes them — rating again
+changes that member's rating, only in the fields given — and marks the date
+`completed`. A date can be rated from its day on, never once cancelled.
+`list_past_dates` hands them back so the skill can lean on what scored well.
+
+They come in two ways: told to Claude in chat (`source: chat`), or left on
+the preview page's feedback form (`source: preview`), below.
 
 ### Status
 
@@ -287,8 +302,24 @@ the day on the web calendar: the iPhone app takes no https links, and a
 `googlecalendar://` link can't be relied on from the Artifact's sandboxed
 frame.
 
-The session needs `Artifact` and `Read(./previews/**)` in its allowlist —
-see `.claude/settings.local.json` for Remote Control.
+### Feedback form
+
+From the date's day on (in the couple's timezone, checked by the page
+itself, so a page published beforehand lights up on its own), the page
+shows "How was it?": a switch between the two members, then a 0–10 scale
+and a note for the whole day and for each stop. Save writes one document
+per member to the Artifact's own database, `feedback/<member id>`, with
+stop ratings keyed by stop id so they land on the right stop whatever the
+order. The page is published with `capabilities: {"db": {}}`
+(`render_date_preview` returns it) — without it, or for a view-only viewer,
+the form is read-only and points to the chat.
+
+The server never sees the page's database. The skill reads it with the
+`ArtifactData` tool and files each member's answers with
+`rate_date(source="preview")`.
+
+The session needs `Artifact`, `ArtifactData` and `Read(./previews/**)` in
+its allowlist — see `.claude/settings.local.json` for Remote Control.
 
 ## The Resy widget
 
