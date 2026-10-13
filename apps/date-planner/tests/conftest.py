@@ -29,7 +29,6 @@ from date_planner.db.models import (
 )
 from date_planner.schemas import (
     CoupleProfileIn,
-    DatePatch,
     MemberIn,
     PreferenceEdit,
     StopIn,
@@ -190,8 +189,8 @@ async def seeded(db: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
         today = datetime.now(LA).date()
         past: dict[str, Any] = {}
         for key, title, venue, days_ago, rating in (
-            ("loved_date_id", "Sushi at Nobu", nobu, 30, 5),
-            ("meh_date_id", "Pasta at Bestia", bestia, 10, 3),
+            ("loved_date_id", "Sushi at Nobu", nobu, 30, 10),
+            ("meh_date_id", "Pasta at Bestia", bestia, 10, 6),
         ):
             day = today - timedelta(days=days_ago)
             planned = await repo.create_date(
@@ -213,9 +212,7 @@ async def seeded(db: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
                     booking_status=StopBookingStatus.CONFIRMED,
                 ),
             )
-            await repo.update_date(
-                session, planned.id, DatePatch(status="completed", rating=rating)
-            )
+            await repo.rate_date(session, planned.id, "Alex", score=rating)
             past[key] = planned.id
         return {
             "couple_id": couple.id,

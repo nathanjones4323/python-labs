@@ -96,10 +96,14 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool
     @as_tool_error
     async def list_past_dates(couple_id: uuid.UUID, limit: int = 20) -> list[DateOut]:
-        """Dates up to today, most recent first, with ratings and their stops.
+        """Dates up to today, most recent first, with their stops and how
+        each member rated them.
 
         Use it to avoid proposing a repeat — a trail or museum as much as a
-        restaurant — and to lean towards what they rated highly. Cancelled
+        restaurant. Ratings are 0–10 per member, on the whole date and on
+        each stop, with notes on why: lean towards the kinds of stops that
+        scored high, steer away from what scored low and the reasons given,
+        and weigh one member's scores most when it's their pick. Cancelled
         dates aren't included: they never happened.
         """
         async with open_session() as session:

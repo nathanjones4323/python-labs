@@ -25,9 +25,15 @@ def register(mcp: FastMCP) -> None:
         drive or walk, any booking still to make, and where sunset falls,
         with Apple Maps links. Made for a phone.
 
+        Below the day is a feedback form, shown from the day of the date on:
+        each member scores the day and each stop 0–10 with a note, kept in
+        the artifact's database under `feedback/<member id>` (read it back
+        with ArtifactData and save it with `rate_date`).
+
         Nothing is published here. Publish `page_path` with the Artifact
         tool, passing `files` as its supporting files (the map pictures and
-        its tiles), and `preview_url` as its `url` when it's set (read that
+        its tiles), `capabilities` as returned (every time: it's a full
+        declaration), and `preview_url` as its `url` when it's set (read that
         artifact first). `tiles_overview` shows every tile on one sheet. After
         a first publish, save the link with `update_date(preview_url=...)`.
         Run it again after any change to the stops; it overwrites the same
@@ -40,11 +46,15 @@ def register(mcp: FastMCP) -> None:
         async with open_session() as session:
             planned = await repo.get_date(session, date_id)
             tz = await repo.date_tz(session, planned)
+            couple = await repo.get_couple(session, planned.couple_id)
+            members = [preview.page.Member(str(m.id), m.name) for m in couple.members]
         async with httpx.AsyncClient(
             timeout=settings.fetch_timeout,
             headers={"User-Agent": settings.map_user_agent},
         ) as client:
-            written = await preview.write(planned, tz, settings, client)
+            written = await preview.write(
+                planned, tz, settings, client, members=members
+            )
         return PreviewOut(
             page_path=str(written.page),
             files={name: str(path) for name, path in written.files.items()},

@@ -945,6 +945,12 @@ async def test_the_tool_writes_the_page_and_keeps_the_link(
         # The trail's AllTrails page, saved on the venue, becomes a button.
         assert "alltrails.com/trail/us/california/solstice-canyon-trail-2" in html
         assert ">AllTrails</a>" in html
+        # The feedback form asks both members about every stop, by id.
+        assert out.capabilities == {"db": {}}
+        form = html.split('id="feedback"')[1]
+        assert ">Alex</button>" in form and ">Sam</button>" in form
+        for stop_id in planned_stops(await call("get_date", date_id=str(planned.id))):
+            assert f'data-stop-id="{stop_id}"' in form
 
         link = "https://claude.ai/artifact/abc123"
         updated = await call(
@@ -954,6 +960,58 @@ async def test_the_tool_writes_the_page_and_keeps_the_link(
         again = await call("render_date_preview", date_id=str(planned.id))
         assert again.preview_url == link
     get_settings.cache_clear()
+
+
+def planned_stops(planned: Any) -> list[str]:
+    return [str(stop.id) for stop in planned.stops]
+
+
+# --- feedback ----------------------------------------------------------------
+
+
+MEMBERS = [page.Member("m-alex", "Alex"), page.Member("m-sam", "Sam")]
+
+
+def _payload(html: str) -> dict[str, Any]:
+    raw = html.split('<script type="application/json" id="fb-data">')[1]
+    data: dict[str, Any] = json.loads(raw.split("</script>")[0])
+    return data
+
+
+def test_no_feedback_form_without_members() -> None:
+    assert 'id="feedback"' not in page.render(_data([_stop(1)], date_id="d1"))
+
+
+def test_the_feedback_form_rates_the_day_and_each_live_stop() -> None:
+    stops = [
+        _stop(1, title="Hike", stop_id="s1"),
+        _stop(2, title="</script><b>Dinner", stop_id="s2"),
+        _stop(
+            3, title="Dropped", stop_id="s3", booking_status=StopBookingStatus.CANCELLED
+        ),
+    ]
+    ratings = {"m-alex": {"date": {"score": 8, "notes": "<3"}, "stops": {}}}
+    html = page.render(_data(stops, date_id="d1", members=MEMBERS, ratings=ratings))
+    form = html.split('id="feedback"')[1].split("</section>")[0]
+    assert form.startswith(" hidden")  # until the script sees the day has come
+    assert 'data-member="m-alex"' in form and ">Sam</button>" in form
+    assert 'data-target="date"' in form
+    assert 'data-stop-id="s1"' in form and 'data-stop-id="s2"' in form
+    assert 'data-stop-id="s3"' not in form  # a cancelled stop didn't happen
+    # 0 to 10, for the day and each of the two stops.
+    assert form.count('data-score="0"') == 3
+    assert form.count('data-score="10"') == 3
+    assert "<b>Dinner" not in form
+    assert 'claude.use("db")' in form
+    payload = _payload(html)
+    assert payload["date_id"] == "d1"
+    assert payload["day"] == "2026-10-24"
+    assert payload["tz"] == "America/Los_Angeles"
+    assert payload["completed"] is False
+    assert payload["ratings"] == ratings
+    # Nothing in the data can close its script early.
+    raw = html.split('id="fb-data">')[1].split("</script>")[0]
+    assert "<" not in raw
 
 
 # --- AllTrails ---------------------------------------------------------------

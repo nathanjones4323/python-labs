@@ -43,6 +43,11 @@ class IncompleteStop(DatePlannerError):
     stop has no time to anchor the day on."""
 
 
+class IncompleteRating(DatePlannerError):
+    """A rating lacks what it needs: a first rating has no score, or the
+    call rates nothing at all."""
+
+
 class TravelFailed(DatePlannerError):
     """The routing provider couldn't time a leg: unreachable, no route, or
     not configured."""

@@ -19,8 +19,10 @@ TABLES = {
     "alembic_version",
     "couple_members",
     "couples",
+    "date_ratings",
     "date_stops",
     "dates",
+    "stop_ratings",
     "travel_cache",
     "venues",
 }
@@ -79,3 +81,62 @@ def test_the_migration_matches_the_models(migrated: str) -> None:
     command.downgrade(config, "base")
     command.upgrade(config, "head")
     assert _drift(migrated) == []
+
+
+def _execute(url: str, *statements: str) -> None:
+    async def go() -> None:
+        engine = make_engine(url)
+        try:
+            async with engine.begin() as conn:
+                for statement in statements:
+                    await conn.execute(text(statement))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(go())
+
+
+def test_a_one_to_five_rating_becomes_each_members_zero_to_ten(migrated: str) -> None:
+    config = alembic_config(migrated)
+    couple, alex, sam, rated, unrated = (
+        f"00000000-0000-0000-0000-00000000000{n}" for n in range(1, 6)
+    )
+    try:
+        command.downgrade(config, "002")
+        _execute(
+            migrated,
+            f"INSERT INTO couples (id, name, timezone) VALUES ('{couple}', 'C', 'UTC')",
+            "INSERT INTO couple_members (id, couple_id, name, likes, dislikes, dietary)"
+            f" VALUES ('{alex}', '{couple}', 'Alex', '{{}}', '{{}}', '{{}}'),"
+            f" ('{sam}', '{couple}', 'Sam', '{{}}', '{{}}', '{{}}')",
+            "INSERT INTO dates (id, couple_id, title, day, max_leg_minutes, status,"
+            f" rating) VALUES ('{rated}', '{couple}', 'R', '2026-01-01', 25,"
+            f" 'completed', 4), ('{unrated}', '{couple}', 'U', '2026-01-02', 25,"
+            " 'completed', NULL)",
+        )
+        command.upgrade(config, "003")
+        rows = _query(
+            migrated,
+            "SELECT date_id::text, member_id::text, score, notes, source::text"
+            " FROM date_ratings ORDER BY member_id",
+        )
+        assert [(r["date_id"], r["member_id"], r["score"]) for r in rows] == [
+            (rated, alex, 8),
+            (rated, sam, 8),
+        ]
+        assert {r["source"] for r in rows} == {"chat"}
+        assert all(r["notes"].startswith("Migrated") for r in rows)
+
+        # Back down: the average, halved.
+        _execute(
+            migrated, f"UPDATE date_ratings SET score = 10 WHERE member_id = '{sam}'"
+        )
+        command.downgrade(config, "002")
+        back = _query(migrated, "SELECT id::text, rating FROM dates ORDER BY id")
+        assert [(r["id"], r["rating"]) for r in back] == [
+            (rated, 5),
+            (unrated, None),
+        ]
+    finally:
+        command.downgrade(config, "base")
+        command.upgrade(config, "head")

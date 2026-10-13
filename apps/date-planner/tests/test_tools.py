@@ -65,7 +65,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 26
+    assert len(tools) == 28
     assert all(tool.description for tool in tools)
 
 
@@ -160,8 +160,40 @@ async def test_past_dates_come_back_with_ratings_and_stops(
 ) -> None:
     past = await call("list_past_dates", couple_id=str(seeded["couple_id"]))
     assert [p.title for p in past] == ["Pasta at Bestia", "Sushi at Nobu"]
-    assert [p.rating for p in past] == [3, 5]
+    assert [[r.score for r in p.ratings] for p in past] == [[6], [10]]
     assert [p.stops[0].venue_name for p in past] == ["Bestia", "Nobu Malibu"]
+
+
+async def test_rating_a_date_through_the_tools(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    loved = str(seeded["loved_date_id"])
+    stop_id = str((await call("get_date", date_id=loved)).stops[0].id)
+    rated = await call(
+        "rate_date",
+        date_id=loved,
+        member="Sam",
+        score=3,
+        notes="Too loud",
+        stops=[{"stop_id": stop_id, "score": 2, "notes": "Couldn't talk"}],
+        source="preview",
+    )
+    by_member = {r.member: r for r in rated.ratings}
+    assert (by_member["Alex"].score, by_member["Sam"].score) == (10, 3)
+    assert by_member["Sam"].notes == "Too loud"
+    assert by_member["Sam"].source == "preview"
+    [stop_rating] = rated.stops[0].ratings
+    assert (stop_rating.member, stop_rating.score) == ("Sam", 2)
+
+    with pytest.raises(ToolError):
+        await call("rate_date", date_id=loved, member="Sam", score=11)
+    with pytest.raises(ToolError, match="IncompleteRating"):
+        await call("rate_date", date_id=loved, member="Sam")
+    with pytest.raises(ToolError):
+        await call("update_date", date_id=loved, patch={"rating": 5})
+
+    cleared = await call("clear_rating", date_id=loved, member="Sam", stop_id=stop_id)
+    assert cleared.stops[0].ratings == []
 
 
 async def test_an_unknown_couple_is_a_not_found_error(db: Factory) -> None:

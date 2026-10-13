@@ -11,13 +11,20 @@ few CDNs, and nothing else from outside: Leaflet comes from cdnjs at a
 pinned version, its stylesheet is inlined, and its tiles ship next to the
 page (see `basemap`). The map is drawn without it first, as a picture with
 the pins on top, and Leaflet takes over once it has loaded.
+
+Under the day sits a feedback form, shown once the day has come: each member
+scores the day and every stop 0–10 with a note. It keeps what's entered in
+the artifact's own database (`feedback/<member id>`, keyed by stop id), which
+the session reads back and saves with `rate_date`; the server never sees it
+directly.
 """
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 from date_planner.booking.channels import BookingChannel
@@ -76,9 +83,7 @@ PIN = (
 
 
 def _glyph(path: str) -> str:
-    return (
-        f'<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="{path}"/></svg>'
-    )
+    return f'<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="{path}"/></svg>'
 
 
 @dataclass(frozen=True)
@@ -154,6 +159,14 @@ class PreviewStop:
     # can be built: what a stop still `needed` offers instead of a dead chip.
     channel: BookingChannel | None = None
     book_url: str | None = None
+    # The row's id: what the feedback form keys a stop's rating by.
+    stop_id: str = ""
+
+
+@dataclass(frozen=True)
+class Member:
+    id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -175,6 +188,13 @@ class PreviewData:
     # The zoom the picture is framed at, which the interactive map opens at
     # or above.
     map_zoom: int = 0
+    # For the feedback form, which is left out without a date id or members.
+    date_id: str = ""
+    tz_key: str = "America/Los_Angeles"
+    members: list[Member] = field(default_factory=list)
+    # Ratings already saved, by member id: {"date": {score, notes},
+    # "stops": {stop id: {score, notes}}}. The form starts from these.
+    ratings: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # The header only carries a status when there's something to do about it.
@@ -272,11 +292,9 @@ def phone_label(phone: str) -> str:
 
 
 def _call(stop: PreviewStop) -> str:
-    """"Call to book" with the number: a tap-to-dial link when there is one."""
+    """ "Call to book" with the number: a tap-to-dial link when there is one."""
     number = (
-        f' <span class="ref">{_e(phone_label(stop.phone))}</span>'
-        if stop.phone
-        else ""
+        f' <span class="ref">{_e(phone_label(stop.phone))}</span>' if stop.phone else ""
     )
     href = tel_link(stop.phone)
     if href:
@@ -354,7 +372,7 @@ def _length(stop: PreviewStop) -> str:
 
 
 def _kind(stop: PreviewStop) -> str:
-    """"Restaurant · 1 hr 30 min", either part left out when unknown."""
+    """ "Restaurant · 1 hr 30 min", either part left out when unknown."""
     style = type_style(stop.venue_type)
     bits = [b for b in (style.label, _length(stop)) if b]
     if not bits:
@@ -663,6 +681,134 @@ LIVE_JS = """
 """
 
 
+# The feedback form. Without the db capability (or before the day) it stays
+# out of the way; with it, each member's answers live in feedback/<member id>.
+FEEDBACK_JS = """
+(async () => {
+  const section = document.getElementById("feedback");
+  const cfg = JSON.parse(document.getElementById("fb-data").textContent);
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: cfg.tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  if (!cfg.completed && today < cfg.day) return;
+  section.hidden = false;
+
+  const items = [...section.querySelectorAll(".fb-item")];
+  const save = section.querySelector(".fb-save");
+  const status = section.querySelector(".fb-status");
+  const blank = () => ({ date: { score: null, notes: "" }, stops: {} });
+  // Per member: what's shown, and whether it has unsaved changes.
+  const state = {}, dirty = {};
+  for (const m of cfg.members) {
+    const saved = cfg.ratings[m.id] || {};
+    state[m.id] = { date: { score: null, notes: "", ...(saved.date || {}) },
+                    stops: { ...(saved.stops || {}) } };
+    dirty[m.id] = false;
+  }
+  let member = cfg.members[0].id;
+  try {
+    const kept = localStorage.getItem("fb-member");
+    if (kept && state[kept]) member = kept;
+  } catch {}
+
+  const entry = (item) => {
+    const s = state[member];
+    if (item.dataset.target === "date") return s.date;
+    const id = item.dataset.stopId;
+    return (s.stops[id] = s.stops[id] || { score: null, notes: "" });
+  };
+  const draw = () => {
+    for (const b of section.querySelectorAll("[data-member]")) {
+      b.setAttribute("aria-pressed", String(b.dataset.member === member));
+    }
+    for (const item of items) {
+      const e = entry(item);
+      for (const b of item.querySelectorAll("[data-score]")) {
+        b.setAttribute("aria-pressed", String(Number(b.dataset.score) === e.score));
+      }
+      item.querySelector(".fb-score").textContent = e.score == null ? "" : e.score + "/10";
+      const notes = item.querySelector("textarea");
+      if (document.activeElement !== notes) notes.value = e.notes || "";
+    }
+    save.disabled = !db || !dirty[member];
+  };
+  const touch = () => { dirty[member] = true; status.textContent = ""; draw(); };
+
+  section.addEventListener("click", (ev) => {
+    const who = ev.target.closest("[data-member]");
+    if (who) {
+      member = who.dataset.member;
+      try { localStorage.setItem("fb-member", member); } catch {}
+      status.textContent = "";
+      draw();
+      return;
+    }
+    const pick = ev.target.closest("[data-score]");
+    if (pick && db) {
+      const e = entry(pick.closest(".fb-item"));
+      const n = Number(pick.dataset.score);
+      e.score = e.score === n ? null : n;
+      touch();
+    }
+  });
+  section.addEventListener("input", (ev) => {
+    if (ev.target.tagName !== "TEXTAREA") return;
+    entry(ev.target.closest(".fb-item")).notes = ev.target.value;
+    touch();
+  });
+
+  let db = null;
+  draw();
+  try {
+    db = window.claude ? await window.claude.use("db") : null;
+  } catch { db = null; }
+  if (!db) {
+    section.classList.add("readonly");
+    for (const t of section.querySelectorAll("textarea")) t.readOnly = true;
+    save.hidden = true;
+    status.textContent = "Tell Claude in chat how it went.";
+    return;
+  }
+  for (const m of cfg.members) {
+    db.doc("feedback/" + m.id).onSnapshot((snap) => {
+      const body = snap.exists ? snap.data() : null;
+      if (!body || body.date_id !== cfg.date_id || dirty[m.id]) return;
+      state[m.id] = { date: { score: null, notes: "", ...(body.date || {}) },
+                      stops: { ...(body.stops || {}) } };
+      draw();
+    }, () => {});
+  }
+  save.addEventListener("click", async () => {
+    const who = member, s = state[who];
+    const stops = {};
+    for (const [id, e] of Object.entries(s.stops)) {
+      if (e.score != null || (e.notes || "").trim()) stops[id] = e;
+    }
+    save.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      await db.doc("feedback/" + who).set({
+        date_id: cfg.date_id,
+        member_id: who,
+        member: cfg.members.find((m) => m.id === who).name,
+        date: s.date,
+        stops,
+        updated_at: new Date().toISOString(),
+      });
+      dirty[who] = false;
+      status.textContent = "Saved. Tell Claude it's there and it'll file it.";
+    } catch (err) {
+      status.textContent = err && err.code === "invalid_argument"
+        ? "This page is view-only for you; tell Claude in chat instead."
+        : "Couldn't save. Try again in a moment.";
+    }
+    draw();
+  });
+  draw();
+})();
+"""
+
+
 def _leg_tag(stop: PreviewStop) -> str:
     """The short label on the leg into `stop`: its icon and minutes."""
     if not stop.travel_min_from_prev:
@@ -756,6 +902,74 @@ def _calendar(data: PreviewData) -> str:
     )
 
 
+def _scale(label: str) -> str:
+    buttons = "".join(
+        f'<button type="button" data-score="{n}" aria-pressed="false">{n}</button>'
+        for n in range(11)
+    )
+    return (
+        f'<div class="scale" role="group" aria-label="Score for {_e(label)}, 0 to 10">'
+        f"{buttons}</div>"
+    )
+
+
+def _rate_item(target: str, label: str, head: str, stop_id: str = "") -> str:
+    key = f' data-stop-id="{_e(stop_id)}"' if stop_id else ""
+    return f"""
+    <div class="fb-item" data-target="{target}"{key}>
+      <div class="fb-head">{head}<output class="fb-score"
+        aria-live="polite"></output></div>
+      {_scale(label)}
+      <textarea rows="2" maxlength="2000" placeholder="Why? (optional)"
+        aria-label="Notes on {_e(label)}"></textarea>
+    </div>"""
+
+
+def _feedback(data: PreviewData) -> str:
+    """The after-the-date form; see the module docstring. Hidden until the
+    day comes, which the script checks, so a page published beforehand
+    lights up on its own."""
+    if not data.date_id or not data.members:
+        return ""
+    who = "".join(
+        f'<button type="button" data-member="{_e(m.id)}" aria-pressed="false">'
+        f"{_e(m.name)}</button>"
+        for m in data.members
+    )
+    items = [_rate_item("date", "the whole day", "<strong>The whole day</strong>")]
+    for stop in data.stops:
+        if stop.booking_status is StopBookingStatus.CANCELLED or not stop.stop_id:
+            continue
+        head = (
+            f'<span class="num" aria-hidden="true">{stop.number}</span>'
+            f"<strong>{_e(stop.title)}</strong>"
+        )
+        items.append(_rate_item("stop", stop.title, head, stop.stop_id))
+    config = {
+        "date_id": data.date_id,
+        "day": data.day.isoformat(),
+        "tz": data.tz_key,
+        "completed": data.status is DateStatus.COMPLETED,
+        "members": [{"id": m.id, "name": m.name} for m in data.members],
+        "ratings": data.ratings,
+    }
+    payload = json.dumps(config, ensure_ascii=False).replace("<", "\\u003c")
+    return f"""
+  <section class="feedback" id="feedback" hidden aria-labelledby="fb-title">
+    <h2 id="fb-title">How was it?</h2>
+    <p class="note">Each of you: score the day and every stop from 0 to 10,
+      and say why if you like. Claude uses it next time.</p>
+    <div class="who" role="group" aria-label="Who's rating">{who}</div>
+    {"".join(items)}
+    <div class="fb-foot">
+      <button type="button" class="fb-save" disabled>Save</button>
+      <span class="fb-status" role="status"></span>
+    </div>
+    <script type="application/json" id="fb-data">{payload}</script>
+    <script>{FEEDBACK_JS}</script>
+  </section>"""
+
+
 def render(data: PreviewData) -> str:
     missing = [s for s in data.stops if s.place is None]
     off_map = (
@@ -786,6 +1000,7 @@ def render(data: PreviewData) -> str:
   <ol class="day">
     {_timeline(data)}
   </ol>
+  {_feedback(data)}
   <footer>
     Times in {_e(data.tz_label)}.
     Legs between stops are kept under {data.max_leg_minutes} min.

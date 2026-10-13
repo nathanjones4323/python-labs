@@ -12,13 +12,14 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, time
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 from PIL import Image
 
-from date_planner.config import Settings
 from date_planner.booking import links
+from date_planner.config import Settings
 from date_planner.db.models import DateStop, PlannedDate, StopBookingStatus
 from date_planner.errors import MissingPlatformSlug, UnsupportedChannel
 from date_planner.planning import sunset
@@ -99,13 +100,39 @@ def _minutes(stop: DateStop) -> int | None:
     return stop.est_duration_min
 
 
+def _ratings(planned: PlannedDate) -> dict[str, dict[str, Any]]:
+    """The saved ratings by member id, in the feedback form's shape."""
+    out: dict[str, dict[str, Any]] = {}
+
+    def slot(member_id: object) -> dict[str, Any]:
+        return out.setdefault(str(member_id), {"stops": {}})
+
+    for rating in planned.ratings:
+        slot(rating.member_id)["date"] = {
+            "score": rating.score,
+            "notes": rating.notes or "",
+        }
+    for stop in planned.stops:
+        for stop_rating in stop.ratings:
+            slot(stop_rating.member_id)["stops"][str(stop.id)] = {
+                "score": stop_rating.score,
+                "notes": stop_rating.notes or "",
+            }
+    return out
+
+
 async def write(
     planned: PlannedDate,
     tz: ZoneInfo,
     settings: Settings,
     client: httpx.AsyncClient,
+    members: list[page.Member] | None = None,
 ) -> Written:
-    """Render `planned` (stops and venues loaded) into its preview folder."""
+    """Render `planned` (stops and venues loaded) into its preview folder.
+
+    `members` are who the feedback form asks; without them it's left out.
+    """
+    members = members or []
     stops = list(planned.stops)
     located = [
         (s.venue.lat, s.venue.lng)
@@ -168,6 +195,7 @@ async def write(
                 duration_min=_minutes(stop),
                 channel=venue.booking_channel if venue else None,
                 book_url=_book_url(stop),
+                stop_id=str(stop.id),
             )
         )
 
@@ -188,6 +216,10 @@ async def write(
             has_dark_map=dark is not None,
             tiles=pyramid if tiles is not None else None,
             map_zoom=frame.zoom if frame is not None else 0,
+            date_id=str(planned.id),
+            tz_key=tz.key,
+            members=members,
+            ratings=_ratings(planned),
         )
     )
 

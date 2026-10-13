@@ -14,6 +14,7 @@ from date_planner.db import repo
 from date_planner.db.models import (
     Couple,
     DateStatus,
+    RatingSource,
     ReservationNeed,
     StopBookingStatus,
     StopKind,
@@ -23,6 +24,7 @@ from date_planner.db.models import (
 from date_planner.errors import (
     AmbiguousVenue,
     DuplicateVenue,
+    IncompleteRating,
     InvalidTransition,
     NotFound,
 )
@@ -33,6 +35,7 @@ from date_planner.schemas import (
     PreferenceEdit,
     StopIn,
     StopPatch,
+    StopRatingIn,
     VenueIn,
 )
 from pydantic import ValidationError
@@ -345,7 +348,10 @@ async def test_chain_branches_in_one_city_are_told_apart_by_coordinates(
         found = await repo.find_venue(session, "Blue Bottle Coffee", la, *venice)
         assert found is not None and found.name.endswith("Venice")
         # Pinned somewhere else: neither branch, so a new venue, not a guess.
-        assert await repo.find_venue(session, "Blue Bottle Coffee", la, 34.1, -118.3) is None
+        assert (
+            await repo.find_venue(session, "Blue Bottle Coffee", la, 34.1, -118.3)
+            is None
+        )
         # No pin: both fit, so it asks.
         with pytest.raises(AmbiguousVenue, match="Venice"):
             await repo.find_venue(session, "Blue Bottle Coffee", la)
@@ -820,7 +826,7 @@ async def test_completed_and_cancelled_stick(
     async with db() as session, session.begin():
         loved = await repo.get_date(session, seeded["loved_date_id"])
         assert loved.status is DateStatus.COMPLETED
-        assert loved.rating == 5
+        assert [r.score for r in loved.ratings] == [10]
         # A stop change doesn't un-complete it...
         await repo.update_stop(
             session,
@@ -848,7 +854,7 @@ async def test_list_past_dates_is_newest_first_and_skips_cancelled(
     async with db() as session, session.begin():
         past = await repo.list_past_dates(session, seeded["couple_id"])
         assert [p.id for p in past] == [seeded["meh_date_id"], seeded["loved_date_id"]]
-        assert [p.rating for p in past] == [3, 5]
+        assert [[r.score for r in p.ratings] for p in past] == [[6], [10]]
         # Every stop's venue comes along, for spotting repeats.
         assert [p.stops[0].venue_name for p in past] == ["Bestia", "Nobu Malibu"]
 
@@ -930,3 +936,174 @@ async def test_the_travel_cache_hits_misses_and_expires(
             session, a, b, driving, "haversine", ttl_days=30
         )
         assert fresh is not None and fresh.minutes == 14.0
+
+
+# --- ratings ---------------------------------------------------------------
+
+
+async def _two_stop_date(session: AsyncSession, seeded: dict[str, Any]) -> Any:
+    """Yesterday's hike then dinner, not yet rated."""
+    day = datetime.now(LA).date() - timedelta(days=1)
+    planned = await repo.create_date(
+        session, couple_id=seeded["couple_id"], title="Hike and dinner", day=day
+    )
+    for title, kind, venue in (
+        ("Hike", StopKind.ACTIVITY, seeded["solstice_id"]),
+        ("Dinner", StopKind.MEAL, seeded["nobu_id"]),
+    ):
+        await repo.add_stop(
+            session, planned.id, StopIn(title=title, kind=kind, venue_id=venue)
+        )
+    return planned
+
+
+def _scores(ratings: list[Any]) -> dict[str, tuple[int, str | None]]:
+    return {r.member_name: (r.score, r.notes) for r in ratings}
+
+
+async def test_each_member_rates_the_date_and_its_stops(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        planned = await _two_stop_date(session, seeded)
+        hike, dinner = planned.stops
+        await repo.rate_date(
+            session,
+            planned.id,
+            "Alex",
+            score=8,
+            notes="Great views",
+            stops=[
+                StopRatingIn(stop_id=hike.id, score=10, notes="Waterfall!"),
+                StopRatingIn(stop_id=dinner.id, score=0),
+            ],
+        )
+        rated = await repo.rate_date(
+            session,
+            planned.id,
+            "b@example.com",
+            score=6,
+            stops=[StopRatingIn(stop_id=dinner.id, score=7)],
+            source=RatingSource.PREVIEW,
+        )
+        assert rated.status is DateStatus.COMPLETED
+        assert _scores(rated.ratings) == {
+            "Alex": (8, "Great views"),
+            "Sam": (6, None),
+        }
+        assert _scores(rated.stops[0].ratings) == {"Alex": (10, "Waterfall!")}
+        assert _scores(rated.stops[1].ratings) == {"Alex": (0, None), "Sam": (7, None)}
+        assert {r.source for r in rated.stops[1].ratings} == {
+            RatingSource.CHAT,
+            RatingSource.PREVIEW,
+        }
+
+    # A second call changes only what it names; the rest stays.
+    async with db() as session, session.begin():
+        changed = await repo.rate_date(
+            session,
+            planned.id,
+            "Alex",
+            notes="Great views, long drive",
+            stops=[StopRatingIn(stop_id=dinner.id, score=4)],
+        )
+        assert _scores(changed.ratings)["Alex"] == (8, "Great views, long drive")
+        assert _scores(changed.stops[1].ratings)["Alex"] == (4, None)
+        assert len(changed.ratings) == 2
+
+    async with db() as session, session.begin():
+        past = await repo.list_past_dates(session, seeded["couple_id"])
+        mine = next(p for p in past if p.id == planned.id)
+        assert _scores(mine.stops[0].ratings) == {"Alex": (10, "Waterfall!")}
+
+
+async def test_a_first_rating_needs_a_score(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        planned = await _two_stop_date(session, seeded)
+        with pytest.raises(IncompleteRating):
+            await repo.rate_date(session, planned.id, "Alex", notes="Fun")
+        with pytest.raises(IncompleteRating):
+            await repo.rate_date(
+                session,
+                planned.id,
+                "Alex",
+                stops=[StopRatingIn(stop_id=planned.stops[0].id, notes="Steep")],
+            )
+        with pytest.raises(IncompleteRating):
+            await repo.rate_date(session, planned.id, "Alex")
+
+
+async def test_only_this_dates_stops_can_be_rated(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        planned = await _two_stop_date(session, seeded)
+        other = await repo.get_date(session, seeded["loved_date_id"])
+        with pytest.raises(NotFound, match="Hike = "):
+            await repo.rate_date(
+                session,
+                planned.id,
+                "Alex",
+                stops=[StopRatingIn(stop_id=other.stops[0].id, score=5)],
+            )
+        with pytest.raises(NotFound, match="members: Alex, Sam"):
+            await repo.rate_date(session, planned.id, "Cy", score=5)
+
+
+async def test_future_and_cancelled_dates_cant_be_rated(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    async with db() as session, session.begin():
+        today = datetime.now(LA).date()
+        upcoming = await repo.create_date(
+            session,
+            couple_id=seeded["couple_id"],
+            title="Soon",
+            day=today + timedelta(days=2),
+        )
+        with pytest.raises(InvalidTransition, match="once it has happened"):
+            await repo.rate_date(session, upcoming.id, "Alex", score=5)
+        # Today counts: the evening's date can be rated that night.
+        tonight = await repo.create_date(
+            session, couple_id=seeded["couple_id"], title="Tonight", day=today
+        )
+        assert (await repo.rate_date(session, tonight.id, "Alex", score=5)).ratings
+        off = await repo.create_date(
+            session, couple_id=seeded["couple_id"], title="Off", day=today
+        )
+        await repo.update_date(session, off.id, DatePatch(status="cancelled"))
+        with pytest.raises(InvalidTransition, match="cancelled"):
+            await repo.rate_date(session, off.id, "Alex", score=5)
+
+
+def test_scores_run_zero_to_ten() -> None:
+    StopRatingIn(stop_id=uuid.uuid4(), score=0)
+    StopRatingIn(stop_id=uuid.uuid4(), score=10)
+    with pytest.raises(ValidationError):
+        StopRatingIn(stop_id=uuid.uuid4(), score=11)
+    with pytest.raises(ValidationError):
+        StopRatingIn(stop_id=uuid.uuid4(), score=-1)
+    with pytest.raises(ValidationError):
+        DatePatch(rating=5)  # type: ignore[call-arg]
+
+
+async def test_a_rating_can_be_taken_back(db: Factory, seeded: dict[str, Any]) -> None:
+    async with db() as session, session.begin():
+        planned = await _two_stop_date(session, seeded)
+        hike = planned.stops[0]
+        await repo.rate_date(
+            session,
+            planned.id,
+            "Alex",
+            score=7,
+            stops=[StopRatingIn(stop_id=hike.id, score=9)],
+        )
+        cleared = await repo.clear_rating(session, planned.id, "Alex", hike.id)
+        assert cleared.stops[0].ratings == []
+        assert _scores(cleared.ratings) == {"Alex": (7, None)}
+        cleared = await repo.clear_rating(session, planned.id, "Alex")
+        assert cleared.ratings == []
+        with pytest.raises(NotFound, match="hasn't rated"):
+            await repo.clear_rating(session, planned.id, "Alex")
