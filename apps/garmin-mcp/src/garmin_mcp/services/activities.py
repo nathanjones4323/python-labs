@@ -1,0 +1,132 @@
+"""Recorded activities, summarized. Raw Garmin activity JSON runs to hundreds
+of fields (and full GPS/HR streams in the details call); these keep the
+handful an agent reasons about."""
+
+from collections.abc import Callable
+from datetime import date, timedelta
+from typing import Any
+
+from garmin_mcp.errors import InvalidInput
+from garmin_mcp.repositories.garmin_client import JSON, GarminRepository
+from garmin_mcp.schemas.results import (
+    ActivityDetails,
+    ActivitySummary,
+    ExerciseSet,
+    Lap,
+)
+
+MAX_LIMIT = 100
+MAX_LAPS = 50
+MAX_SETS = 100
+DEFAULT_DAYS = 14
+MAX_RANGE_DAYS = 366
+
+
+class ActivityService:
+    def __init__(
+        self, repo: GarminRepository, today: Callable[[], date] = date.today
+    ) -> None:
+        self._repo = repo
+        self._today = today
+
+    def recent(
+        self,
+        start: date | None,
+        end: date | None,
+        activity_type: str | None,
+        limit: int,
+    ) -> list[ActivitySummary]:
+        end = end or self._today()
+        start = start or end - timedelta(days=DEFAULT_DAYS)
+        if end < start:
+            raise InvalidInput("end_date is before start_date")
+        if (end - start).days > MAX_RANGE_DAYS:
+            raise InvalidInput(f"ask for at most {MAX_RANGE_DAYS} days at a time")
+        if not 1 <= limit <= MAX_LIMIT:
+            raise InvalidInput(f"limit must be 1–{MAX_LIMIT}")
+        raw = self._repo.list_activities(start, end, activity_type)
+        return [_summary(a, a.get("activityType")) for a in raw[:limit]]
+
+    def details(self, activity_id: int) -> ActivityDetails:
+        raw = self._repo.get_activity(activity_id)
+        summary = raw.get("summaryDTO") or {}
+        kind = raw.get("activityTypeDTO") or raw.get("activityType")
+        base = _summary(raw | summary, kind)
+        details = ActivityDetails(
+            **base.model_dump(),
+            description=raw.get("description"),
+            moving_duration_seconds=_num(summary.get("movingDuration")),
+            average_cadence=_num(
+                summary.get("averageRunCadence") or summary.get("averageBikeCadence")
+            ),
+            training_effect_aerobic=_num(summary.get("trainingEffect")),
+            training_effect_anaerobic=_num(summary.get("anaerobicTrainingEffect")),
+        )
+        if details.activity_type == "strength_training":
+            details.exercise_sets = _sets(
+                self._repo.get_activity_exercise_sets(activity_id)
+            )
+        else:
+            details.laps = _laps(self._repo.get_activity_splits(activity_id))
+        return details
+
+
+def _summary(a: JSON, kind: Any) -> ActivitySummary:
+    return ActivitySummary(
+        activity_id=int(a["activityId"]),
+        name=a.get("activityName"),
+        activity_type=(kind or {}).get("typeKey") if isinstance(kind, dict) else None,
+        start_time_local=a.get("startTimeLocal"),
+        duration_seconds=_num(a.get("duration")),
+        distance_meters=_num(a.get("distance")),
+        calories=_num(a.get("calories")),
+        average_hr=_num(a.get("averageHR")),
+        max_hr=_num(a.get("maxHR")),
+        average_speed_mps=_num(a.get("averageSpeed")),
+        elevation_gain_meters=_num(a.get("elevationGain")),
+    )
+
+
+def _laps(splits: JSON) -> list[Lap]:
+    laps = splits.get("lapDTOs") or []
+    return [
+        Lap(
+            index=int(lap.get("lapIndex") or i),
+            duration_seconds=_num(lap.get("duration")),
+            distance_meters=_num(lap.get("distance")),
+            average_hr=_num(lap.get("averageHR")),
+            average_speed_mps=_num(lap.get("averageSpeed")),
+        )
+        for i, lap in enumerate(laps[:MAX_LAPS], start=1)
+    ]
+
+
+def _sets(raw: JSON) -> list[ExerciseSet]:
+    out = []
+    for s in (raw.get("exerciseSets") or [])[:MAX_SETS]:
+        if s.get("setType") != "ACTIVE":
+            continue
+        exercises = s.get("exercises") or []
+        first = exercises[0] if exercises else {}
+        name = (
+            "/".join(p for p in (first.get("category"), first.get("name")) if p) or None
+        )
+        weight = _num(s.get("weight"))
+        out.append(
+            ExerciseSet(
+                exercise=name,
+                reps=s.get("repetitionCount"),
+                # Garmin logs set weights in grams.
+                weight_kg=round(weight / 1000, 2) if weight and weight > 0 else None,
+                duration_seconds=_num(s.get("duration")),
+            )
+        )
+    return out
+
+
+def _num(value: Any) -> float | None:
+    return (
+        float(value)
+        if isinstance(value, int | float) and not isinstance(value, bool)
+        else None
+    )

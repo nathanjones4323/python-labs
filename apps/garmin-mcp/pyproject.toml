@@ -1,0 +1,48 @@
+[project]
+name = "garmin-mcp"
+version = "0.1.0"
+description = "Local MCP server for a personal Garmin Connect account: training data, workouts, calendar, device push"
+requires-python = ">=3.12"
+dependencies = [
+    # The official MCP SDK (2.x: `mcp.server.mcpserver.MCPServer`). The exact
+    # version is pinned by the workspace uv.lock, shared with date-planner.
+    "mcp>=2.2,<3",
+    # Unofficial client for Garmin Connect's internal APIs. Pinned exactly:
+    # its request shapes and auth flow change between minor releases, so an
+    # upgrade is a reviewed change, not a `uv lock --upgrade` side effect.
+    "garminconnect[workout]==0.3.19",
+    "pydantic>=2.4",
+    "pydantic-settings>=2.0",
+]
+
+[project.scripts]
+garmin-mcp = "garmin_mcp.server:main"
+garmin-mcp-login = "garmin_mcp.login:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: talks to the real Garmin Connect account (opt-in, see tests/test_integration.py)",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.0",
+    "mypy>=1.14",
+    "ruff>=0.8",
+    "types-requests>=2.32",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/garmin_mcp"]

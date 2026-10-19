@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "garmin": {
+      "command": "uv",
+      "args": ["run", "--package", "garmin-mcp", "garmin-mcp"]
+    }
+  }
+}
