@@ -11,13 +11,12 @@ from garmin_mcp.repositories.garmin_client import JSON, GarminRepository
 from garmin_mcp.schemas.results import (
     ActivityDetails,
     ActivitySummary,
-    ExerciseSet,
     Lap,
 )
+from garmin_mcp.services.activity_sets import read_sets
 
 MAX_LIMIT = 100
 MAX_LAPS = 50
-MAX_SETS = 100
 DEFAULT_DAYS = 14
 MAX_RANGE_DAYS = 366
 
@@ -63,7 +62,7 @@ class ActivityService:
             training_effect_anaerobic=_num(summary.get("anaerobicTrainingEffect")),
         )
         if details.activity_type == "strength_training":
-            details.exercise_sets = _sets(
+            details.exercise_sets = read_sets(
                 self._repo.get_activity_exercise_sets(activity_id)
             )
         else:
@@ -99,29 +98,6 @@ def _laps(splits: JSON) -> list[Lap]:
         )
         for i, lap in enumerate(laps[:MAX_LAPS], start=1)
     ]
-
-
-def _sets(raw: JSON) -> list[ExerciseSet]:
-    out = []
-    for s in (raw.get("exerciseSets") or [])[:MAX_SETS]:
-        if s.get("setType") != "ACTIVE":
-            continue
-        exercises = s.get("exercises") or []
-        first = exercises[0] if exercises else {}
-        name = (
-            "/".join(p for p in (first.get("category"), first.get("name")) if p) or None
-        )
-        weight = _num(s.get("weight"))
-        out.append(
-            ExerciseSet(
-                exercise=name,
-                reps=s.get("repetitionCount"),
-                # Garmin logs set weights in grams.
-                weight_kg=round(weight / 1000, 2) if weight and weight > 0 else None,
-                duration_seconds=_num(s.get("duration")),
-            )
-        )
-    return out
 
 
 def _num(value: Any) -> float | None:

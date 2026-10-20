@@ -71,7 +71,7 @@ class WorkoutService:
 
         def pin(ex: Ex) -> Ex:
             try:
-                match = self._resolve(ex)
+                match = self.resolve_exercise(ex.name, ex.exercise_id)
             except (NotFound, Ambiguous, InvalidInput) as exc:
                 problems.append(str(exc))
                 return ex
@@ -89,34 +89,42 @@ class WorkoutService:
             raise NotFound("exercise", " | ".join(problems))
         return workout.model_copy(update={"exercises": items})
 
-    def _resolve(self, ex: w.StrengthExercise | w.CircuitExercise) -> w.ExerciseMatch:
-        key = exercise_catalog.normalize(ex.name)
-        if ex.exercise_id is not None:
-            match = exercise_catalog.by_id(ex.exercise_id)
+    def resolve_exercise(
+        self, name: str | None, exercise_id: str | None
+    ) -> w.ExerciseMatch:
+        """One exercise, by catalog name, by exercise_id, or by both when
+        they agree. See `resolve_exercises`."""
+        if exercise_id is not None:
+            match = exercise_catalog.by_id(exercise_id)
             if match is None:
                 raise NotFound(
-                    "exercise", f"no catalog exercise has id {ex.exercise_id!r}"
+                    "exercise", f"no catalog exercise has id {exercise_id!r}"
                 )
-            if exercise_catalog.normalize(match.name) != key:
+            if name is not None and exercise_catalog.normalize(
+                match.name
+            ) != exercise_catalog.normalize(name):
                 raise InvalidInput(
-                    f"exercise_id {ex.exercise_id} is {match.name!r}, not {ex.name!r}"
+                    f"exercise_id {exercise_id} is {match.name!r}, not {name!r}"
                 )
             return match
-        matches = [e for e, name in exercise_catalog.normalized_names() if name == key]
+        if name is None:
+            raise InvalidInput("an exercise needs a name or an exercise_id")
+        key = exercise_catalog.normalize(name)
+        matches = [e for e, n in exercise_catalog.normalized_names() if n == key]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
             ids = ", ".join(m.exercise_id for m in matches)
             raise Ambiguous(
-                f"{ex.name!r} matches several catalog entries ({ids}); pass exercise_id"
+                f"{name!r} matches several catalog entries ({ids}); pass exercise_id"
             )
         try:
-            near = self.search_exercises(ex.name, limit=5)
+            near = self.search_exercises(name, limit=5)
         except InvalidInput:
             near = []
         if not near:
             # Fall back to any single word, for "dumbbell bench" -> "Bench".
-            for word in ex.name.split():
+            for word in name.split():
                 near = (
                     self.search_exercises(word, limit=5)
                     if exercise_catalog.normalize(word)
@@ -125,7 +133,7 @@ class WorkoutService:
                 if near:
                     break
         hint = f" Closest: {', '.join(repr(m.name) for m in near)}." if near else ""
-        raise NotFound("exercise", f"{ex.name!r} isn't in Garmin's catalog.{hint}")
+        raise NotFound("exercise", f"{name!r} isn't in Garmin's catalog.{hint}")
 
     # -- reads ------------------------------------------------------------
 

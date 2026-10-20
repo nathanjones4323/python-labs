@@ -43,6 +43,7 @@ from garmin_mcp.repositories.garmin_client import (
     GarminConnectRepository,
     GarminRepository,
 )
+from garmin_mcp.schemas.activity_sets import MAX_ACTIVITY_SETS, ActivitySet
 from garmin_mcp.schemas.calendar import Calendar
 from garmin_mcp.schemas.results import (
     AccountStatus,
@@ -61,6 +62,7 @@ from garmin_mcp.schemas.workouts import (
     WorkoutView,
 )
 from garmin_mcp.services.activities import ActivityService
+from garmin_mcp.services.activity_sets import ActivitySetService
 from garmin_mcp.services.calendar import CalendarService
 from garmin_mcp.services.devices import DeviceService
 from garmin_mcp.services.health import HealthService
@@ -78,7 +80,8 @@ This server executes; it doesn't plan training. Decide what the workout
 should be with the user, then use these tools to put it in Garmin.
 
 Every write tool (create_workout, update_workout, schedule_workout,
-reschedule_workout, push_workout_to_device) works in two calls:
+reschedule_workout, push_workout_to_device, update_activity_exercise_sets)
+works in two calls:
 1. Call it without confirmation_token. Nothing changes; you get a preview
    and a token (or status dry_run, when the server is in dry-run mode).
 2. Show the preview to the user in plain words. Only after they explicitly
@@ -87,10 +90,11 @@ Never approve on the user's behalf, and never reuse a token for a
 different change.
 
 If a write returns status "unknown", it may have happened. Don't retry it;
-check with the read tools (get_workout, get_workout_calendar) and tell the
-user. Strength exercises must be names from Garmin's catalog: look them up
-with search_exercises, and if a name isn't found, ask the user which
-catalog exercise they mean rather than picking one.
+check with the read tools (get_workout, get_workout_calendar,
+get_activity_details) and tell the user. Strength exercises must be names
+from Garmin's catalog: look them up with search_exercises, and if a name
+isn't found, ask the user which catalog exercise they mean rather than
+picking one.
 """.strip()
 
 
@@ -142,6 +146,7 @@ class App:
     workouts: WorkoutService
     calendar: CalendarService
     activities: ActivityService
+    activity_sets: ActivitySetService
     health: HealthService
     devices: DeviceService
 
@@ -156,14 +161,21 @@ def build_app(settings: Settings, repo: GarminRepository | None = None) -> App:
         approvals=ApprovalBook(settings.approval_ttl_seconds),
         oplog=OperationLog(settings.state_dir / "operations.jsonl"),
     )
+    workouts = WorkoutService(repo, runner)
     return App(
         settings=settings,
         session=session,
         repo=repo,
         runner=runner,
-        workouts=WorkoutService(repo, runner),
+        workouts=workouts,
         calendar=CalendarService(repo, runner),
         activities=ActivityService(repo),
+        activity_sets=ActivitySetService(
+            repo,
+            runner,
+            workouts.resolve_exercise,
+            settings.state_dir / "activity-set-backups",
+        ),
         health=HealthService(repo),
         devices=DeviceService(repo, runner, settings.default_device_id),
     )
@@ -241,6 +253,28 @@ def create_server(app: App) -> MCPServer:
         """One activity's summary, plus laps (or, for strength, the logged
         sets). No GPS or second-by-second data."""
         return app.activities.details(activity_id)
+
+    @tool(_write(destructive=True))
+    def update_activity_exercise_sets(
+        activity_id: PositiveId,
+        sets: Annotated[
+            list[ActivitySet],
+            Field(min_length=1, max_length=MAX_ACTIVITY_SETS),
+        ],
+        dry_run: DryRun = False,
+        confirmation_token: Token = None,
+    ) -> WriteResult:
+        """Replace every set logged on a recorded strength activity (not a
+        workout in the library). For fixing what the watch logged: wrong
+        exercise, reps or weight, sets to drop. Get the sets with
+        get_activity_details, correct them, and pass the whole list back in
+        order, rests included. Keep each set's duration_seconds: start times
+        are rebuilt by laying the sets end to end from the first one. Two
+        calls: preview (old and new, set by set) first, then again with the
+        token once the user approves."""
+        return app.activity_sets.update_exercise_sets(
+            activity_id, sets, dry_run=dry_run, confirmation_token=confirmation_token
+        )
 
     @tool(READ)
     def get_training_metrics(

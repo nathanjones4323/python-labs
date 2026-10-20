@@ -53,18 +53,19 @@ def test_recent_activities_limits(app: App, start: date, end: date, limit: int) 
         app.activities.recent(start, end, None, limit)
 
 
-def test_strength_details_have_sets_in_kg(app: App, repo: FakeRepository) -> None:
+def test_strength_details_have_every_set(app: App, repo: FakeRepository) -> None:
     add_activity(repo, 1, "strength_training", DAY)
     details = app.activities.details(1)
     assert details.training_effect_aerobic == 3.1
     assert details.laps == []
-    assert len(details.exercise_sets) == 1  # the rest set is dropped
-    first = details.exercise_sets[0]
-    assert (first.exercise, first.reps, first.weight_kg) == (
+    bench, rest = details.exercise_sets
+    assert (bench.name, bench.exercise_id, bench.reps, bench.weight_kg) == (
+        "Barbell Bench Press",
         "BENCH_PRESS/BARBELL_BENCH_PRESS",
         8,
         60.0,
     )
+    assert (rest.type, rest.duration_seconds) == ("rest", 90.0)
 
 
 def test_run_details_have_laps(app: App, repo: FakeRepository) -> None:

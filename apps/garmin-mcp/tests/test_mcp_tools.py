@@ -35,6 +35,7 @@ WRITE_TOOLS = {
     "schedule_workout",
     "reschedule_workout",
     "push_workout_to_device",
+    "update_activity_exercise_sets",
 }
 
 

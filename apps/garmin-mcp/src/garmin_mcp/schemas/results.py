@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from garmin_mcp.schemas.activity_sets import ActivitySet
+
 WriteStatus = Literal["dry_run", "approval_required", "verified", "failed", "unknown"]
 
 
@@ -85,13 +87,6 @@ class ActivitySummary(BaseModel):
     elevation_gain_meters: float | None = None
 
 
-class ExerciseSet(BaseModel):
-    exercise: str | None = Field(description="CATEGORY/EXERCISE as Garmin logged it.")
-    reps: int | None = None
-    weight_kg: float | None = None
-    duration_seconds: float | None = None
-
-
 class Lap(BaseModel):
     index: int
     duration_seconds: float | None = None
@@ -107,8 +102,10 @@ class ActivityDetails(ActivitySummary):
     training_effect_aerobic: float | None = None
     training_effect_anaerobic: float | None = None
     laps: list[Lap] = Field(default_factory=list)
-    exercise_sets: list[ExerciseSet] = Field(
-        default_factory=list, description="Strength activities only; rest sets omitted."
+    exercise_sets: list[ActivitySet] = Field(
+        default_factory=list,
+        description="Strength activities only: every logged set in order, "
+        "rests included, in the form update_activity_exercise_sets takes.",
     )
 
 

@@ -44,6 +44,7 @@ class GarminRepository(Protocol):
     def get_activity(self, activity_id: int) -> JSON: ...
     def get_activity_splits(self, activity_id: int) -> JSON: ...
     def get_activity_exercise_sets(self, activity_id: int) -> JSON: ...
+    def set_activity_exercise_sets(self, activity_id: int, payload: JSON) -> Any: ...
 
     # Health and training metrics, one day each
     def get_daily_summary(self, day: date) -> JSON | None: ...
@@ -146,6 +147,9 @@ class GarminConnectRepository:
         return self._read(
             lambda g: g.get_activity_exercise_sets(activity_id), "activity"
         )
+
+    def set_activity_exercise_sets(self, activity_id: int, payload: JSON) -> Any:
+        return self._write(lambda g: g.set_activity_exercise_sets(activity_id, payload))
 
     # -- metrics ----------------------------------------------------------
 

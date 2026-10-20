@@ -85,7 +85,7 @@ reachable, and no tool runs code or shell commands.
 | --- | --- | --- |
 | `get_account_status` | read | Whether the saved session works, whether dry-run is on, and what to do if not. |
 | `get_recent_activities` | read | Activities in a date range (default: last 14 days), filtered by type, newest first. |
-| `get_activity_details` | read | One activity, plus laps (or, for strength, the logged sets). No GPS or HR streams. |
+| `get_activity_details` | read | One activity, plus laps (or, for strength, every logged set, rests included). No GPS or HR streams. |
 | `get_training_metrics` | read | Per-day `daily_summary`, `sleep`, `hrv`, `training_readiness`, `training_status`, `vo2max`. Up to 14 days and 42 Garmin calls per request. |
 | `search_exercises` | read | Garmin's strength exercise catalog (≈1,500 entries), by name. |
 | `list_workouts` | read | The workout library, optionally only strength or running. |
@@ -98,6 +98,7 @@ reachable, and no tool runs code or shell commands.
 | `schedule_workout` | write | Put a workout on a date (today up to a year ahead). |
 | `reschedule_workout` | write | Move a calendar entry, by its id or by workout + date. |
 | `push_workout_to_device` | write | Queue a workout for a watch. |
+| `update_activity_exercise_sets` | write | Replace the sets logged on a recorded strength activity (below). |
 
 There's no delete tool. Deleting comes later, once write verification and
 recovery have been used for real.
@@ -181,6 +182,41 @@ sports, several segments, nested repeats, lap-button rests, power targets) come
 back with `definition: null` and an `unsupported_reason`. `update_workout`
 refuses them rather than silently dropping those parts.
 
+## Logged sets
+
+A watch logs each set of a strength activity under the exercise the
+workout said was next. Done in a different order than written (a circuit
+done lift by lift, say), the sets are logged under the wrong exercises.
+The timing is real; the labels aren't.
+
+`get_activity_details` returns every set in order, rests included:
+
+```json
+[
+  {"type": "exercise", "name": "Barbell Back Squat", "exercise_id": "SQUAT/BARBELL_BACK_SQUAT",
+   "reps": 5, "weight_kg": 124.75, "duration_seconds": 602.804},
+  {"type": "rest", "duration_seconds": 180.0}
+]
+```
+
+`update_activity_exercise_sets` takes the same list back, corrected:
+relabel sets, fix reps and weights (`weight_lb` or `weight_kg`), drop
+sets, or add them. Exercises resolve against the catalog exactly as for
+workouts. Garmin's call replaces every set at once, so the list is the
+whole activity. Start times aren't passed: the sets are laid end to end
+from the first logged set's start, so keeping each set's
+`duration_seconds` keeps the recorded timeline. The preview lists each
+set beside what was logged in that position and warns when the total time
+changes or runs past the end of the activity.
+
+Garmin keeps no history of logged sets. Before writing, the server saves
+what Garmin had to `$GARMIN_STATE_DIR/activity-set-backups/<activity
+id>-<time>.json` (0600), and the result names the file. If the backup
+can't be written, nothing is sent.
+
+Weights are logged in grams. A read gives `weight_kg` to the gram;
+verification compares weights to 0.1 lb and durations to a second.
+
 ## Approval and write safety
 
 Every write goes through one path (`services/writes.py`):
@@ -261,7 +297,7 @@ are on the watch now.
 ## Tests
 
 ```sh
-uv run --package garmin-mcp pytest            # 173 unit and protocol tests, no network
+uv run --package garmin-mcp pytest            # 189 unit and protocol tests, no network
 uv run --package garmin-mcp mypy              # strict
 uv run --package garmin-mcp ruff check . && uv run --package garmin-mcp ruff format --check .
 ```
@@ -344,9 +380,15 @@ Reads:
 - **Updating a workout made in Garmin's editor.** Only test workouts have
   been updated. Your own decode and re-encode identically (above), but the
   PUT replaces the whole workout, so try a first real edit on a copy.
-- **Recorded activities:** the account had none yet, so the activity
-  summary fields and how activities appear on the calendar (assumed
-  `itemType: "activity"`) are unchecked.
+- **Writing logged sets.** On 2026-10-19 a real strength activity (37
+  sets, logged by a Venu 4) read back into the canonical form, and passing
+  it back unchanged was correctly refused as no change. No PUT has been
+  made yet, so the request shape (one entry per set: `setType`,
+  `exercises`, `repetitionCount`, `weight` in grams, `duration`,
+  `startTime`, `messageIndex`, modeled on what Garmin returns) is
+  unconfirmed. The first real write's verification will show it.
+- **Recorded activities:** the activity summary fields and how activities
+  appear on the calendar (assumed `itemType: "activity"`) are unchecked.
 - **Sleep, HRV, training readiness score, training status, VO2 max:** no
   history yet, so only their empty form has been seen. A wrong field name
   shows up as a metric that's always null, not as an error.

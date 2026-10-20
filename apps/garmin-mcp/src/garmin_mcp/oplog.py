@@ -3,7 +3,7 @@
 
 It records what was attempted and how it ended (operation, status, the ids
 and dates involved), so an `unknown` outcome can be looked into later. It
-never records workout contents, health data, tokens or confirmation tokens.
+never records workout or set contents, health data, tokens or confirmation tokens.
 """
 
 import json
@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 # Only these keys of a write's `result` are copied into the log.
 _ID_KEYS = (
+    "activity_id",
     "workout_id",
     "scheduled_workout_id",
     "device_id",

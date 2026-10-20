@@ -31,6 +31,7 @@ class FakeRepository:
         self.workouts: dict[int, JSON] = {}
         self.calendar: list[JSON] = []
         self.activities: list[JSON] = []
+        self.exercise_sets: dict[int, JSON] = {}
         self.devices: list[JSON] = [
             {
                 "deviceId": 3001,
@@ -56,6 +57,7 @@ class FakeRepository:
         # Applied to a workout as Garmin "stores" it, to simulate Garmin
         # changing what it was sent.
         self.mangle: Any = None
+        self.mangle_sets: Any = None
         self.queue_pushes = True
         self.metrics: dict[tuple[str, date], Any] = {}
 
@@ -128,20 +130,44 @@ class FakeRepository:
         return {"lapDTOs": [{"lapIndex": 1, "duration": 300.0, "distance": 1000.0}]}
 
     def get_activity_exercise_sets(self, activity_id: int) -> JSON:
-        return {
-            "exerciseSets": [
-                {
-                    "setType": "ACTIVE",
-                    "exercises": [
-                        {"category": "BENCH_PRESS", "name": "BARBELL_BENCH_PRESS"}
-                    ],
-                    "repetitionCount": 8,
-                    "weight": 60000.0,
-                    "duration": 30.0,
-                },
-                {"setType": "REST", "duration": 90.0},
-            ]
-        }
+        self.get_activity(activity_id)
+        stored = self.exercise_sets.get(activity_id)
+        if stored is None:
+            stored = {
+                "activityId": activity_id,
+                "exerciseSets": [
+                    {
+                        "setType": "ACTIVE",
+                        "exercises": [
+                            {
+                                "category": "BENCH_PRESS",
+                                "name": "BARBELL_BENCH_PRESS",
+                                "probability": 99.6,
+                            }
+                        ],
+                        "repetitionCount": 8,
+                        "weight": 60000.0,
+                        "duration": 30.0,
+                        "startTime": "2026-10-15T14:00:00.0",
+                    },
+                    {
+                        "setType": "REST",
+                        "exercises": [],
+                        "duration": 90.0,
+                        "startTime": "2026-10-15T14:00:30.0",
+                    },
+                ],
+            }
+        return copy.deepcopy(stored)
+
+    def set_activity_exercise_sets(self, activity_id: int, payload: JSON) -> Any:
+        def apply() -> None:
+            stored = copy.deepcopy(payload)
+            if self.mangle_sets:
+                self.mangle_sets(stored)
+            self.exercise_sets[activity_id] = stored
+
+        return self._write("set_activity_exercise_sets", (activity_id, payload), apply)
 
     # -- metrics ----------------------------------------------------------
 
