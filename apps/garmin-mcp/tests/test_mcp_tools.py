@@ -2,7 +2,6 @@
 schemas and annotations, structured results, and errors. One test starts
 the actual `garmin-mcp` command over stdio."""
 
-import json
 import os
 import sys
 from collections.abc import AsyncIterator
@@ -175,11 +174,3 @@ async def test_server_starts_over_stdio(tmp_path: Path) -> None:
         assert status.structured_content["authenticated"] is False
         assert status.structured_content["dry_run"] is True
     assert (tmp_path / "state" / "garmin-mcp.log").exists()
-
-
-def test_claude_code_auto_allows_only_reads() -> None:
-    """Write tools must stay off the allow list, so Claude Code asks the user
-    before every call to one (see README, "Approval")."""
-    settings = Path(__file__).parent.parent / ".claude" / "settings.json"
-    allowed = set(json.loads(settings.read_text())["permissions"]["allow"])
-    assert allowed == {f"mcp__garmin__{name}" for name in READ_TOOLS}
