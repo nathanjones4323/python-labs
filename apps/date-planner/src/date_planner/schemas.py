@@ -475,6 +475,60 @@ class SunsetOut(Out):
     golden_hour_start: datetime
 
 
+class ForecastHourOut(Out):
+    """One hour, starting at `time`. Missing values are null."""
+
+    time: datetime
+    temp_f: float | None
+    # Percent.
+    precip_probability: int | None
+    precip_in: float | None
+    # Percent of the sky; `cloud_cover_low` is the low layer (marine layer,
+    # fog) that hides a sunset.
+    cloud_cover: int | None
+    cloud_cover_low: int | None
+    wind_mph: float | None
+    gust_mph: float | None
+    # From the WMO code: "clear", "partly cloudy", "fog", "light rain", ...
+    conditions: str | None
+
+
+class ForecastPlaceIn(BaseModel):
+    """A stop to forecast: a `venue_id`, or `lat` + `lng` (with `timezone`,
+    default America/Los_Angeles). `from_time` / `to_time` are local HH:MM;
+    leave them out for the whole day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    venue_id: uuid.UUID | None = None
+    lat: Annotated[float, Field(ge=-90, le=90)] | None = None
+    lng: Annotated[float, Field(ge=-180, le=180)] | None = None
+    timezone: str | None = None
+    from_time: LocalTime | None = None
+    to_time: LocalTime | None = None
+
+
+class ForecastOut(Out):
+    """Fetched live and not saved. `available` false means no request was
+    made: `reason` says when the day comes into range. The summary covers
+    the hours returned."""
+
+    day: date
+    # Which place this is: its venue, if it was asked for by one.
+    venue_id: uuid.UUID | None = None
+    lat: float
+    lng: float
+    timezone: str
+    available: bool
+    reason: str | None
+    fetched_at: datetime | None
+    high_f: float | None
+    low_f: float | None
+    max_precip_probability: int | None
+    total_precip_in: float | None
+    hours: list[ForecastHourOut]
+
+
 class TravelOut(Out):
     """One leg. `minutes` includes the driving padding and is rounded up."""
 

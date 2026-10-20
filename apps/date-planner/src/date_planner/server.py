@@ -26,9 +26,9 @@ INSTRUCTIONS = """
 Data and arithmetic for planning a couple's dates. A date is a day with an
 ordered list of stops (a hike, a timed museum entry, a sunset dinner). This
 server holds each member's preferences, the couple's past dates, venues and
-how each one takes reservations, booking links and windows, sunset, travel time between
-stops, and a timeline checker that places stops in the order you give and
-reports what doesn't fit.
+how each one takes reservations, booking links and windows, sunset, the
+weather forecast, travel time between stops, and a timeline checker that
+places stops in the order you give and reports what doesn't fit.
 
 This server never books anything and never touches Google. Calendar holds and
 Gmail confirmations go through those connectors; the final tap or phone call

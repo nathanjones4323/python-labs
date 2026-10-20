@@ -24,10 +24,11 @@ from typing import Any, Protocol
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from date_planner.config import Settings, get_settings
+from date_planner.config import Settings
 from date_planner.db import repo
 from date_planner.db.models import TravelMode, Venue
 from date_planner.errors import MissingCoordinates, TravelFailed
+from date_planner.json_api import request_json
 
 ROAD_FACTOR = 1.4
 SPEED_KMH = {TravelMode.DRIVING: 40.0, TravelMode.WALKING: 4.8}
@@ -155,23 +156,30 @@ class GoogleProvider:
 async def _get_json(
     client: httpx.AsyncClient | None, method: str, url: str, **kwargs: Any
 ) -> dict[str, Any]:
-    try:
-        if client is not None:
-            response = await client.request(method, url, **kwargs)
-        else:
-            async with httpx.AsyncClient(timeout=get_settings().fetch_timeout) as owned:
-                response = await owned.request(method, url, **kwargs)
-        response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise TravelFailed(f"Routing request failed: {exc}") from exc
-    not_json = "Routing service returned something other than a JSON object"
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise TravelFailed(not_json) from exc
+    data = await request_json(
+        client,
+        method,
+        url,
+        failure=TravelFailed,
+        service="Routing",
+        reason=_routing_reason,
+        **kwargs,
+    )
     if not isinstance(data, dict):
-        raise TravelFailed(not_json)
+        raise TravelFailed("Routing returned something other than a JSON object")
     return data
+
+
+def _routing_reason(body: Any) -> str | None:
+    """The explanation in an error body: OSRM's `message`, or ORS's
+    `error.message` (or a bare `error` string)."""
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if isinstance(error, dict):
+        error = error.get("message")
+    detail = error if isinstance(error, str) else body.get("message")
+    return detail if isinstance(detail, str) else None
 
 
 def make_provider(

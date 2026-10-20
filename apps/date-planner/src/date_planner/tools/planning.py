@@ -1,4 +1,4 @@
-"""Tools for fitting the day together: sunset, travel, and the timeline.
+"""Tools for fitting the day together: sunset, weather, travel, and the timeline.
 
 `plan_timeline` checks and places; the agent decides the order. It's
 deterministic, so running it again after a change is cheap — the point is to
@@ -7,10 +7,11 @@ iterate until there are no violations, then `apply=True`.
 
 import uuid
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastmcp import FastMCP
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from date_planner.config import get_settings
 from date_planner.db import open_session, repo
@@ -21,10 +22,12 @@ from date_planner.db.models import (
     Venue,
     VenueType,
 )
-from date_planner.errors import MissingCoordinates
-from date_planner.planning import sunset, timeline, travel
+from date_planner.errors import MissingCoordinates, UnknownTimezone
+from date_planner.planning import forecast, sunset, timeline, travel
 from date_planner.schemas import (
     BusyEventIn,
+    ForecastOut,
+    ForecastPlaceIn,
     LegOut,
     PlacedStopOut,
     SunsetOut,
@@ -39,6 +42,33 @@ def _sunset_at(venue: Venue | None, day: date, tz: ZoneInfo) -> datetime | None:
     if venue is None or venue.lat is None or venue.lng is None:
         return None
     return sunset.compute(venue.lat, venue.lng, day, tz).sunset
+
+
+def _zone(name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise UnknownTimezone(
+            f"{name!r} is not a timezone; use an IANA name like America/Los_Angeles"
+        ) from exc
+
+
+async def _venue_place(
+    session: AsyncSession, venue_id: uuid.UUID
+) -> tuple[float, float, ZoneInfo]:
+    """A venue's coordinates and timezone."""
+    venue = await repo.get_venue(session, venue_id)
+    point = travel.coordinates(venue)
+    return point.lat, point.lng, _zone(venue.timezone)
+
+
+def _point_place(
+    lat: float | None, lng: float | None, timezone: str | None
+) -> tuple[float, float, ZoneInfo]:
+    """The given point and timezone. No database: a bare point needs none."""
+    if lat is None or lng is None:
+        raise MissingCoordinates("Pass a venue_id, or both lat and lng")
+    return lat, lng, _zone(timezone or DEFAULT_TIMEZONE)
 
 
 def register(mcp: FastMCP) -> None:
@@ -58,16 +88,59 @@ def register(mcp: FastMCP) -> None:
         locally — no network. Civil dusk is the end of usable light on a
         trail.
         """
-        if venue_id is not None:
-            async with open_session() as session:
-                venue = await repo.get_venue(session, venue_id)
-                point = travel.coordinates(venue)
-                lat, lng, tz = point.lat, point.lng, venue.tz
+        if venue_id is None:
+            lat, lng, tz = _point_place(lat, lng, timezone)
         else:
-            if lat is None or lng is None:
-                raise MissingCoordinates("Pass a venue_id, or both lat and lng")
-            tz = ZoneInfo(timezone or DEFAULT_TIMEZONE)
+            async with open_session() as session:
+                lat, lng, tz = await _venue_place(session, venue_id)
         return SunsetOut.model_validate(sunset.compute(lat, lng, day, tz))
+
+    @mcp.tool
+    @as_tool_error
+    async def get_forecast(
+        day: date, places: list[ForecastPlaceIn]
+    ) -> list[ForecastOut]:
+        """The hourly weather forecast for `day` at each of `places`: rain,
+        heat, wind, and low cloud that can hide a sunset.
+
+        Pass every stop you want weather for in one call — one request
+        covers them all. Each place is a `venue_id`, or `lat` + `lng`, with
+        an optional `from_time` / `to_time` (local, HH:MM) to keep only the
+        hours overlapping that stop; otherwise the whole day. Results come
+        back in the same order, in each venue's timezone (or `timezone`,
+        default America/Los_Angeles). °F, mph, inches.
+
+        Covers today to 15 days ahead (Open-Meteo's 16-day forecast). Outside
+        that, nothing is fetched: `available` is false and `reason` says
+        when to check again. Live data, fetched on every call and never
+        saved; it's a forecast, not a promise.
+        """
+        # Only venues need the database, and each is looked up once.
+        venue_ids = dict.fromkeys(p.venue_id for p in places if p.venue_id is not None)
+        venues: dict[uuid.UUID, tuple[float, float, ZoneInfo]] = {}
+        if venue_ids:
+            async with open_session() as session:
+                for venue_id in venue_ids:
+                    venues[venue_id] = await _venue_place(session, venue_id)
+        wanted = [
+            forecast.Place(
+                *(
+                    venues[place.venue_id]
+                    if place.venue_id is not None
+                    else _point_place(place.lat, place.lng, place.timezone)
+                ),
+                place.from_time,
+                place.to_time,
+            )
+            for place in places
+        ]
+        results = await forecast.fetch(day, wanted)
+        return [
+            ForecastOut.model_validate(result).model_copy(
+                update={"venue_id": place.venue_id}
+            )
+            for place, result in zip(places, results)
+        ]
 
     @mcp.tool
     @as_tool_error

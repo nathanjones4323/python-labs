@@ -22,7 +22,8 @@ final tap or phone call is always the user's.
   - dates and stops: `create_date`, `update_date`, `get_date`, `list_dates`,
     `add_stop`, `update_stop`, `reorder_stops`, `remove_stop`
   - afterwards: `rate_date`, `clear_rating`
-  - fitting the day: `get_sunset`, `estimate_travel`, `plan_timeline`
+  - fitting the day: `get_sunset`, `get_forecast`, `estimate_travel`,
+    `plan_timeline`
   - showing it: `render_date_preview`
 - **Google Calendar** — `list_events`, `suggest_time`, `create_event`,
   `update_event`.
@@ -48,7 +49,7 @@ The MCP tools may be deferred. If they are, load every one you'll need in
 real schemas instead of guessing:
 
 ```
-select:mcp__date-planner__list_couples,mcp__date-planner__list_past_dates,mcp__date-planner__edit_member_preferences,mcp__date-planner__upsert_member,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__date-planner__rate_date,mcp__date-planner__clear_rating,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__suggest_time,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gmail__get_thread,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,mcp__claude_ai_AllTrails__search_trails_by_name,mcp__claude_ai_AllTrails__find_trails_near_location,mcp__claude_ai_AllTrails__get_trail_details,ArtifactData,WebSearch
+select:mcp__date-planner__list_couples,mcp__date-planner__list_past_dates,mcp__date-planner__edit_member_preferences,mcp__date-planner__upsert_member,mcp__date-planner__upsert_couple_profile,mcp__date-planner__find_venue,mcp__date-planner__upsert_venue,mcp__date-planner__detect_booking_channel,mcp__date-planner__suggest_reservation_need,mcp__date-planner__build_booking_link,mcp__date-planner__compute_booking_window,mcp__date-planner__find_google_place,mcp__date-planner__resy_widget_args,mcp__date-planner__create_date,mcp__date-planner__update_date,mcp__date-planner__get_date,mcp__date-planner__list_dates,mcp__date-planner__add_stop,mcp__date-planner__update_stop,mcp__date-planner__reorder_stops,mcp__date-planner__remove_stop,mcp__date-planner__get_sunset,mcp__date-planner__get_forecast,mcp__date-planner__estimate_travel,mcp__date-planner__plan_timeline,mcp__date-planner__render_date_preview,mcp__date-planner__rate_date,mcp__date-planner__clear_rating,mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__suggest_time,mcp__claude_ai_Google_Calendar__create_event,mcp__claude_ai_Google_Calendar__update_event,mcp__claude_ai_Gmail__search_threads,mcp__claude_ai_Gmail__get_thread,mcp__claude_ai_Resy__display_resy_restaurant_availabilities_app,mcp__claude_ai_AllTrails__search_trails_by_name,mcp__claude_ai_AllTrails__find_trails_near_location,mcp__claude_ai_AllTrails__get_trail_details,ArtifactData,WebSearch
 ```
 
 The connectors (Google Calendar, Gmail, Resy, AllTrails) are claude.ai
@@ -273,8 +274,30 @@ instead.
 
 Iterate until there are none, then `plan_timeline(date_id, apply=True)` and
 go straight on to the calendar. Show the timeline in the same reply: each
-stop's start and end, each leg's drive time, sunset, and what "nearby" was
-set to. Changes after that are a quick update, not a reason to wait first.
+stop's start and end, each leg's drive time, sunset, the weather (below), and
+what "nearby" was set to. Changes after that are a quick update, not a reason to wait first.
+
+#### Weather
+
+Check the forecast once the times are placed, if the day is within 15 days,
+and again whenever the user asks how an upcoming date is looking or it's
+within about a week. Make one `get_forecast(day, places)` call with every
+outdoor stop (trail, park, viewpoint, beach, a restaurant you know has
+outdoor seating) and every sunset-anchored stop, each as `{venue_id,
+from_time, to_time}` over that stop's start to end. Results come back in the
+same order. Flag only what matters, one line each:
+
+- rain ≥ 40% during the stop → offer a swap (an indoor stop) or another
+  time;
+- 90°F or more on a trail → offer to start it earlier;
+- low cloud (`cloud_cover_low`) ≥ 70% around sunset on a sunset stop → the
+  sunset may not show; offer an alternative, don't assume it's lost;
+- gusts ≥ 25 mph at a beach, viewpoint or rooftop.
+
+These are suggestions. Never move a booked stop or one the user chose
+without asking. Otherwise the reply gets one weather line ("Forecast: 72°F
+and clear, 10% rain"), plus any flags. Call it a forecast. If `available` is
+false, say when it'll be in range ("forecast from Oct 26") and move on.
 
 ### 6. Calendar
 

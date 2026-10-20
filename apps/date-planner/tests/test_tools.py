@@ -17,6 +17,7 @@ import jsonschema
 import pytest
 import respx
 from date_planner.db import repo
+from date_planner.planning import forecast
 from date_planner.server import create_server
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -65,7 +66,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 28
+    assert len(tools) == 29
     assert all(tool.description for tool in tools)
 
 
@@ -716,6 +717,63 @@ async def test_get_sunset_by_venue_and_by_point(
     assert by_venue.sunset.hour == 18 and by_venue.sunset.minute in (9, 10)
     with pytest.raises(ToolError, match="MissingCoordinates"):
         await call("get_sunset", day=DAY, venue_id=str(seeded["bestia_id"]))
+
+
+async def test_get_forecast_for_stops_in_one_request(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    day = datetime.now(LA).date() + timedelta(days=3)
+    midnight = int(datetime(day.year, day.month, day.day, tzinfo=LA).timestamp())
+    hourly = {
+        "time": [midnight + 3600 * h for h in range(48)],
+        **{name: [0] * 48 for name in forecast.HOURLY},
+    }
+    with respx.mock() as router:
+        route = router.get(forecast.FORECAST_URL).respond(
+            200, json=[{"hourly": hourly}, {"hourly": hourly}]
+        )
+        trail, point = await call(
+            "get_forecast",
+            day=day.isoformat(),
+            places=[
+                {
+                    "venue_id": str(seeded["solstice_id"]),
+                    "from_time": "09:00",
+                    "to_time": "11:00",
+                },
+                {"lat": 34.0, "lng": -118.5, "from_time": "18:00"},
+            ],
+        )
+    assert route.call_count == 1
+    assert route.calls.last.request.url.params["latitude"] == "34.03765,34.0"
+    assert trail.available and trail.timezone == "America/Los_Angeles"
+    assert trail.venue_id == str(seeded["solstice_id"])
+    assert [h.time.hour for h in trail.hours] == [9, 10]
+    assert trail.hours[0].conditions == "clear"
+    assert point.venue_id is None and (point.lat, point.lng) == (34.0, -118.5)
+    assert [h.time.hour for h in point.hours] == list(range(18, 24))
+
+    [far] = await call(
+        "get_forecast",
+        day=(day + timedelta(days=30)).isoformat(),
+        places=[{"lat": 34.0, "lng": -118.5}],
+    )
+    assert not far.available and "check again from" in far.reason
+    with pytest.raises(ToolError, match="MissingCoordinates"):
+        await call(
+            "get_forecast",
+            day=day.isoformat(),
+            places=[{"venue_id": str(seeded["bestia_id"])}],
+        )
+
+
+async def test_an_unknown_timezone_is_reported(db: Factory) -> None:
+    for tool, args in [
+        ("get_sunset", {"lat": 34.0, "lng": -118.5, "timezone": "PST"}),
+        ("get_forecast", {"places": [{"lat": 34.0, "lng": -118.5, "timezone": "PST"}]}),
+    ]:
+        with pytest.raises(ToolError, match="UnknownTimezone: 'PST'"):
+            await call(tool, day=DAY, **args)
 
 
 async def test_estimate_travel_and_its_cache(
