@@ -1,5 +1,5 @@
 [tool.uv.workspace]
-members = ["libs/*", "apps/*/backend", "apps/tee-time-booker", "apps/date-planner"]
+members = ["libs/*", "apps/*/backend", "apps/tee-time-booker", "apps/date-planner", "apps/garmin-mcp"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

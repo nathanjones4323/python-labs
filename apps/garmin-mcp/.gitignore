@@ -1,0 +1,19 @@
+.env
+.env.local
+
+# Garmin session tokens, if GARMIN_TOKENSTORE is ever pointed inside the
+# repo. They grant access to the account; never commit them.
+garmin_tokens.json
+oauth1_token.json
+oauth2_token.json
+/tokens/
+
+# Logs and the write log, if GARMIN_STATE_DIR points here.
+*.log
+operations.jsonl
+/state/
+
+# The root ignores every .claude/; this one is the project config (the tool
+# allowlist) and belongs in git. Personal overrides stay local.
+!/.claude/
+/.claude/settings.local.json

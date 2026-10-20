@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__garmin__get_account_status",
+      "mcp__garmin__get_recent_activities",
+      "mcp__garmin__get_activity_details",
+      "mcp__garmin__get_training_metrics",
+      "mcp__garmin__search_exercises",
+      "mcp__garmin__list_workouts",
+      "mcp__garmin__get_workout",
+      "mcp__garmin__get_workout_calendar",
+      "mcp__garmin__list_devices",
+      "mcp__garmin__get_device_push_status"
+    ]
+  }
+}
