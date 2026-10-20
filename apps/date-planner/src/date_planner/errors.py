@@ -75,3 +75,8 @@ class MissingGooglePlace(DatePlannerError):
 class OutsideWidgetRange(DatePlannerError):
     """The Resy widget only shows today to 60 days out, for 1–15 people.
     Hand over `build_booking_link` instead."""
+
+
+class ForecastFailed(DatePlannerError):
+    """Open-Meteo couldn't be asked for the weather: unreachable, an error
+    answer, or nothing readable back."""

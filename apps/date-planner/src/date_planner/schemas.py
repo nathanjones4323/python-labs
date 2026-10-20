@@ -475,6 +475,41 @@ class SunsetOut(Out):
     golden_hour_start: datetime
 
 
+class ForecastHourOut(Out):
+    """One hour, starting at `time`. Missing values are null."""
+
+    time: datetime
+    temp_f: float | None
+    # Percent.
+    precip_probability: int | None
+    precip_in: float | None
+    # Percent of the sky; `cloud_cover_low` is the low layer (marine layer,
+    # fog) that hides a sunset.
+    cloud_cover: int | None
+    cloud_cover_low: int | None
+    wind_mph: float | None
+    gust_mph: float | None
+    # From the WMO code: "clear", "partly cloudy", "fog", "light rain", ...
+    conditions: str | None
+
+
+class ForecastOut(Out):
+    """Fetched live and not saved. `available` false means no request was
+    made: `reason` says when the day comes into range. The summary covers
+    the hours returned."""
+
+    day: date
+    timezone: str
+    available: bool
+    reason: str | None
+    fetched_at: datetime | None
+    high_f: float | None
+    low_f: float | None
+    max_precip_probability: int | None
+    total_precip_in: float | None
+    hours: list[ForecastHourOut]
+
+
 class TravelOut(Out):
     """One leg. `minutes` includes the driving padding and is rounded up."""
 

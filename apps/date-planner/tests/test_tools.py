@@ -17,6 +17,7 @@ import jsonschema
 import pytest
 import respx
 from date_planner.db import repo
+from date_planner.planning import forecast
 from date_planner.server import create_server
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -65,7 +66,7 @@ async def test_ping_needs_no_database() -> None:
 async def test_every_tool_has_a_description() -> None:
     async with client() as connected:
         tools = await connected.list_tools()
-    assert len(tools) == 28
+    assert len(tools) == 29
     assert all(tool.description for tool in tools)
 
 
@@ -716,6 +717,45 @@ async def test_get_sunset_by_venue_and_by_point(
     assert by_venue.sunset.hour == 18 and by_venue.sunset.minute in (9, 10)
     with pytest.raises(ToolError, match="MissingCoordinates"):
         await call("get_sunset", day=DAY, venue_id=str(seeded["bestia_id"]))
+
+
+async def test_get_forecast_for_a_stop_at_a_venue(
+    db: Factory, seeded: dict[str, Any]
+) -> None:
+    day = datetime.now(LA).date() + timedelta(days=3)
+    with respx.mock() as router:
+        route = router.get(forecast.FORECAST_URL).respond(
+            200,
+            json={
+                "hourly": {
+                    "time": [f"{day}T{h:02d}:00" for h in range(24)],
+                    **{name: [0] * 24 for name in forecast.HOURLY},
+                }
+            },
+        )
+        result = await call(
+            "get_forecast",
+            day=day.isoformat(),
+            venue_id=str(seeded["solstice_id"]),
+            from_time="09:00",
+            to_time="11:00",
+        )
+    assert route.calls.last.request.url.params["latitude"] == "34.03765"
+    assert result.available and result.timezone == "America/Los_Angeles"
+    assert [h.time.hour for h in result.hours] == [9, 10]
+    assert result.hours[0].conditions == "clear"
+
+    far = await call(
+        "get_forecast",
+        day=(day + timedelta(days=30)).isoformat(),
+        lat=34.0,
+        lng=-118.5,
+    )
+    assert not far.available and "check again from" in far.reason
+    with pytest.raises(ToolError, match="MissingCoordinates"):
+        await call(
+            "get_forecast", day=day.isoformat(), venue_id=str(seeded["bestia_id"])
+        )
 
 
 async def test_estimate_travel_and_its_cache(

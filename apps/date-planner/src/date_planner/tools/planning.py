@@ -1,4 +1,4 @@
-"""Tools for fitting the day together: sunset, travel, and the timeline.
+"""Tools for fitting the day together: sunset, weather, travel, and the timeline.
 
 `plan_timeline` checks and places; the agent decides the order. It's
 deterministic, so running it again after a change is cheap — the point is to
@@ -22,10 +22,12 @@ from date_planner.db.models import (
     VenueType,
 )
 from date_planner.errors import MissingCoordinates
-from date_planner.planning import sunset, timeline, travel
+from date_planner.planning import forecast, sunset, timeline, travel
 from date_planner.schemas import (
     BusyEventIn,
+    ForecastOut,
     LegOut,
+    LocalTime,
     PlacedStopOut,
     SunsetOut,
     TimelineOut,
@@ -39,6 +41,23 @@ def _sunset_at(venue: Venue | None, day: date, tz: ZoneInfo) -> datetime | None:
     if venue is None or venue.lat is None or venue.lng is None:
         return None
     return sunset.compute(venue.lat, venue.lng, day, tz).sunset
+
+
+async def _place(
+    venue_id: uuid.UUID | None,
+    lat: float | None,
+    lng: float | None,
+    timezone: str | None,
+) -> tuple[float, float, ZoneInfo]:
+    """A venue's coordinates and timezone, or the given point's."""
+    if venue_id is not None:
+        async with open_session() as session:
+            venue = await repo.get_venue(session, venue_id)
+            point = travel.coordinates(venue)
+            return point.lat, point.lng, venue.tz
+    if lat is None or lng is None:
+        raise MissingCoordinates("Pass a venue_id, or both lat and lng")
+    return lat, lng, ZoneInfo(timezone or DEFAULT_TIMEZONE)
 
 
 def register(mcp: FastMCP) -> None:
@@ -58,16 +77,36 @@ def register(mcp: FastMCP) -> None:
         locally — no network. Civil dusk is the end of usable light on a
         trail.
         """
-        if venue_id is not None:
-            async with open_session() as session:
-                venue = await repo.get_venue(session, venue_id)
-                point = travel.coordinates(venue)
-                lat, lng, tz = point.lat, point.lng, venue.tz
-        else:
-            if lat is None or lng is None:
-                raise MissingCoordinates("Pass a venue_id, or both lat and lng")
-            tz = ZoneInfo(timezone or DEFAULT_TIMEZONE)
+        lat, lng, tz = await _place(venue_id, lat, lng, timezone)
         return SunsetOut.model_validate(sunset.compute(lat, lng, day, tz))
+
+    @mcp.tool
+    @as_tool_error
+    async def get_forecast(
+        day: date,
+        venue_id: uuid.UUID | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        timezone: str | None = None,
+        from_time: LocalTime | None = None,
+        to_time: LocalTime | None = None,
+    ) -> ForecastOut:
+        """The hourly weather forecast for `day`: rain, heat, wind, and low
+        cloud that can hide a sunset.
+
+        Pass a `venue_id`, or `lat` + `lng`. Times are in the venue's
+        timezone (or `timezone`, default America/Los_Angeles); `from_time` /
+        `to_time` (local, HH:MM) keep only the hours overlapping a stop,
+        otherwise the whole day. °F, mph, inches.
+
+        Covers today to 15 days ahead (Open-Meteo's 16-day forecast). Outside
+        that, nothing is fetched: `available` is false and `reason` says
+        when to check again. Live data, fetched on every call and never
+        saved; it's a forecast, not a promise.
+        """
+        lat, lng, tz = await _place(venue_id, lat, lng, timezone)
+        result = await forecast.fetch(lat, lng, day, tz, from_time, to_time)
+        return ForecastOut.model_validate(result)
 
     @mcp.tool
     @as_tool_error
