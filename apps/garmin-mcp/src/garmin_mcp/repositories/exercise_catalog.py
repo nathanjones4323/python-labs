@@ -35,6 +35,12 @@ def by_id(exercise_id: str) -> ExerciseMatch | None:
     return _by_id().get(exercise_id)
 
 
+@cache
+def normalized_names() -> tuple[tuple[ExerciseMatch, str], ...]:
+    """Each catalog exercise with its `normalize`d name, computed once."""
+    return tuple((e, normalize(e.name)) for e in all_exercises())
+
+
 def normalize(name: str) -> str:
     """Case, spacing and punctuation folded away: "push ups" == "Push-ups".
     Only spelling; never a different exercise."""

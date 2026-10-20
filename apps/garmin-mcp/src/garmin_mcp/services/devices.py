@@ -84,7 +84,7 @@ class DeviceService:
     ) -> WriteResult:
         workout = self._repo.get_workout(workout_id)
         device = self._pick_device(device_id)
-        target = int(device_id or device.device_id)
+        target = device.device_id
         name = workout.get("workoutName") or f"workout {workout_id}"
         warnings = self._check_capable(device, sport_key(workout))
         details = [
@@ -138,7 +138,11 @@ class DeviceService:
                 details=details,
                 warnings=warnings,
             ),
-            basis={"workout_id": workout_id, "device_id": target},
+            basis={
+                "workout_id": workout_id,
+                "device_id": target,
+                "queued": sorted(before),
+            },
             execute=lambda: self._repo.push_workout_to_device(workout_id, target),
             verify=lambda _response: check(),
             reconcile=check,

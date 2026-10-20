@@ -84,6 +84,9 @@ def classify_read(exc: Exception, kind: NotFoundKind | None) -> GarminMcpError:
         if code == 429:
             return RateLimited()
         return GarminApiError(str(exc))
+    if isinstance(exc, requests.JSONDecodeError):
+        # A ValueError too, but Garmin's answer was unreadable, not the input.
+        return GarminApiError("Garmin sent a response that isn't valid JSON.")
     if isinstance(exc, ValueError):
         # The library validates ids and dates before sending anything.
         return InvalidInput(str(exc))
@@ -97,6 +100,13 @@ def classify_write(exc: Exception) -> WriteRejected | WriteOutcomeUnknown:
         return WriteRejected("Garmin rate limited the request; nothing changed.")
     if isinstance(exc, GarminConnectAuthenticationError):
         return WriteRejected(f"Garmin rejected the session. {REAUTH}")
+    if isinstance(exc, requests.JSONDecodeError):
+        # Raised after Garmin answered 2xx, while parsing the body: the
+        # request went through, so this is not "rejected before sending".
+        return WriteOutcomeUnknown(
+            "Garmin accepted the request but its answer wasn't valid JSON; "
+            "it may or may not have applied the change."
+        )
     if isinstance(exc, ValueError):
         return WriteRejected(f"Rejected before sending: {exc}")
     cause = network_cause(exc)

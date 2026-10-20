@@ -55,7 +55,9 @@ class ApprovalBook:
         try:
             nonce, expires_s, sig = token.split(".")
             expires = int(expires_s)
-        except ValueError:
+            # compare_digest raises TypeError on non-ASCII str.
+            sig.encode("ascii")
+        except ValueError:  # UnicodeEncodeError included
             raise ApprovalInvalid(
                 "That isn't a confirmation token from this server."
             ) from None

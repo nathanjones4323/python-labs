@@ -43,20 +43,20 @@ class WorkoutService:
             raise InvalidInput("search term is empty")
         whole = "".join(words)
         hits = [
-            e
-            for e in exercise_catalog.all_exercises()
-            if all(t in exercise_catalog.normalize(e.name) for t in words)
+            (e, name)
+            for e, name in exercise_catalog.normalized_names()
+            if all(t in name for t in words)
         ]
 
-        def rank(e: w.ExerciseMatch) -> tuple[int, int, str]:
-            name = exercise_catalog.normalize(e.name)
+        def rank(hit: tuple[w.ExerciseMatch, str]) -> tuple[int, int, str]:
+            e, name = hit
             return (
                 0 if name == whole else 1 if name.startswith(whole) else 2,
                 len(name),
                 e.name,
             )
 
-        return sorted(hits, key=rank)[:limit]
+        return [e for e, _ in sorted(hits, key=rank)[:limit]]
 
     def resolve_exercises(self, workout: AnyWorkout) -> AnyWorkout:
         """Pin every exercise to a catalog entry, or refuse.
@@ -102,11 +102,7 @@ class WorkoutService:
                     f"exercise_id {ex.exercise_id} is {match.name!r}, not {ex.name!r}"
                 )
             return match
-        matches = [
-            e
-            for e in exercise_catalog.all_exercises()
-            if exercise_catalog.normalize(e.name) == key
-        ]
+        matches = [e for e, name in exercise_catalog.normalized_names() if name == key]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:

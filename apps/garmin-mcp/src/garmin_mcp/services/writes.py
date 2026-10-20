@@ -108,6 +108,17 @@ class WriteRunner:
         except WriteOutcomeUnknown as exc:
             log.warning("%s: outcome unknown (%s); reconciling", op, exc)
             return self._reconcile(plan, exc)
+        except GarminMcpError as exc:
+            # The repository only raises the two above for the write itself;
+            # anything else came from a read before it, so nothing was sent.
+            self._oplog.record(op, "failed", plan.refs, exc.code)
+            return WriteResult(
+                operation=op,
+                status="failed",
+                message="Nothing was sent: a read before the write failed.",
+                preview=plan.preview,
+                error=f"{exc.code}: {exc}",
+            )
 
         verification, ids = self._checked(lambda: plan.verify(response))
         status: WriteStatus = (
@@ -152,14 +163,21 @@ class WriteRunner:
 
     @staticmethod
     def _checked(check: Callable[[], Checked]) -> Checked:
+        # The write was already sent: whatever goes wrong reading it back must
+        # still end in a result (and a log line), never a bare tool error that
+        # invites a retry.
         try:
             return check()
         except GarminMcpError as exc:
-            return (
-                Verification(
-                    status="unreadable",
-                    checked="the read-back failed",
-                    mismatches=[f"{exc.code}: {exc}"],
-                ),
-                {},
-            )
+            reason = f"{exc.code}: {exc}"
+        except Exception as exc:
+            log.exception("read-back crashed")
+            reason = f"unexpected {type(exc).__name__} reading back"
+        return (
+            Verification(
+                status="unreadable",
+                checked="the read-back failed",
+                mismatches=[reason],
+            ),
+            {},
+        )

@@ -38,6 +38,7 @@ from garmin_mcp.auth import GarminSession
 from garmin_mcp.config import Settings, get_settings
 from garmin_mcp.errors import GarminMcpError
 from garmin_mcp.oplog import OperationLog
+from garmin_mcp.repositories.failures import REAUTH
 from garmin_mcp.repositories.garmin_client import (
     GarminConnectRepository,
     GarminRepository,
@@ -438,10 +439,7 @@ def account_status(app: App) -> AccountStatus:
             "garmin_api",
         )
         if exc.code == "authentication":
-            status.action = (
-                "Run `uv run --package garmin-mcp garmin-mcp-login`, then "
-                "restart the server."
-            )
+            status.action = REAUTH
         elif exc.code in ("network", "rate_limit"):
             status.action = "Try again in a few minutes."
         return status
