@@ -38,9 +38,19 @@ class ActivitySet(BaseModel):
         description="Exercise sets only. Null for a timed set or reps the "
         "watch didn't count.",
     )
-    weight_kg: float | None = Field(default=None, ge=0, le=1000)
+    weight_kg: float | None = Field(
+        default=None,
+        ge=0,
+        le=1000,
+        description="Reads always give the weight here, converted from the "
+        "grams Garmin stores (124.738 is 275 lb). Null for an unweighted set.",
+    )
     weight_lb: float | None = Field(
-        default=None, ge=0, le=2200, description="Instead of weight_kg."
+        default=None,
+        ge=0,
+        le=2200,
+        description="Writes only, instead of weight_kg. Always null on a "
+        "read, which gives weight_kg.",
     )
     duration_seconds: float = Field(ge=0, le=7200)
 
