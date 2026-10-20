@@ -501,8 +501,8 @@ class ForecastPlaceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     venue_id: uuid.UUID | None = None
-    lat: float | None = None
-    lng: float | None = None
+    lat: Annotated[float, Field(ge=-90, le=90)] | None = None
+    lng: Annotated[float, Field(ge=-180, le=180)] | None = None
     timezone: str | None = None
     from_time: LocalTime | None = None
     to_time: LocalTime | None = None

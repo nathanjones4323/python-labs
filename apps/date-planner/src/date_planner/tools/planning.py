@@ -53,18 +53,19 @@ def _zone(name: str) -> ZoneInfo:
         ) from exc
 
 
-async def _place(
-    session: AsyncSession,
-    venue_id: uuid.UUID | None,
-    lat: float | None,
-    lng: float | None,
-    timezone: str | None,
+async def _venue_place(
+    session: AsyncSession, venue_id: uuid.UUID
 ) -> tuple[float, float, ZoneInfo]:
-    """A venue's coordinates and timezone, or the given point's."""
-    if venue_id is not None:
-        venue = await repo.get_venue(session, venue_id)
-        point = travel.coordinates(venue)
-        return point.lat, point.lng, _zone(venue.timezone)
+    """A venue's coordinates and timezone."""
+    venue = await repo.get_venue(session, venue_id)
+    point = travel.coordinates(venue)
+    return point.lat, point.lng, _zone(venue.timezone)
+
+
+def _point_place(
+    lat: float | None, lng: float | None, timezone: str | None
+) -> tuple[float, float, ZoneInfo]:
+    """The given point and timezone. No database: a bare point needs none."""
     if lat is None or lng is None:
         raise MissingCoordinates("Pass a venue_id, or both lat and lng")
     return lat, lng, _zone(timezone or DEFAULT_TIMEZONE)
@@ -87,8 +88,11 @@ def register(mcp: FastMCP) -> None:
         locally — no network. Civil dusk is the end of usable light on a
         trail.
         """
-        async with open_session() as session:
-            lat, lng, tz = await _place(session, venue_id, lat, lng, timezone)
+        if venue_id is None:
+            lat, lng, tz = _point_place(lat, lng, timezone)
+        else:
+            async with open_session() as session:
+                lat, lng, tz = await _venue_place(session, venue_id)
         return SunsetOut.model_validate(sunset.compute(lat, lng, day, tz))
 
     @mcp.tool
@@ -111,15 +115,25 @@ def register(mcp: FastMCP) -> None:
         when to check again. Live data, fetched on every call and never
         saved; it's a forecast, not a promise.
         """
-        wanted = []
-        async with open_session() as session:
-            for place in places:
-                lat, lng, tz = await _place(
-                    session, place.venue_id, place.lat, place.lng, place.timezone
-                )
-                wanted.append(
-                    forecast.Place(lat, lng, tz, place.from_time, place.to_time)
-                )
+        # Only venues need the database, and each is looked up once.
+        venue_ids = dict.fromkeys(p.venue_id for p in places if p.venue_id is not None)
+        venues: dict[uuid.UUID, tuple[float, float, ZoneInfo]] = {}
+        if venue_ids:
+            async with open_session() as session:
+                for venue_id in venue_ids:
+                    venues[venue_id] = await _venue_place(session, venue_id)
+        wanted = [
+            forecast.Place(
+                *(
+                    venues[place.venue_id]
+                    if place.venue_id is not None
+                    else _point_place(place.lat, place.lng, place.timezone)
+                ),
+                place.from_time,
+                place.to_time,
+            )
+            for place in places
+        ]
         results = await forecast.fetch(day, wanted)
         return [
             ForecastOut.model_validate(result).model_copy(

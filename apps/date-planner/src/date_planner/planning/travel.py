@@ -157,11 +157,29 @@ async def _get_json(
     client: httpx.AsyncClient | None, method: str, url: str, **kwargs: Any
 ) -> dict[str, Any]:
     data = await request_json(
-        client, method, url, failure=TravelFailed, service="Routing", **kwargs
+        client,
+        method,
+        url,
+        failure=TravelFailed,
+        service="Routing",
+        reason=_routing_reason,
+        **kwargs,
     )
     if not isinstance(data, dict):
         raise TravelFailed("Routing returned something other than a JSON object")
     return data
+
+
+def _routing_reason(body: Any) -> str | None:
+    """The explanation in an error body: OSRM's `message`, or ORS's
+    `error.message` (or a bare `error` string)."""
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if isinstance(error, dict):
+        error = error.get("message")
+    detail = error if isinstance(error, str) else body.get("message")
+    return detail if isinstance(detail, str) else None
 
 
 def make_provider(
