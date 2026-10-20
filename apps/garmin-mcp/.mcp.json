@@ -1,8 +1,15 @@
 {
   "mcpServers": {
     "garmin": {
-      "command": "uv",
-      "args": ["run", "--package", "garmin-mcp", "garmin-mcp"]
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--from", "git+https://github.com/nathanjones4323/garmin_mcp@local/combined",
+        "garmin-mcp"
+      ],
+      "env": {
+        "GARMINTOKENS": "~/.config/garmin-mcp/tokens"
+      }
     }
   }
 }

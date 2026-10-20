@@ -1,16 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "mcp__garmin__get_account_status",
-      "mcp__garmin__get_recent_activities",
-      "mcp__garmin__get_activity_details",
-      "mcp__garmin__get_training_metrics",
-      "mcp__garmin__search_exercises",
-      "mcp__garmin__list_workouts",
-      "mcp__garmin__get_workout",
-      "mcp__garmin__get_workout_calendar",
-      "mcp__garmin__list_devices",
-      "mcp__garmin__get_device_push_status"
+      "mcp__garmin__get_full_name",
+      "mcp__garmin__get_user_profile",
+      "mcp__garmin__get_activities",
+      "mcp__garmin__get_activities_by_date",
+      "mcp__garmin__get_activity",
+      "mcp__garmin__get_activity_splits",
+      "mcp__garmin__get_activity_exercise_sets",
+      "mcp__garmin__get_training_readiness",
+      "mcp__garmin__get_training_status",
+      "mcp__garmin__get_hrv_data",
+      "mcp__garmin__get_sleep_data",
+      "mcp__garmin__get_stats",
+      "mcp__garmin__get_workouts",
+      "mcp__garmin__get_workout_by_id",
+      "mcp__garmin__get_scheduled_workouts",
+      "mcp__garmin__get_devices",
+      "mcp__garmin__get_device_last_used"
     ]
   }
 }

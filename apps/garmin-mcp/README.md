@@ -1,5 +1,18 @@
 # garmin-mcp
 
+> **Not the server Claude Code runs here any more.** `.mcp.json` now
+> launches [Taxuspt/garmin_mcp](https://github.com/Taxuspt/garmin_mcp) from
+> the `local/combined` branch of the fork
+> [nathanjones4323/garmin_mcp](https://github.com/nathanjones4323/garmin_mcp).
+> That branch is upstream plus three open PRs: `push_workout_to_device`
+> (#474), `reschedule_workout` (#475) and `update_workout` (#476). Once they
+> merge, point `.mcp.json` at `git+https://github.com/Taxuspt/garmin_mcp`.
+> It reuses this server's tokens (`GARMINTOKENS=~/.config/garmin-mcp/tokens`);
+> when they expire, re-run `garmin-mcp-login` below. Writes are not
+> previewed there, so Claude Code's permission prompt is the only approval
+> step. `.claude/settings.json` auto-allows only its read tools. The rest of
+> this README describes the old server, kept until the PRs land.
+
 A local MCP server for one person's Garmin Connect account. An agent can
 read training data (activities, sleep, HRV, readiness and more), build
 strength and running workouts, put them on the Garmin calendar, and send
