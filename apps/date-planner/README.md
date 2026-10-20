@@ -183,7 +183,7 @@ it; the number in brackets is the process.
 | `add_stop`, `update_stop`, `reorder_stops`, `remove_stop` | Its stops |
 | `rate_date`, `clear_rating` | Afterwards: one member's 0–10 for the day and any of its stops, with notes on why |
 | `get_sunset` | Sunset, civil dusk, golden hour — computed locally with `astral` |
-| `get_forecast` | The hourly forecast for a stop — rain, heat, wind, low cloud at sunset — from Open-Meteo (free, no key), today to 15 days out; fetched live, never saved |
+| `get_forecast` | The hourly forecast for a day's stops — rain, heat, wind, low cloud at sunset — from Open-Meteo (free, no key), today to 15 days out; one request for every stop, fetched live, never saved |
 | `estimate_travel` | One leg's time and distance, cached |
 | `plan_timeline` | Place every stop in the current order and report what's wrong |
 | `render_date_preview` | Write the day as a phone-sized page: a map of the stops and the route you can pan and zoom, then the timeline with drives, sunset, bookings still to make and Apple Maps links |

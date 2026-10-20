@@ -1,20 +1,26 @@
-"""The hourly weather forecast at a place, from Open-Meteo.
+"""The hourly weather forecast at a handful of places, from Open-Meteo.
 
 Free and keyless. Open-Meteo forecasts 16 days counting today, so a day
 more than `HORIZON_DAYS` out (or already past) gets no request at all: it
-comes back unavailable with the day to ask again from. Nothing is cached or
+comes back unavailable with the day to ask again from. Every place in range
+goes in one request, whatever the number of stops. Nothing is cached or
 stored — a forecast is only worth having fresh.
+
+Hours come back as Unix timestamps rather than local labels: Open-Meteo
+labels a whole day with one UTC offset, so on a daylight-saving change the
+labels after 2am are an hour out.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from date_planner.config import get_settings
 from date_planner.errors import ForecastFailed
+from date_planner.json_api import request_json
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # Today plus 15: Open-Meteo's 16 forecast days.
@@ -64,6 +70,23 @@ CONDITIONS = {
 
 
 @dataclass(frozen=True)
+class Place:
+    """Where to forecast, and the stretch of the day to keep.
+
+    `from_time` / `to_time` keep the hours overlapping that stretch: 14:30–
+    16:15 keeps the 14:00, 15:00 and 16:00 hours. A `to_time` of midnight,
+    or one before `from_time` (a stop running past midnight), runs to the
+    end of the day.
+    """
+
+    lat: float
+    lng: float
+    tz: ZoneInfo
+    from_time: time | None = None
+    to_time: time | None = None
+
+
+@dataclass(frozen=True)
 class Hour:
     """One forecast hour, starting at `time`. Any value may be missing."""
 
@@ -81,6 +104,8 @@ class Hour:
 @dataclass(frozen=True)
 class Forecast:
     day: date
+    lat: float
+    lng: float
     timezone: str
     available: bool
     reason: str | None = None
@@ -117,45 +142,62 @@ def out_of_range(day: date, today: date) -> str | None:
 
 
 async def fetch(
-    lat: float,
-    lng: float,
     day: date,
-    tz: ZoneInfo,
-    from_time: time | None = None,
-    to_time: time | None = None,
+    places: Sequence[Place],
     *,
     today: date | None = None,
     client: httpx.AsyncClient | None = None,
-) -> Forecast:
-    """`day`'s hourly forecast at (`lat`, `lng`), in `tz`.
+) -> list[Forecast]:
+    """`day`'s hourly forecast at each of `places`, in the same order and
+    each in its own timezone. The summary is over the hours kept."""
+    todays = [today or datetime.now(place.tz).date() for place in places]
+    reasons = [out_of_range(day, t) for t in todays]
+    wanted = [p for p, reason in zip(places, reasons) if reason is None]
+    # Stops at the same venue share one location in the request.
+    locations = list(dict.fromkeys((p.lat, p.lng, p.tz.key) for p in wanted))
+    days: dict[tuple[float, float, str], list[Hour]] = {}
+    if locations:
+        # The next day too: a fall-back day has 25 hours, so its last one
+        # starts after 24 hours from midnight.
+        through = day + timedelta(days=1)
+        if through > last_day(min(todays)):
+            through = day
+        data = await _get_json(client, locations, day, through)
+        # One location comes back as an object, several as a list.
+        answers = data if isinstance(data, list) else [data]
+        if len(answers) != len(locations):
+            raise ForecastFailed("Open-Meteo answered for the wrong number of places")
+        for location, answer in zip(locations, answers):
+            tz = ZoneInfo(location[2])
+            days[location] = [
+                h for h in parse_hours(answer, tz) if h.time.date() == day
+            ]
+    fetched_at = datetime.now(UTC)
 
-    `from_time` / `to_time` keep the hours overlapping that stretch of the
-    day: 14:30–16:15 keeps the 14:00, 15:00 and 16:00 hours. The summary is
-    over the hours kept.
-    """
-    today = today or datetime.now(tz).date()
-    reason = out_of_range(day, today)
-    if reason is not None:
-        return Forecast(day=day, timezone=tz.key, available=False, reason=reason)
-
-    params = {
-        "latitude": lat,
-        "longitude": lng,
-        "hourly": ",".join(HOURLY),
-        "temperature_unit": "fahrenheit",
-        "wind_speed_unit": "mph",
-        "precipitation_unit": "inch",
-        "timezone": tz.key,
-        "start_date": day.isoformat(),
-        "end_date": day.isoformat(),
-    }
-    data = await _get_json(client, params)
-    fetched_at = datetime.now(tz)
-    hours = [h for h in parse_hours(data, tz) if _overlaps(h.time, from_time, to_time)]
-    return summarise(day, tz, hours, fetched_at)
+    results = []
+    for place, reason in zip(places, reasons):
+        if reason is not None:
+            results.append(
+                Forecast(
+                    day=day,
+                    lat=place.lat,
+                    lng=place.lng,
+                    timezone=place.tz.key,
+                    available=False,
+                    reason=reason,
+                )
+            )
+            continue
+        hours = [
+            h
+            for h in days[(place.lat, place.lng, place.tz.key)]
+            if _overlaps(h.time, place.from_time, place.to_time)
+        ]
+        results.append(summarise(day, place, hours, fetched_at.astimezone(place.tz)))
+    return results
 
 
-def parse_hours(data: dict[str, Any], tz: ZoneInfo) -> list[Hour]:
+def parse_hours(data: Any, tz: ZoneInfo) -> list[Hour]:
     try:
         hourly = data["hourly"]
         times = hourly["time"]
@@ -168,33 +210,42 @@ def parse_hours(data: dict[str, Any], tz: ZoneInfo) -> list[Hour]:
         return column[i] if i < len(column) else None
 
     hours = []
-    for i, stamp in enumerate(times):
-        code = value("weather_code", i)
-        hours.append(
-            Hour(
-                time=datetime.fromisoformat(stamp).replace(tzinfo=tz),
-                temp_f=value("temperature_2m", i),
-                precip_probability=value("precipitation_probability", i),
-                precip_in=value("precipitation", i),
-                cloud_cover=value("cloud_cover", i),
-                cloud_cover_low=value("cloud_cover_low", i),
-                wind_mph=value("wind_speed_10m", i),
-                gust_mph=value("wind_gusts_10m", i),
-                conditions=conditions(code),
+    try:
+        for i, stamp in enumerate(times):
+            if isinstance(stamp, bool) or not isinstance(stamp, int | float):
+                raise TypeError(f"not a timestamp: {stamp!r}")
+            code = value("weather_code", i)
+            hours.append(
+                Hour(
+                    time=datetime.fromtimestamp(stamp, tz),
+                    temp_f=value("temperature_2m", i),
+                    precip_probability=value("precipitation_probability", i),
+                    precip_in=value("precipitation", i),
+                    cloud_cover=value("cloud_cover", i),
+                    cloud_cover_low=value("cloud_cover_low", i),
+                    wind_mph=value("wind_speed_10m", i),
+                    gust_mph=value("wind_gusts_10m", i),
+                    conditions=conditions(code),
+                )
             )
-        )
+    except (TypeError, ValueError, OverflowError, OSError) as exc:
+        raise ForecastFailed(
+            "Open-Meteo returned an unreadable hourly forecast"
+        ) from exc
     return hours
 
 
 def summarise(
-    day: date, tz: ZoneInfo, hours: list[Hour], fetched_at: datetime
+    day: date, place: Place, hours: list[Hour], fetched_at: datetime
 ) -> Forecast:
     temps = [h.temp_f for h in hours if h.temp_f is not None]
     chances = [h.precip_probability for h in hours if h.precip_probability is not None]
     precip = [h.precip_in for h in hours if h.precip_in is not None]
     return Forecast(
         day=day,
-        timezone=tz.key,
+        lat=place.lat,
+        lng=place.lng,
+        timezone=place.tz.key,
         available=True,
         fetched_at=fetched_at,
         hours=hours,
@@ -211,31 +262,38 @@ def _overlaps(start: datetime, from_time: time | None, to_time: time | None) -> 
     hour_end = (start + timedelta(hours=1)).time()
     if from_time is not None and hour_end != time(0) and hour_end <= from_time:
         return False
-    return to_time is None or hour_start < to_time
+    if to_time is None or to_time == time(0):
+        return True
+    if from_time is not None and to_time < from_time:
+        return True
+    return hour_start < to_time
 
 
 async def _get_json(
-    client: httpx.AsyncClient | None, params: dict[str, Any]
-) -> dict[str, Any]:
-    try:
-        if client is not None:
-            response = await client.get(FORECAST_URL, params=params)
-        else:
-            async with httpx.AsyncClient(timeout=get_settings().fetch_timeout) as owned:
-                response = await owned.get(FORECAST_URL, params=params)
-    except httpx.HTTPError as exc:
-        raise ForecastFailed(f"Weather forecast request failed: {exc}") from exc
-    try:
-        data = response.json()
-    except ValueError:
-        data = None
-    if response.is_error:
+    client: httpx.AsyncClient | None,
+    locations: list[tuple[float, float, str]],
+    day: date,
+    through: date,
+) -> Any:
+    params = {
+        "latitude": ",".join(str(lat) for lat, _, _ in locations),
+        "longitude": ",".join(str(lng) for _, lng, _ in locations),
+        "timezone": ",".join(tz for _, _, tz in locations),
+        "hourly": ",".join(HOURLY),
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
+        "timeformat": "unixtime",
+        "start_date": day.isoformat(),
+        "end_date": through.isoformat(),
+    }
+    return await request_json(
+        client,
+        "GET",
+        FORECAST_URL,
+        failure=ForecastFailed,
+        service="Weather forecast",
         # Open-Meteo explains a bad request in `reason`.
-        detail = data.get("reason") if isinstance(data, dict) else None
-        raise ForecastFailed(
-            f"Weather forecast request failed: {response.status_code}"
-            + (f" {detail}" if detail else "")
-        )
-    if not isinstance(data, dict):
-        raise ForecastFailed("Open-Meteo returned something other than a JSON object")
-    return data
+        reason=lambda body: body.get("reason") if isinstance(body, dict) else None,
+        params=params,
+    )

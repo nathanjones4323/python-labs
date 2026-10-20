@@ -493,12 +493,31 @@ class ForecastHourOut(Out):
     conditions: str | None
 
 
+class ForecastPlaceIn(BaseModel):
+    """A stop to forecast: a `venue_id`, or `lat` + `lng` (with `timezone`,
+    default America/Los_Angeles). `from_time` / `to_time` are local HH:MM;
+    leave them out for the whole day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    venue_id: uuid.UUID | None = None
+    lat: float | None = None
+    lng: float | None = None
+    timezone: str | None = None
+    from_time: LocalTime | None = None
+    to_time: LocalTime | None = None
+
+
 class ForecastOut(Out):
     """Fetched live and not saved. `available` false means no request was
     made: `reason` says when the day comes into range. The summary covers
     the hours returned."""
 
     day: date
+    # Which place this is: its venue, if it was asked for by one.
+    venue_id: uuid.UUID | None = None
+    lat: float
+    lng: float
     timezone: str
     available: bool
     reason: str | None

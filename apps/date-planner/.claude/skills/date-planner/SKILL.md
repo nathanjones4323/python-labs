@@ -281,10 +281,11 @@ what "nearby" was set to. Changes after that are a quick update, not a reason to
 
 Check the forecast once the times are placed, if the day is within 15 days,
 and again whenever the user asks how an upcoming date is looking or it's
-within about a week. For each outdoor stop (trail, park, viewpoint, beach, a
-restaurant you know has outdoor seating) and every sunset-anchored stop,
-`get_forecast(day, venue_id, from_time, to_time)` over that stop's start to
-end. Flag only what matters, one line each:
+within about a week. Make one `get_forecast(day, places)` call with every
+outdoor stop (trail, park, viewpoint, beach, a restaurant you know has
+outdoor seating) and every sunset-anchored stop, each as `{venue_id,
+from_time, to_time}` over that stop's start to end. Results come back in the
+same order. Flag only what matters, one line each:
 
 - rain ≥ 40% during the stop → offer a swap (an indoor stop) or another
   time;

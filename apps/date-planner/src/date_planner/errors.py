@@ -80,3 +80,8 @@ class OutsideWidgetRange(DatePlannerError):
 class ForecastFailed(DatePlannerError):
     """Open-Meteo couldn't be asked for the weather: unreachable, an error
     answer, or nothing readable back."""
+
+
+class UnknownTimezone(DatePlannerError):
+    """A timezone isn't an IANA name such as `America/Los_Angeles`
+    (abbreviations like "PST" aren't)."""
