@@ -206,9 +206,7 @@ class WorkoutService:
 
         def verify(response: Any) -> Checked:
             workout_id = (
-                (response or {}).get("workoutId")
-                if isinstance(response, dict)
-                else None
+                response.get("workoutId") if isinstance(response, dict) else None
             )
             if not workout_id:
                 return Verification(

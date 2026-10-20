@@ -38,8 +38,14 @@ class GarminRepository(Protocol):
     def get_profile(self) -> JSON: ...
 
     # Activities
+    def list_activity_types(self) -> list[JSON]: ...
     def list_activities(
-        self, start: date, end: date, activity_type: str | None
+        self,
+        start: date,
+        end: date,
+        activity_type: str | None,
+        activity_subtype: str | None,
+        limit: int,
     ) -> list[JSON]: ...
     def get_activity(self, activity_id: int) -> JSON: ...
     def get_activity_splits(self, activity_id: int) -> JSON: ...
@@ -76,6 +82,7 @@ class GarminRepository(Protocol):
 class GarminConnectRepository:
     def __init__(self, session: GarminSession) -> None:
         self._session = session
+        self._activity_types: list[JSON] | None = None
 
     # -- plumbing ---------------------------------------------------------
 
@@ -118,6 +125,9 @@ class GarminConnectRepository:
 
     def get_profile(self) -> JSON:
         def call(g: Garmin) -> JSON:
+            # The names below are cached from the login; this request is what
+            # shows the session still works and Garmin is reachable now.
+            g.get_user_profile()
             return {
                 "display_name": g.display_name,
                 "full_name": g.full_name,
@@ -128,13 +138,40 @@ class GarminConnectRepository:
 
     # -- activities -------------------------------------------------------
 
+    def list_activity_types(self) -> list[JSON]:
+        # Garmin's fixed type tree; fetched once per server run. The library
+        # annotates it as a dict, but Garmin sends a list.
+        if self._activity_types is None:
+            raw: Any = self._read(lambda g: g.get_activity_types())
+            if not isinstance(raw, list):
+                return []
+            self._activity_types = raw
+        return self._activity_types
+
     def list_activities(
-        self, start: date, end: date, activity_type: str | None
+        self,
+        start: date,
+        end: date,
+        activity_type: str | None,
+        activity_subtype: str | None,
+        limit: int,
     ) -> list[JSON]:
+        # get_activities_by_date pages 20 at a time through the whole range
+        # before we could cut it to `limit`; the same search endpoint takes
+        # the page size itself, so one request returns the newest `limit`.
+        params = {
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "start": "0",
+            "limit": str(limit),
+            "sortOrder": "desc",
+        }
+        if activity_type:
+            params["activityType"] = activity_type
+        if activity_subtype:
+            params["activitySubType"] = activity_subtype
         return self._read(
-            lambda g: g.get_activities_by_date(
-                start.isoformat(), end.isoformat(), activity_type, sortorder="desc"
-            )
+            lambda g: g.connectapi(g.garmin_connect_activities, params=params) or []
         )
 
     def get_activity(self, activity_id: int) -> JSON:

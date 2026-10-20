@@ -18,6 +18,7 @@ Before a push, the device's own registration flags are checked
 can't run is refused; one it says nothing about is a warning in the preview.
 """
 
+import json
 from typing import Any
 
 from garmin_mcp.errors import NotFound, Unsupported
@@ -203,7 +204,12 @@ class DeviceService:
                 and _int(meta.get("metaDataId")) == workout_id
                 and _int(m.get("deviceId")) == device_id
             ):
-                found.add(str(m.get("messageId") or m.get("createdTimeStamp")))
+                key = m.get("messageId") or m.get("createdTimeStamp")
+                # Without either id, the message itself tells them apart; a
+                # shared "None" key would hide a new message behind an old one.
+                found.add(
+                    str(key) if key is not None else json.dumps(m, sort_keys=True)
+                )
         return found
 
 

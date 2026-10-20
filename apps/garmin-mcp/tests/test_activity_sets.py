@@ -280,3 +280,36 @@ def test_details_round_trip_into_an_update(
         app.activity_sets.update_exercise_sets(
             ACTIVITY, logged, dry_run=False, confirmation_token=None
         )
+
+
+def test_uncataloged_and_unlabeled_sets_pass_back_unchanged(
+    app: App, circuit_log: FakeRepository
+) -> None:
+    """A set the watch logged by category only, or with no exercise at all,
+    reads with no name; passing it back as read must not block the edit."""
+    logged = circuit_log.exercise_sets[ACTIVITY]["exerciseSets"]
+    logged[2]["exercises"] = [{"category": "CURL", "name": None}]
+    logged.append({**active(SQUAT, 5, 0, 30.0), "exercises": []})
+    read = app.activities.details(ACTIVITY).exercise_sets
+    assert read is not None
+    assert (read[2].name, read[2].exercise_id) == (None, "CURL/")
+    assert (read[5].name, read[5].exercise_id) == (None, None)
+    sets = [s.model_dump(exclude_none=True) for s in read]
+    sets[0]["reps"] = 6
+    result = approve_and_update(app, sets)
+    assert result.status == "verified", result
+    written = circuit_log.exercise_sets[ACTIVITY]["exerciseSets"]
+    assert written[2]["exercises"][0] == {
+        "category": "CURL",
+        "name": None,
+        "probability": 100.0,
+    }
+    assert (written[5]["setType"], written[5]["exercises"]) == ("ACTIVE", [])
+
+
+def test_activities_over_the_set_cap_are_refused(
+    app: App, circuit_log: FakeRepository
+) -> None:
+    circuit_log.exercise_sets[ACTIVITY]["exerciseSets"] += [rest(1.0)] * 150
+    with pytest.raises(Unsupported, match="more than 150"):
+        update(app, relabeled())

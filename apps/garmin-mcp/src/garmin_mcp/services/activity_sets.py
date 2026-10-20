@@ -22,6 +22,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from garmin_mcp.errors import (
     InvalidInput,
     NotFound,
@@ -84,14 +86,36 @@ class ActivitySetService:
                 f"activity; only strength activities have exercise sets"
             )
         current_raw = self._repo.get_activity_exercise_sets(activity_id)
+        if len(current_raw.get("exerciseSets") or []) > MAX_ACTIVITY_SETS:
+            # Reads stop at the cap; a write would silently drop the rest.
+            raise Unsupported(
+                f"activity {activity_id} has more than {MAX_ACTIVITY_SETS} "
+                f"logged sets; edit it in Garmin Connect instead"
+            )
         current = read_sets(current_raw)
         start = _first_start(current_raw, activity)
+        # Exercises Garmin already logged on this activity are written back
+        # as they are, even when the library's catalog lacks them (a
+        # category-only "CURL/", or a FIT exercise the catalog doesn't list).
+        logged = {s.exercise_id for s in current if s.exercise_id}
 
         problems: list[str] = []
         matches: list[ExerciseMatch | None] = []
         for i, s in enumerate(sets, start=1):
-            if s.type == "rest":
+            if s.type == "rest" or (s.name is None and s.exercise_id is None):
+                # A rest, or a set the watch logged without an exercise.
                 matches.append(None)
+                continue
+            if s.name is None and s.exercise_id in logged:
+                assert s.exercise_id is not None
+                matches.append(
+                    exercise_catalog.by_id(s.exercise_id)
+                    or ExerciseMatch(
+                        exercise_id=s.exercise_id,
+                        name=s.exercise_id,
+                        category=s.exercise_id.split("/", 1)[0],
+                    )
+                )
                 continue
             try:
                 matches.append(self._resolve(s.name, s.exercise_id))
@@ -173,7 +197,14 @@ class ActivitySetService:
 
 
 def read_sets(raw: JSON) -> list[ActivitySet]:
-    return [_read_set(s) for s in (raw.get("exerciseSets") or [])[:MAX_ACTIVITY_SETS]]
+    try:
+        return [
+            _read_set(s) for s in (raw.get("exerciseSets") or [])[:MAX_ACTIVITY_SETS]
+        ]
+    except ValidationError as exc:
+        raise Unsupported(
+            f"Garmin logged a set outside what this server can represent: {exc}"
+        ) from exc
 
 
 def _read_set(s: JSON) -> ActivitySet:
@@ -212,7 +243,7 @@ def to_garmin(
             "messageIndex": index,
             "wktStepIndex": None,
         }
-        if s.type == "rest" or match is None:
+        if s.type == "rest":
             entry |= {
                 "setType": "REST",
                 "exercises": [],
@@ -220,16 +251,19 @@ def to_garmin(
                 "weight": None,
             }
         else:
-            category, variant = match.exercise_id.split("/", 1)
-            entry |= {
-                "setType": "ACTIVE",
-                "exercises": [
+            exercises: list[JSON] = []
+            if match is not None:
+                category, variant = match.exercise_id.split("/", 1)
+                exercises = [
                     {
                         "category": category,
                         "name": variant or None,
                         "probability": 100.0,
                     }
-                ],
+                ]
+            entry |= {
+                "setType": "ACTIVE",
+                "exercises": exercises,
                 "repetitionCount": s.reps,
                 "weight": _grams(s),
             }

@@ -14,9 +14,30 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from garmin_mcp.errors import NotFound, WriteOutcomeUnknown, WriteRejected
+from garmin_mcp.errors import (
+    GarminApiError,
+    NotFound,
+    WriteOutcomeUnknown,
+    WriteRejected,
+)
 
 JSON = dict[str, Any]
+
+
+# A slice of Garmin's activity type tree (get_activity_types).
+ACTIVITY_TYPES: list[JSON] = [
+    {"typeId": 17, "typeKey": "all", "parentTypeId": None},
+    {"typeId": 1, "typeKey": "running", "parentTypeId": 17},
+    {"typeId": 6, "typeKey": "trail_running", "parentTypeId": 1},
+    {"typeId": 2, "typeKey": "cycling", "parentTypeId": 17},
+    {"typeId": 29, "typeKey": "fitness_equipment", "parentTypeId": 17},
+    {"typeId": 13, "typeKey": "strength_training", "parentTypeId": 29},
+]
+
+
+def _parent_key(t: JSON) -> str | None:
+    by_id = {x["typeId"]: x["typeKey"] for x in ACTIVITY_TYPES}
+    return by_id.get(t["parentTypeId"])
 
 
 @dataclass
@@ -59,6 +80,7 @@ class FakeRepository:
         self.mangle: Any = None
         self.mangle_sets: Any = None
         self.queue_pushes = True
+        self.list_activities_limits: list[int] = []
         self.metrics: dict[tuple[str, date], Any] = {}
 
     # -- helpers for tests ------------------------------------------------
@@ -103,15 +125,40 @@ class FakeRepository:
 
     # -- activities -------------------------------------------------------
 
+    def list_activity_types(self) -> list[JSON]:
+        return ACTIVITY_TYPES
+
     def list_activities(
-        self, start: date, end: date, activity_type: str | None
+        self,
+        start: date,
+        end: date,
+        activity_type: str | None,
+        activity_subtype: str | None,
+        limit: int,
     ) -> list[JSON]:
+        # Garmin's rules: activityType must be top level, and activitySubType
+        # must be a child of it.
+        parents = {t["typeKey"]: _parent_key(t) for t in ACTIVITY_TYPES}
+        if activity_type is not None and parents.get(activity_type) != "all":
+            raise GarminApiError("Activity type cannot be an activity sub type")
+        if activity_subtype is not None and parents.get(activity_subtype) != (
+            activity_type
+        ):
+            raise GarminApiError("activity sub type doesn't belong to activity type")
+        self.list_activities_limits.append(limit)
+
+        def matches(a: JSON) -> bool:
+            key = a["activityType"]["typeKey"]
+            if activity_subtype is not None:
+                return bool(key == activity_subtype)
+            return activity_type is None or activity_type in (key, parents.get(key))
+
         return [
             a
             for a in self.activities
             if start.isoformat() <= a["startTimeLocal"][:10] <= end.isoformat()
-            and (activity_type is None or a["activityType"]["typeKey"] == activity_type)
-        ]
+            and matches(a)
+        ][:limit]
 
     def get_activity(self, activity_id: int) -> JSON:
         for a in self.activities:

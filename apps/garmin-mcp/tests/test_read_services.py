@@ -38,6 +38,29 @@ def test_recent_activities_filter_and_limit(app: App, repo: FakeRepository) -> N
     assert [a.activity_id for a in runs] == [2, 4]
     assert runs[0].distance_meters == 5000.0
     assert len(app.activities.recent(DAY - timedelta(days=7), DAY, None, 3)) == 3
+    # The limit goes to Garmin, not applied after fetching the whole range.
+    assert repo.list_activities_limits[-1] == 3
+
+
+def test_recent_activities_filter_by_subtype(app: App, repo: FakeRepository) -> None:
+    # strength_training and trail_running are Garmin subtypes, which its
+    # search refuses as activityType; the fake enforces that.
+    add_activity(repo, 1, "strength_training", DAY)
+    add_activity(repo, 2, "running", DAY)
+    add_activity(repo, 3, "trail_running", DAY - timedelta(days=1))
+    week = DAY - timedelta(days=7)
+    lifts = app.activities.recent(week, DAY, "strength_training", 10)
+    assert [a.activity_id for a in lifts] == [1]
+    trail = app.activities.recent(week, DAY, "trail_running", 10)
+    assert [a.activity_id for a in trail] == [3]
+    # A top-level type takes in its subtypes, as on Garmin.
+    runs = app.activities.recent(week, DAY, "running", 10)
+    assert [a.activity_id for a in runs] == [2, 3]
+
+
+def test_recent_activities_unknown_type(app: App) -> None:
+    with pytest.raises(InvalidInput, match="unknown activity type"):
+        app.activities.recent(DAY - timedelta(days=7), DAY, "lifting", 10)
 
 
 @pytest.mark.parametrize(

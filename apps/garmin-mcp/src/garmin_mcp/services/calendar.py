@@ -252,7 +252,10 @@ class CalendarService:
         day: date,
         allow_duplicate: bool,
     ) -> list[str]:
-        same = [e for e in existing if e.workout_id == workout_id]
+        # An entry without a workout id isn't a duplicate of anything.
+        same = [
+            e for e in existing if workout_id is not None and e.workout_id == workout_id
+        ]
         if same and not allow_duplicate:
             raise Conflict(
                 f"workout {workout_id} is already scheduled on {day} (entry "

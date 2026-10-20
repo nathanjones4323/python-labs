@@ -13,7 +13,7 @@ from garmin_mcp.schemas.results import (
     ActivitySummary,
     Lap,
 )
-from garmin_mcp.services.activity_sets import read_sets
+from garmin_mcp.services.activity_sets import _num, read_sets
 
 MAX_LIMIT = 100
 MAX_LAPS = 50
@@ -43,8 +43,29 @@ class ActivityService:
             raise InvalidInput(f"ask for at most {MAX_RANGE_DAYS} days at a time")
         if not 1 <= limit <= MAX_LIMIT:
             raise InvalidInput(f"limit must be 1–{MAX_LIMIT}")
-        raw = self._repo.list_activities(start, end, activity_type)
+        parent, subtype = self._type_filter(activity_type)
+        raw = self._repo.list_activities(start, end, parent, subtype, limit)
         return [_summary(a, a.get("activityType")) for a in raw[:limit]]
+
+    def _type_filter(self, type_key: str | None) -> tuple[str | None, str | None]:
+        """Garmin's search takes a top-level type (running) as activityType,
+        and refuses a subtype (strength_training, trail_running) there with
+        a 400: a subtype goes in activitySubType, next to its parent."""
+        if type_key is None:
+            return None, None
+        types = self._repo.list_activity_types()
+        by_id = {t.get("typeId"): t for t in types}
+        match = next((t for t in types if t.get("typeKey") == type_key), None)
+        if match is None:
+            raise InvalidInput(
+                f"unknown activity type {type_key!r}; use a Garmin type key "
+                "such as running, cycling or strength_training"
+            )
+        parent = by_id.get(match.get("parentTypeId"))
+        if parent is None or parent.get("parentTypeId") is None:
+            # A top-level type: its parent is the root ("all"), or it has none.
+            return type_key, None
+        return parent["typeKey"], type_key
 
     def details(self, activity_id: int) -> ActivityDetails:
         raw = self._repo.get_activity(activity_id)
@@ -98,11 +119,3 @@ def _laps(splits: JSON) -> list[Lap]:
         )
         for i, lap in enumerate(laps[:MAX_LAPS], start=1)
     ]
-
-
-def _num(value: Any) -> float | None:
-    return (
-        float(value)
-        if isinstance(value, int | float) and not isinstance(value, bool)
-        else None
-    )
