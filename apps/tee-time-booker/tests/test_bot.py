@@ -844,22 +844,47 @@ def test_a_day_not_open_yet_reads_plainly():
     assert text.startswith("📭 **Not open yet:** Saticoy on Sat Nov 14")
 
 
-def _scheduled(status):
-    """One scheduler tick that starts a run, followed to its `status`."""
+NO_SLOT = (
+    "ValueError: No tee times available between 09:00 AM and 11:00 AM. "
+    "Try adjusting the time window."
+)
+PLAN_REQUEST = {
+    "id": "req-1",
+    "plan_id": "plan-1",
+    "course": "soule-park",
+    "target_date": "2026-11-14",
+    "earliest": "09:00:00",
+    "latest": "11:00:00",
+    "players": 4,
+    "holes": 18,
+}
+
+
+def _scheduled(status, claude=None, allowed=frozenset({42, 43})):
+    """One scheduler tick that starts a run, followed to its `status`; a
+    failed run is put to `claude`, if given."""
     claimed = SimpleNamespace(
         run_id="run-1",
         course=SimpleNamespace(key="soule-park"),
         criteria=SimpleNamespace(target_date=date(2026, 11, 14)),
     )
-    run = {"status": status, "tee_time_local": None}
+    run = {
+        "status": status,
+        "tee_time_local": None,
+        "scheduled": True,
+        "request_id": "req-1",
+        "detail": NO_SLOT if status == "error" else None,
+    }
     tools = FakeTools(
         {
             "get_course": ToolResult(json.dumps({"name": "Soule Park"})),
             "get_run": ToolResult(json.dumps(run)),
+            "get_request": ToolResult(json.dumps(PLAN_REQUEST)),
         }
     )
-    settings = replace(BOT_SETTINGS, allowed_user_ids=frozenset({42, 43}))
-    bot = BookingBot(None, tools, None, settings, pays=True)
+    settings = replace(BOT_SETTINGS, allowed_user_ids=allowed)
+    agent = _agent(claude, tools) if claude is not None else None
+    bot = BookingBot(agent, tools, None, settings, pays=True)
     telegram = FlakyTelegram()
 
     async def go():
@@ -879,6 +904,32 @@ def test_a_scheduled_runs_outcome_goes_to_every_allowed_user(no_sleep):
 
 def test_a_scheduled_try_that_finds_the_day_shut_says_nothing(no_sleep):
     assert _scheduled("not_open").sent == []
+
+
+def test_a_failed_run_is_explained_by_the_model_not_sent_raw(no_sleep):
+    claude = FakeClaude(
+        ([_text("Nothing open 9–11 AM at Soule Park on **Sat Nov 14**.")], "end_turn")
+    )
+    telegram = _scheduled("error", claude, allowed=frozenset({42}))
+
+    assert telegram.sent == ["Nothing open 9–11 AM at Soule Park on **Sat Nov 14**."]
+    note = claude.requests[0]["messages"][-1]["content"]
+    assert "scheduled booking at Soule Park (soule-park) on 2026-11-14" in note
+    assert "No tee times available between 09:00 AM and 11:00 AM" in note
+    assert "request req-1" in note
+    # Enough for the follow-up: what was asked for, and that the plan carries on.
+    assert "09:00-11:00, 4 players, 18 holes" in note
+    assert "weekly plan plan-1, which stays scheduled" in note
+
+
+def test_a_failed_run_still_reaches_the_person_when_claude_is_down(no_sleep):
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    claude = FakeClaude(anthropic.APIConnectionError(request=request))
+    telegram = _scheduled("error", claude, allowed=frozenset({42}))
+
+    [text] = telegram.sent
+    assert text.startswith("⏰ **Scheduled booking**\n\n❌ **The run failed**")
+    assert "No tee times available" in text
 
 
 def test_a_failed_scheduler_tick_is_logged_not_raised():
