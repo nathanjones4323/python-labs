@@ -10,7 +10,7 @@ Two booking sites are supported today, behind one interface:
 | Platform | Adapter | Courses configured |
 | --- | --- | --- |
 | foreUP | `platforms/foreup.py` | Soule Park (`soule-park`) |
-| GolfNow | `platforms/golfnow.py` | Saticoy Regional (`saticoy`) |
+| GolfNow | `platforms/golfnow.py` | Saticoy Regional (`saticoy`), Olivas Links (`olivas-links`), Buenaventura (`buenaventura`), River Ridge Vineyard (`river-ridge-vineyard`), River Ridge Victoria Lakes (`river-ridge-victoria-lakes`), Sterling Hills (`sterling-hills`), Ojai Valley Inn (`ojai-valley-inn`), Camarillo Springs (`camarillo-springs`), Los Robles Greens (`los-robles-greens`), Tierra Rejada (`tierra-rejada`), Lake Lindero (`lake-lindero`), Santa Barbara Golf Club (`santa-barbara-gc`), Glen Annie (`glen-annie`) |
 
 ## How it's put together
 
@@ -77,6 +77,14 @@ needs no schema change). The seed in `courses.py` is the easiest way to add
 one: append a `CourseConfig` to `SEED_COURSES` and run
 `python -m tee_time_booker.seed`, which upserts by key.
 
+A course can also carry a short `description` and a `GreenFees` estimate
+(weekday and weekend low/high for a 9- or 18-hole round, and the date the
+site's listings were sampled). Both come back on `GET /courses` so a client
+can pick a course without opening the site. The GolfNow seeds have both,
+read from each facility's GolfNow page and two weeks of its listed rates;
+they're estimates to set expectations with, not quotes, so refresh them
+(and `SAMPLED_ON`) when they drift.
+
 ## Database
 
 The database is the source of truth for who books what. It's Postgres for the
@@ -89,7 +97,7 @@ claimed:
 | Table | Row |
 | --- | --- |
 | `users` | Someone with plans |
-| `courses` | A bookable course: platform, timezone, release schedule, adapter identifiers |
+| `courses` | A bookable course: platform, timezone, release schedule, adapter identifiers, and optionally a description and green-fee estimate |
 | `site_accounts` | A user's login on one booking site. The secret stays in the environment: the row names an `env_prefix`, and the login is read from `<PREFIX>_EMAIL` / `<PREFIX>_PASSWORD` |
 | `booking_plans` | A standing wish: this course, with this account, the Nth upcoming weekday, this tee-off window, this group size |
 | `booking_requests` | A plan pinned to one date (one per plan per date), with the plan's search copied in so editing the plan doesn't change a request in flight |

@@ -59,6 +59,12 @@ def test_courses_are_listed_and_fetched_by_key(api):
     assert [c["key"] for c in courses] == ["saticoy", "soule-park"]
     soule = api.get("/courses/soule-park").json()
     assert soule["platform"] == "foreup" and soule["booking_window_days"] == 20
+    assert soule["description"] is None and soule["green_fees"] is None
+    saticoy = api.get("/courses/saticoy").json()
+    assert saticoy["description"].startswith("A 9-hole")
+    assert saticoy["green_fees"]["holes"] == 9
+    assert saticoy["green_fees"]["weekday_low"] < saticoy["green_fees"]["weekend_high"]
+    assert saticoy["green_fees"]["sampled_on"] == "2026-09-17"
     assert api.get("/courses/nope").status_code == 404
 
 

@@ -30,6 +30,18 @@ def test_every_course_has_an_adapter_that_accepts_it(course):
     assert isinstance(course, platform.course_type)
 
 
+@pytest.mark.parametrize("course", SEED_COURSES, ids=[c.key for c in SEED_COURSES])
+def test_seeded_green_fees_are_sane_ranges(course):
+    fees = course.green_fees
+    if fees is None:
+        assert course.platform != "golfnow", "every GolfNow seed has an estimate"
+        return
+    assert fees.holes in (9, 18)
+    assert 0 < fees.weekday_low <= fees.weekday_high
+    assert 0 < fees.weekend_low <= fees.weekend_high
+    assert course.description
+
+
 @pytest.mark.parametrize("platform", list(PLATFORMS.values()), ids=list(PLATFORMS))
 def test_adapters_declare_the_payment_fields_their_checkout_needs(platform):
     assert set(platform.required_payment_fields) <= set(PaymentDetails.ENV_VARS)
