@@ -140,3 +140,43 @@ class Settings:
         if not self.database_url:
             raise RuntimeError("Missing required environment variable DATABASE_URL")
         return self.database_url
+
+
+@dataclass(frozen=True)
+class BotSettings:
+    """What the Telegram bot needs on top of `Settings`.
+
+    Kept apart so the CLI and the scheduled run never need a bot token.
+    """
+
+    telegram_token: str
+    # Only these Telegram users are answered; everyone else is ignored.
+    allowed_user_ids: frozenset[int]
+    # The `users` row the bot books as (one person per install).
+    user_email: str
+    model: str
+    effort: str
+    whisper_model: str
+
+    @classmethod
+    def from_env(cls) -> "BotSettings":
+        raw_ids = _required("TELEGRAM_ALLOWED_USER_IDS")
+        try:
+            ids = frozenset(int(part) for part in raw_ids.split(",") if part.strip())
+        except ValueError:
+            raise RuntimeError(
+                "TELEGRAM_ALLOWED_USER_IDS must be numeric Telegram user ids, "
+                "comma-separated (ask @userinfobot for yours)"
+            ) from None
+        # The Anthropic SDK reads ANTHROPIC_API_KEY itself; fail here, at
+        # start-up, rather than on the first message.
+        _required("ANTHROPIC_API_KEY")
+        return cls(
+            telegram_token=_required("TELEGRAM_BOT_TOKEN"),
+            allowed_user_ids=ids,
+            user_email=_required("TEE_TIME_USER_EMAIL"),
+            model=os.environ.get("TEE_TIME_BOT_MODEL", "").strip() or "claude-opus-5-5",
+            effort=os.environ.get("TEE_TIME_BOT_EFFORT", "").strip() or "medium",
+            whisper_model=os.environ.get("TEE_TIME_WHISPER_MODEL", "").strip()
+            or "base.en",
+        )

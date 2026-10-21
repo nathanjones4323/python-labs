@@ -44,7 +44,12 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     engine = make_engine(_database_url())
     with engine.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            # SQLite can't ALTER most things; batch mode rebuilds the table.
+            render_as_batch=connection.dialect.name == "sqlite",
+        )
         with context.begin_transaction():
             context.run_migrations()
     engine.dispose()

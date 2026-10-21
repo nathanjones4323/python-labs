@@ -1,2 +1,6 @@
 .env
 artifacts/
+# The local SQLite database (python -m tee_time_booker.setup)
+*.db
+*.db-wal
+*.db-shm

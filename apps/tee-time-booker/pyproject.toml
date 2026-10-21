@@ -18,6 +18,17 @@ dependencies = [
 [project.optional-dependencies]
 # `python -m tee_time_booker.mcp`: the API's routes as MCP tools.
 mcp = ["fastmcp>=2.0"]
+# `python -m tee_time_booker.bot`: book over Telegram, with Claude reading the
+# messages and calling the same tools the MCP server exposes.
+bot = [
+    "anthropic>=0.95.0",
+    "fastmcp>=2.0",
+    "python-telegram-bot>=21",
+]
+# Voice notes to the bot, transcribed on this machine.
+voice = [
+    "faster-whisper>=1.2.1",
+]
 
 [project.scripts]
 tee-time-booker = "tee_time_booker.main:main"

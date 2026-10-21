@@ -1,9 +1,9 @@
 """Shared fixtures: a migrated test database, wiped between tests.
 
-Database tests need `TEE_TIME_TEST_DATABASE_URL` (see docker-compose.yml) and
-are skipped without it, so the pure tests still run anywhere. The schema is
-applied with Alembic rather than `create_all`, so the migrations are
-exercised too.
+Database tests run against `TEE_TIME_TEST_DATABASE_URL` when it's set (a
+Postgres, see docker-compose.yml) and against a throwaway SQLite file
+otherwise, so they run anywhere. The schema is applied with Alembic rather
+than `create_all`, so the migrations are exercised too.
 """
 
 import argparse
@@ -31,26 +31,33 @@ APP_DIR = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(scope="session")
-def sessions():
-    if not TEST_DATABASE_URL:
-        pytest.skip("TEE_TIME_TEST_DATABASE_URL not set")
+def database_url(tmp_path_factory) -> str:
+    return TEST_DATABASE_URL or f"sqlite:///{tmp_path_factory.mktemp('db') / 'test.db'}"
+
+
+@pytest.fixture(scope="session")
+def sessions(database_url):
     config = Config(APP_DIR / "alembic.ini")
     config.set_main_option("script_location", str(APP_DIR / "migrations"))
     # env.py reads the URL from -x url=..., which is how the Alembic CLI's
     # own `-x` arrives too.
-    config.cmd_opts = argparse.Namespace(x=[f"url={TEST_DATABASE_URL}"])
+    config.cmd_opts = argparse.Namespace(x=[f"url={database_url}"])
     command.downgrade(config, "base")
     command.upgrade(config, "head")
-    return make_session_factory(TEST_DATABASE_URL)
+    return make_session_factory(database_url)
 
 
 @pytest.fixture
-def db(sessions, monkeypatch):
+def db(sessions, database_url, monkeypatch):
     """A session factory over an empty schema; the CLI sees the same database."""
-    monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
+    monkeypatch.setenv("DATABASE_URL", database_url)
     with sessions() as session, session.begin():
-        tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
-        session.execute(text(f"TRUNCATE {tables} CASCADE"))
+        if session.bind.dialect.name == "postgresql":
+            tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
+            session.execute(text(f"TRUNCATE {tables} CASCADE"))
+        else:
+            for table in reversed(Base.metadata.sorted_tables):
+                session.execute(table.delete())
     return sessions
 
 
