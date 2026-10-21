@@ -480,7 +480,7 @@ The bot's tests skip themselves unless the `bot` extra is installed.
 | `TELEGRAM_ALLOWED_USER_IDS` | for the bot | | Numeric Telegram user ids the bot answers, comma-separated |
 | `ANTHROPIC_API_KEY` | for the bot | | Claude reads the messages |
 | `TEE_TIME_USER_EMAIL` | for the bot | | The `users` row the bot books as |
-| `TEE_TIME_BOT_MODEL` | no | `claude-opus-5-5` | The Claude model |
+| `TEE_TIME_BOT_MODEL` | no | `claude-sonnet-5-5` | The Claude model |
 | `TEE_TIME_BOT_EFFORT` | no | `medium` | Claude's effort level (`low` … `max`) |
 | `TEE_TIME_WHISPER_MODEL` | no | `base.en` | The local Whisper model for voice notes (`voice` extra) |
 | `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |

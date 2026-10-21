@@ -18,12 +18,20 @@ import httpx  # noqa: E402
 from tee_time_booker.api import create_app  # noqa: E402
 from tee_time_booker.bot import agent as agent_module  # noqa: E402
 from tee_time_booker.bot import app as app_module  # noqa: E402
-from tee_time_booker.bot.agent import BookingAgent, StartedRun  # noqa: E402
+from tee_time_booker.bot.agent import (  # noqa: E402
+    BookingAgent,
+    StartedRun,
+    TeeTimeOffer,
+)
 from tee_time_booker.bot.app import (  # noqa: E402
     BookingBot,
+    format_offer,
     format_outcome,
+    format_runs,
     send_with_retry,
+    slot_label,
 )
+from tee_time_booker.bot.rich import Progress, escape, escape_prices  # noqa: E402
 from tee_time_booker.bot.tools import ALLOWED_TOOLS, BookingTools, ToolResult  # noqa: E402
 from tee_time_booker.config import BotSettings, Settings  # noqa: E402
 from tee_time_booker.mcp import create_server  # noqa: E402
@@ -43,7 +51,7 @@ BOT_SETTINGS = BotSettings(
     telegram_token="token",
     allowed_user_ids=frozenset({42}),
     user_email="golfer@example.com",
-    model="claude-opus-5-5",
+    model="claude-sonnet-5-5",
     effort="medium",
     whisper_model="base.en",
 )
@@ -247,10 +255,17 @@ def test_strangers_are_dropped_before_any_handler():
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
-        ("success", "✅ Booked soule-park on Sat Oct 24 at 9:12 AM (Front)."),
-        ("dry_run", "Dry run done: reached checkout for 9:12 AM (Front)"),
+        (
+            "success",
+            r"✅ **Booked** soule\-park on Sat Oct 24 at **9:12 AM \(Front\)**.",
+        ),
+        ("dry_run", r"**Dry run done:** reached checkout for 9:12 AM \(Front\)"),
         ("unknown", "Check your account on the booking site"),
-        ("error", "❌ The run for soule-park on Sat Oct 24 failed: login rejected"),
+        (
+            "error",
+            r"❌ **The run failed** for soule\-park on Sat Oct 24."
+            "\n\n<blockquote expandable>login &lt;rejected&gt;</blockquote>",
+        ),
     ],
 )
 def test_run_outcomes_read_plainly(status, expected):
@@ -261,22 +276,71 @@ def test_run_outcomes_read_plainly(status, expected):
         "side": "Front",
         "green_fee": None,
         "confirmation": None,
-        "detail": "login rejected",
+        "detail": "login <rejected>",
     }
     assert expected in format_outcome(started, run)
 
 
+def test_a_booking_shows_its_fee_and_a_copyable_confirmation():
+    started = StartedRun("r", "soule-park", "2026-10-24", dry_run=False)
+    run = {
+        "status": "success",
+        "tee_time_local": None,
+        "green_fee": "20.75",
+        "confirmation": "AB`12",
+    }
+    text = format_outcome(started, run)
+    assert r"Green fee \$20.75 per player." in text
+    assert text.endswith("Confirmation: `AB12`")
+
+
+def test_escape_keeps_markdown_out_of_values():
+    assert escape("a*b_c|d<e>") == r"a\*b\_c\|d\<e\>"
+
+
+def test_recent_runs_are_a_table():
+    runs = [
+        {
+            "status": "success",
+            "started_at": "2026-10-20T16:00:00+00:00",
+            "tee_time_local": "2026-10-24T09:12:00",
+            "side": None,
+        },
+        {"status": "error", "started_at": "2026-10-20T16:00:00+00:00"},
+    ]
+    lines = format_runs(runs).splitlines()
+    assert lines[0] == "| Started | Status | Slot |"
+    assert "| ✅ booked | 9:12 AM |" in lines[2]
+    assert lines[3].endswith("| ❌ failed | – |")
+    assert format_runs([]) == "No runs yet."
+
+
 class FlakyTelegram:
-    """Fails each `send_message` with the next scripted error, then sends."""
+    """Fails each send with the next scripted error, then sends.
+
+    Rich messages go through `do_api_request`; plain ones through
+    `send_message`.
+    """
 
     def __init__(self, *errors):
         self.errors = list(errors)
         self.sent = []
+        self.plain = []
+        self.requests = []
 
-    async def send_message(self, chat_id, text, **kwargs):
+    def _fail(self):
         if self.errors:
             raise self.errors.pop(0)
-        self.sent.append(text)
+
+    async def do_api_request(self, endpoint, api_kwargs=None):
+        self._fail()
+        self.requests.append((endpoint, api_kwargs))
+        if endpoint == "sendRichMessage":
+            self.sent.append(api_kwargs["rich_message"]["markdown"])
+
+    async def send_message(self, chat_id, text, **kwargs):
+        self._fail()
+        self.plain.append((text, kwargs))
 
 
 @pytest.fixture
@@ -299,11 +363,79 @@ def test_a_send_rides_out_a_dropped_connection_and_a_rate_limit(no_sleep):
     assert no_sleep == [1.0, 2.0, 5]
 
 
+def test_a_send_is_a_rich_message():
+    telegram = FlakyTelegram()
+    asyncio.run(send_with_retry(telegram, 7, "**Booked**", reply_markup="kb"))
+    [(endpoint, kwargs)] = telegram.requests
+    assert endpoint == "sendRichMessage"
+    assert kwargs == {
+        "chat_id": 7,
+        "rich_message": {"markdown": "**Booked**"},
+        "reply_markup": "kb",
+    }
+
+
+def test_the_models_prices_stay_out_of_formulas():
+    # "$20 or $25" would otherwise be a formula; an escaped one is left alone.
+    assert escape_prices(r"$20 or \$25, $x") == r"\$20 or \$25, $x"
+
+
+def test_template_html_carries_no_backslashes():
+    offer = TeeTimeOffer("o", 7, "p", tuple(FOUND))
+    assert "\\" not in format_offer(offer, PLAN, "Soule Park").split("<table")[1]
+
+
+def test_refused_formatting_falls_back_to_plain_text(no_sleep, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_MESSAGE", 3)
+    telegram = FlakyTelegram(BadRequest("can't parse entities"))
+    asyncio.run(send_with_retry(telegram, 7, "abcdef", reply_markup="kb"))
+    # Split to the plain limit, buttons on the last part only.
+    assert telegram.plain == [("abc", {}), ("def", {"reply_markup": "kb"})]
+    assert no_sleep == []
+
+
 def test_a_bad_message_is_not_retried(no_sleep):
-    telegram = FlakyTelegram(BadRequest("message is too long"))
+    telegram = FlakyTelegram(
+        BadRequest("message is too long"), BadRequest("message is too long")
+    )
     with pytest.raises(BadRequest):
         asyncio.run(send_with_retry(telegram, 7, "x"))
     assert no_sleep == []
+
+
+def test_progress_names_the_step_and_shrugs_off_a_failed_draft():
+    telegram = FlakyTelegram()
+
+    async def go():
+        async with Progress(telegram, 7, 99) as progress:
+            telegram.errors.append(BadRequest("drafts unsupported"))
+            await progress.step([_tool_use("find_tee_times", {})])  # no raise
+            await progress.step(
+                [_tool_use("list_plans", {}), _tool_use("get_plan", {}, "call_2")]
+            )
+
+    asyncio.run(go())
+    drafts = [kwargs for endpoint, kwargs in telegram.requests]
+    assert [d["draft_id"] for d in drafts] == [99, 99]
+    assert [d["rich_message"]["markdown"] for d in drafts] == [
+        "<tg-thinking>Thinking…</tg-thinking>",
+        "<tg-thinking>Looking at your plans…</tg-thinking>",
+    ]
+
+
+def test_each_round_of_tool_calls_is_announced_before_it_runs():
+    claude = FakeClaude(
+        ([_tool_use("list_plans", {})], "tool_use"),
+        ([_text("You have one plan.")], "end_turn"),
+    )
+    tools = FakeTools({"list_plans": ToolResult("[]")})
+    steps = []
+
+    async def on_step(calls):
+        steps.append(([c.name for c in calls], len(tools.calls)))
+
+    asyncio.run(_agent(claude, tools).respond(7, "my plans?", on_step=on_step))
+    assert steps == [(["list_plans"], 0)]
 
 
 def test_a_send_gives_up_after_the_retry_window(no_sleep, monkeypatch):
@@ -351,3 +483,152 @@ def test_the_real_tools_are_the_allowlist_and_answer(seeded, db, tmp_path: Path)
     assert "create_plan" not in names
     assert {p["name"] for p in plans} == {"soule-saturday", "saticoy-saturday"}
     assert refused.is_error
+
+
+FOUND = [
+    {
+        "start": "2026-11-01T07:40:00",
+        "holes": 18,
+        "players": 4,
+        "green_fee": 65.0,
+        "service_fee": 2.5,
+        "side": "Front",
+    },
+    {
+        "start": "2026-11-01T08:20:00",
+        "holes": 18,
+        "players": 4,
+        "green_fee": 58.0,
+        "service_fee": None,
+        "side": None,
+    },
+]
+PLAN = {
+    "id": "p",
+    "user_email": "golfer@example.com",
+    "course": "soule-park",
+    "env_prefix": "SOULE",
+    "holes": 18,
+    "players": 2,
+}
+
+
+def _offer_tools():
+    return FakeTools(
+        {
+            "find_tee_times": ToolResult(json.dumps({"result": FOUND})),
+            "get_plan": ToolResult(json.dumps(PLAN)),
+            "create_request": ToolResult(json.dumps({"id": "req"})),
+        }
+    )
+
+
+def _shown(times, tools, *, pays=True):
+    """A search for Sunday, then a card of `times` from it."""
+    claude = FakeClaude(
+        (
+            [_tool_use("find_tee_times", {"plan_id": "p", "date": "2026-11-01"})],
+            "tool_use",
+        ),
+        (
+            [
+                _tool_use(
+                    "show_tee_times",
+                    {"plan_id": "p", "date": "2026-11-01", "times": times},
+                    "call_2",
+                )
+            ],
+            "tool_use",
+        ),
+        ([], "end_turn"),
+    )
+    agent = _agent(claude, tools, pays=pays)
+    return agent, claude, _respond(agent, "what's open Sunday?")
+
+
+def test_shown_tee_times_come_only_from_the_search():
+    agent, claude, reply = _shown(["8:20", "07:40", "10:00"], _offer_tools())
+    [offer] = reply.offers
+    assert [s["start"] for s in offer.slots] == [
+        "2026-11-01T08:20:00",
+        "2026-11-01T07:40:00",
+    ]
+    # A card with nothing more to say is fine.
+    assert reply.text == ""
+    tool_result = claude.requests[2]["messages"][-1]["content"][0]
+    assert "10:00" in tool_result["content"]
+    assert agent.offer(offer.id) is offer
+    assert "show_tee_times" in [t["name"] for t in claude.requests[0]["tools"]]
+
+
+def test_showing_tee_times_needs_a_search_first():
+    claude = FakeClaude(
+        (
+            [
+                _tool_use(
+                    "show_tee_times",
+                    {"plan_id": "p", "date": "2026-11-01", "times": ["07:40"]},
+                )
+            ],
+            "tool_use",
+        ),
+        ([_text("Let me look first.")], "end_turn"),
+    )
+    reply = _respond(_agent(claude, FakeTools()), "book 7:40")
+    assert reply.offers == []
+    assert claude.requests[1]["messages"][-1]["content"][0]["is_error"]
+
+
+@pytest.mark.parametrize("pays", [True, False])
+def test_booking_from_a_card_books_exactly_that_slot(pays):
+    tools = _offer_tools()
+    agent, _, reply = _shown(["07:40"], tools, pays=pays)
+    [offer] = reply.offers
+    payment = agent.hold_slot(offer, offer.slots[0])
+    tools.calls.clear()
+
+    _, run = asyncio.run(agent.confirm(agent.take_payment(payment.id)))
+
+    assert run.run_id == RUN_STARTED["run_id"]
+    assert tools.calls == [
+        ("get_plan", {"plan_id": "p"}),
+        (
+            "create_request",
+            {
+                "user_email": "golfer@example.com",
+                "course": "soule-park",
+                "env_prefix": "SOULE",
+                "target_date": "2026-11-01",
+                "earliest": "07:40:00",
+                "latest": "07:40:00",
+                "holes": 18,
+                "players": 2,
+            },
+        ),
+        (
+            "run_request",
+            {"request_id": "req", "submit_payment": pays, "wait_for_release": False},
+        ),
+    ]
+
+
+def test_the_tee_time_card_is_a_table():
+    offer = TeeTimeOffer("o", 7, "p", tuple(FOUND))
+    text = format_offer(offer, PLAN, "Soule Park")
+    assert text.startswith("📅 **Soule Park · Sun Nov 1**\n\n2 times · 2 golfers")
+    assert "<td><b>7:40 AM</b></td><td>Front</td>" in text
+    assert '<td align="right"><b>$58</b></td>' in text
+    assert "tg-button" not in text  # Telegram doesn't send their taps
+    assert slot_label(FOUND[0]) == "7:40 AM"
+
+
+def test_a_side_column_only_when_the_sides_differ():
+    same = tuple({**slot, "side": "Front"} for slot in FOUND)
+    text = format_offer(TeeTimeOffer("o", 7, "p", same), PLAN, "Soule Park")
+    assert "Side" not in text and "Front" not in text
+
+
+def test_outcomes_name_the_course():
+    started = StartedRun("r", "soule-park", "2026-10-24", dry_run=True)
+    run = {"status": "dry_run", "tee_time_local": None}
+    assert "at Soule Park on Sat Oct 24" in format_outcome(started, run, "Soule Park")
