@@ -383,8 +383,7 @@ def test_the_models_prices_stay_out_of_formulas():
 
 
 def test_template_html_carries_no_backslashes():
-    offer = TeeTimeOffer("o", 7, PLAN, tuple(FOUND))
-    assert "\\" not in format_offer(offer, PLAN, "Soule Park").split("<table")[1]
+    assert "\\" not in format_offer(SOULE_OFFER, SOULE_NAMES).split("<table")[1]
 
 
 def test_refused_formatting_falls_back_to_plain_text(no_sleep, monkeypatch):
@@ -482,7 +481,7 @@ def test_the_real_tools_are_the_allowlist_and_answer(seeded, db, tmp_path: Path)
 
     names, plans, refused = asyncio.run(go())
     assert names == sorted(ALLOWED_TOOLS)
-    assert {"create_plan", "find_course_tee_times"} <= set(names)
+    assert {"create_plan", "search_tee_times"} <= set(names)
     assert {p["name"] for p in plans} == {"soule-saturday", "saticoy-saturday"}
     # Missing its required arguments.
     assert refused.is_error
@@ -514,6 +513,13 @@ PLAN = {
     "holes": 18,
     "players": 2,
 }
+SOULE_OFFER = TeeTimeOffer(
+    "o",
+    7,
+    {"soule-park": PLAN},
+    tuple({**slot, "course": "soule-park"} for slot in FOUND),
+)
+SOULE_NAMES = {"soule-park": "Soule Park"}
 
 
 def _offer_tools():
@@ -537,7 +543,10 @@ def _shown(times, tools, *, pays=True):
             [
                 _tool_use(
                     "show_tee_times",
-                    {"course": "soule-park", "date": "2026-11-01", "times": times},
+                    {
+                        "date": "2026-11-01",
+                        "slots": [{"course": "soule-park", "time": t} for t in times],
+                    },
                     "call_2",
                 )
             ],
@@ -570,7 +579,10 @@ def test_showing_tee_times_needs_a_search_first():
             [
                 _tool_use(
                     "show_tee_times",
-                    {"course": "soule-park", "date": "2026-11-01", "times": ["07:40"]},
+                    {
+                        "date": "2026-11-01",
+                        "slots": [{"course": "soule-park", "time": "07:40"}],
+                    },
                 )
             ],
             "tool_use",
@@ -616,19 +628,36 @@ def test_booking_from_a_card_books_exactly_that_slot(pays):
 
 
 def test_the_tee_time_card_is_a_table():
-    offer = TeeTimeOffer("o", 7, PLAN, tuple(FOUND))
-    text = format_offer(offer, PLAN, "Soule Park")
+    text = format_offer(SOULE_OFFER, SOULE_NAMES)
     assert text.startswith("📅 **Soule Park · Sun Nov 1**\n\n2 times · 2 golfers")
     assert "<td><b>7:40 AM</b></td><td>Front</td>" in text
     assert '<td align="right"><b>$58</b></td>' in text
+    assert "Course" not in text  # one course: it's in the title
     assert "tg-button" not in text  # Telegram doesn't send their taps
     assert slot_label(FOUND[0]) == "7:40 AM"
 
 
 def test_a_side_column_only_when_the_sides_differ():
-    same = tuple({**slot, "side": "Front"} for slot in FOUND)
-    text = format_offer(TeeTimeOffer("o", 7, PLAN, same), PLAN, "Soule Park")
+    same = tuple({**slot, "side": "Front"} for slot in SOULE_OFFER.slots)
+    text = format_offer(replace(SOULE_OFFER, slots=same), SOULE_NAMES)
     assert "Side" not in text and "Front" not in text
+
+
+def test_a_card_across_courses_numbers_its_rows():
+    sterling = {**FOUND[1], "course": "sterling-hills"}
+    offer = TeeTimeOffer(
+        "o",
+        7,
+        {"soule-park": PLAN, "sterling-hills": {**PLAN, "course": "sterling-hills"}},
+        (SOULE_OFFER.slots[0], sterling),
+    )
+    names = {**SOULE_NAMES, "sterling-hills": "Sterling Hills Golf Club"}
+    text = format_offer(offer, names)
+    assert text.startswith(
+        "📅 **Sun Nov 1**\n\n2 times · 2 golfers · 18 holes · 2 courses"
+    )
+    assert "<td>2</td><td>Sterling Hills Golf Club</td><td><b>8:20 AM</b></td>" in text
+    assert slot_label(sterling, 2) == "#2 8:20 AM"
 
 
 def test_outcomes_name_the_course():
@@ -640,41 +669,66 @@ def test_outcomes_name_the_course():
 # --- searching by course ---------------------------------------------------
 
 
-def test_a_course_search_needs_no_plan_and_books_with_its_own_account():
+SEARCHED = {
+    "tee_times": [
+        {**FOUND[0], "course": "olivas-links", "course_name": "Olivas Links"},
+        {**FOUND[1], "course": "sterling-hills", "course_name": "Sterling Hills"},
+        {**FOUND[1], "course": "olivas-links", "course_name": "Olivas Links"},
+    ],
+    "searched": ["olivas-links", "sterling-hills"],
+    "not_searched": {"soule-park": "golfer@example.com has no foreup account"},
+}
+
+
+def test_one_search_across_courses_makes_one_card_that_books_any_of_them():
     tools = FakeTools(
         {
-            "find_course_tee_times": ToolResult(json.dumps({"result": FOUND})),
+            "search_tee_times": ToolResult(json.dumps(SEARCHED)),
             "create_request": ToolResult(json.dumps({"id": "req"})),
         }
     )
     search = {
-        "key": "sterling-hills",
         "user_email": "golfer@example.com",
         "date": "2026-11-01",
         "players": 3,
         "holes": 18,
+        "earliest": "07:00",
+        "latest": "09:00",
     }
-    show = {"course": "sterling-hills", "date": "2026-11-01", "times": ["08:20"]}
+    show = {
+        "date": "2026-11-01",
+        "slots": [
+            {"course": "sterling-hills", "time": "08:20"},
+            {"course": "olivas-links", "time": "07:40"},
+            {"course": "soule-park", "time": "08:00"},  # never searched
+        ],
+    }
     claude = FakeClaude(
-        ([_tool_use("find_course_tee_times", search)], "tool_use"),
+        ([_tool_use("search_tee_times", search)], "tool_use"),
         ([_tool_use("show_tee_times", show, "call_2")], "tool_use"),
         ([], "end_turn"),
     )
     agent = _agent(claude, tools)
-    [offer] = _respond(agent, "what's open at Sterling Hills Sunday?").offers
-    assert offer.search["course"] == "sterling-hills" and offer.search["players"] == 3
+    [offer] = _respond(agent, "anything around 8 on Sunday?").offers
+    assert [(s["course"], s["start"][11:16]) for s in offer.slots] == [
+        ("sterling-hills", "08:20"),
+        ("olivas-links", "07:40"),
+    ]
+    assert set(offer.searches) == {"sterling-hills", "olivas-links"}
+    left_out = claude.requests[2]["messages"][-1]["content"][0]["content"]
+    assert "soule-park 08:00" in left_out
     tools.calls.clear()
 
-    payment = agent.hold_slot(offer, offer.slots[0])
+    payment = agent.hold_slot(offer, offer.slots[1])
     asyncio.run(agent.confirm(agent.take_payment(payment.id)))
     name, request = tools.calls[0]
     assert name == "create_request"
     # No env_prefix: the API picks the person's only account on that site.
     assert "env_prefix" not in request
     assert (request["course"], request["players"], request["earliest"]) == (
-        "sterling-hills",
+        "olivas-links",
         3,
-        "08:20:00",
+        "07:40:00",
     )
 
 

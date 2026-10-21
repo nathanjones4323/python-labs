@@ -40,14 +40,19 @@ SYSTEM = """\
 You book golf tee times for {email} over Telegram, using the tee-time-booker tools.
 
 Booking now:
-- find_course_tee_times lists what's open at any course on a day (user_email \
-{email}, the course key, date, players, holes), without booking. list_courses has \
-the keys. For a plan's course and group, find_tee_times with the plan does the same.
-- To offer tee times, call show_tee_times with the ones that fit what the person asked \
-for (at most eight, best first) rather than listing them in your reply. It shows them \
-a card with a Book button per slot; a tap asks them to confirm and then books exactly \
-that slot, so you don't book it yourself. After it, reply with one short line or \
-nothing at all.
+- search_tee_times looks for what's open on a day across every course at once \
+(user_email {email}, date, players, holes, and an earliest-latest tee-off window), \
+without booking. Search every course unless the person names one or more: then pass \
+just those keys in courses (list_courses has the keys). For a time like "around 9", \
+search an hour either side; for "morning" or "after 2", the obvious window. A plan's \
+own course and group can also be searched with find_tee_times.
+- To offer tee times, call show_tee_times with the ones that best fit what the person \
+asked for (at most twelve, best first: closest to the time they asked, spread over \
+a few courses rather than every slot at one) rather than listing them in your reply. \
+It shows them one card with a Book button per slot; a tap asks them to confirm and \
+then books exactly that slot, so you don't book it yourself. After it, reply with one \
+short line or nothing at all; mention courses that couldn't be searched only if the \
+person asked about them.
 - Before booking, check what's open unless the person says not to.
 
 Booking ahead:
@@ -97,36 +102,43 @@ Today is {today:%A %B %-d, %Y}."""
 # Answered by the bot itself, not the MCP server: the slots must come from a
 # search in the same chat, so the card can't show a made-up one.
 SHOW_TEE_TIMES = "show_tee_times"
-SEARCH_TOOLS = frozenset({"find_tee_times", "find_course_tee_times"})
-MAX_OFFERED = 8
+SEARCH_TOOLS = frozenset({"find_tee_times", "search_tee_times"})
+MAX_OFFERED = 12
 SHOW_TEE_TIMES_DEF = {
     "name": SHOW_TEE_TIMES,
     "description": (
-        "Show the person tee times from an earlier find_course_tee_times or "
-        "find_tee_times result as a card with a Book button per slot. A tap asks "
-        "them to confirm, then books that exact slot."
+        "Show the person tee times from an earlier search_tee_times or "
+        "find_tee_times result as one card with a Book button per slot, from any "
+        "of the courses searched. A tap asks them to confirm, then books that "
+        "exact slot."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "course": {
-                "type": "string",
-                "description": "The key of the course searched",
-            },
             "date": {
                 "type": "string",
                 "format": "date",
                 "description": "The day searched, YYYY-MM-DD",
             },
-            "times": {
+            "slots": {
                 "type": "array",
-                "items": {"type": "string", "description": "Tee-off, HH:MM 24-hour"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "course": {"type": "string", "description": "Course key"},
+                        "time": {
+                            "type": "string",
+                            "description": "Tee-off, HH:MM 24-hour",
+                        },
+                    },
+                    "required": ["course", "time"],
+                },
                 "minItems": 1,
                 "maxItems": MAX_OFFERED,
                 "description": "The slots to offer, best first",
             },
         },
-        "required": ["course", "date", "times"],
+        "required": ["date", "slots"],
     },
 }
 # A held booking of one slot from a card, run by `confirm` (not an MCP tool).
@@ -177,12 +189,13 @@ class StartedRun:
 @dataclass(frozen=True)
 class TeeTimeOffer:
     """Slots shown on a card, each with a Book button. `slots` are rows of a
-    search result, as the API returned them; `search` is who searched where,
-    for how many (`user_email`, `course`, `env_prefix`, `holes`, `players`)."""
+    search result, as the API returned them, each with its `course` key;
+    `searches` says, per course, who searched for how many (`user_email`,
+    `course`, `env_prefix`, `holes`, `players`)."""
 
     id: str
     chat_id: int
-    search: dict[str, Any]
+    searches: dict[str, dict[str, Any]]
     slots: tuple[dict[str, Any], ...]
     created: float = field(default_factory=time.monotonic)
 
@@ -337,46 +350,49 @@ class BookingAgent:
             if plan.is_error:
                 return
             row = plan.json()
-            search = {
-                key: row[key]
-                for key in ("user_email", "course", "env_prefix", "holes", "players")
-            }
+            fields = ("user_email", "course", "env_prefix", "holes", "players")
+            searches = {row["course"]: {key: row[key] for key in fields}}
+            found = [{**slot, "course": row["course"]} for slot in result.json()]
         else:
-            search = {
-                "user_email": arguments.get("user_email"),
-                "course": arguments.get("key"),
-                "env_prefix": arguments.get("env_prefix"),
-                "holes": arguments.get("holes"),
-                "players": arguments.get("players"),
+            found = result.json()["tee_times"]
+            searches = {
+                slot["course"]: {
+                    "user_email": arguments.get("user_email"),
+                    "course": slot["course"],
+                    "env_prefix": None,
+                    "holes": arguments.get("holes"),
+                    "players": arguments.get("players"),
+                }
+                for slot in found
             }
-        by_day: dict[str, list[dict[str, Any]]] = {}
-        for slot in result.json():
-            by_day.setdefault(slot["start"][:10], []).append(slot)
-        for day, slots in by_day.items():
-            self._found[(chat_id, str(search["course"]), day)] = (search, slots)
+        by_place: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for slot in found:
+            by_place.setdefault((slot["course"], slot["start"][:10]), []).append(slot)
+        for (course, day), slots in by_place.items():
+            self._found[(chat_id, course, day)] = (searches[course], slots)
 
     def _show(
         self, chat_id: int, call: ToolUseBlock, reply: Reply
     ) -> ToolResultBlockParam:
         arguments = dict(call.input)
-        course = str(arguments.get("course"))
-        found = self._found.get((chat_id, course, str(arguments.get("date"))))
-        if found is None:
-            content = "Search that course and date first (find_course_tee_times)."
-            return {
-                "type": "tool_result",
-                "tool_use_id": call.id,
-                "content": content,
-                "is_error": True,
-            }
-        search, found = found
-        by_time = {slot["start"][11:16]: slot for slot in found}
-        times = [str(t)[:5].zfill(5) for t in arguments.get("times") or []]
-        slots = [by_time[t] for t in dict.fromkeys(times) if t in by_time]
-        missing = [t for t in times if t not in by_time]
+        day = str(arguments.get("date"))
+        slots: list[dict[str, Any]] = []
+        searches: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+        for wanted in arguments.get("slots") or []:
+            course = str(wanted.get("course"))
+            at = str(wanted.get("time"))[:5].zfill(5)
+            search, found = self._found.get((chat_id, course, day), (None, []))
+            slot = next((s for s in found if s["start"][11:16] == at), None)
+            if slot is None:
+                missing.append(f"{course} {at}")
+            elif slot not in slots:
+                slots.append(slot)
+                searches[course] = search
         if not slots:
             content = (
-                f"None of {missing} is in the search result. Open: {sorted(by_time)}"
+                f"None of {missing} is in a search result for {day}; search first "
+                "(search_tee_times) and offer only slots it found."
             )
             return {
                 "type": "tool_result",
@@ -387,16 +403,17 @@ class BookingAgent:
         offer = TeeTimeOffer(
             id=secrets.token_urlsafe(8),
             chat_id=chat_id,
-            search=search,
+            searches=searches,
             slots=tuple(slots[:MAX_OFFERED]),
         )
         for stale in [o.id for o in self._offers.values() if o.expired]:
             del self._offers[stale]
         self._offers[offer.id] = offer
         reply.offers.append(offer)
-        content = f"Shown as a card with Book buttons: {[s['start'] for s in slots]}."
+        shown = [f"{s['course']} {s['start']}" for s in offer.slots]
+        content = f"Shown as a card with Book buttons: {shown}."
         if missing:
-            content += f" Not in the result, so left out: {missing}."
+            content += f" Not in the results, so left out: {missing}."
         return {"type": "tool_result", "tool_use_id": call.id, "content": content}
 
     def offer(self, offer_id: str) -> TeeTimeOffer | None:
@@ -413,7 +430,7 @@ class BookingAgent:
             id=secrets.token_urlsafe(8),
             chat_id=offer.chat_id,
             tool=BOOK_SLOT,
-            arguments={"search": offer.search, "slot": slot},
+            arguments={"search": offer.searches[slot["course"]], "slot": slot},
         )
         for stale in [p.id for p in self._payments.values() if p.expired]:
             del self._payments[stale]

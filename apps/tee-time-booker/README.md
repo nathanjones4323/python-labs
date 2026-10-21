@@ -185,7 +185,7 @@ open http://localhost:8000/docs
 | Route | Does |
 | --- | --- |
 | `GET /courses`, `GET /courses/{key}` | The bookable courses |
-| `GET /courses/{key}/tee-times?user_email=&date=&players=&holes=` | Sign in and list what's bookable at a course on a day, no plan needed |
+| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=` | What's open on a day in a tee-off window across every course (or just `courses`), no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
 | `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now (and `first_attempt_at` when auto-booked) |
 | `POST /plans` | Create a plan, or update the user's plan of that name (the user must exist — see the seed). `auto_book: true` schedules it |
 | `POST /plans/{id}/auto-book` | Turn a plan's automatic booking on or off |
@@ -273,8 +273,11 @@ Claude (`bot/agent.py`) reading each message and calling the tools:
 - **Only you**: every update from a Telegram user not in
   `TELEGRAM_ALLOWED_USER_IDS` is dropped before any handler runs.
 - **Booking tools only**: Claude gets an allowlist of the MCP tools
-  (`bot/tools.py`): looking (at any course, with or without a plan),
+  (`bot/tools.py`): looking (every course at once unless you name some),
   booking, scheduling, cancelling, plans, run history. No shell, no files.
+- **One card of tee times**: Claude picks the best slots from a search, up to
+  twelve across courses, and the bot shows them as one card with a Book
+  button each, taken only from what the search actually returned.
 - **Paying needs your tap**: a call that pays is not run — booking now
   (`book_plan` / `run_request` with `submit_payment: true`, or a Book button
   on a tee-time card) or scheduling a booking to pay later (`create_plan` /

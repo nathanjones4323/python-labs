@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, sessionmaker
 
-from tee_time_booker.api.routers import courses, plans, requests, runs
+from tee_time_booker.api.routers import courses, plans, requests, runs, tee_times
 from tee_time_booker.config import Settings
 from tee_time_booker.db import InvalidTransition, make_session_factory
 from tee_time_booker.db.service import NotFound
@@ -66,6 +66,7 @@ def create_app(
     app.state.sessions = sessions
     app.state.worker = worker
     app.include_router(courses.router)
+    app.include_router(tee_times.router)
     app.include_router(plans.router)
     app.include_router(requests.router)
     app.include_router(runs.router)

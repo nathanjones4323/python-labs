@@ -349,6 +349,8 @@ class GolfNowPlatform(BookingPlatform):
     # The card itself is the one saved on the GolfNow account.
     required_payment_fields = ("state", "postal_code")
     sensitive_fields = SENSITIVE_FIELDS
+    # GolfID signs in to all of GolfNow; the search API takes any facility.
+    signs_in_per_course = False
 
     course: GolfNowCourse
 

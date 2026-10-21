@@ -24,7 +24,7 @@ ALLOWED_TOOLS = frozenset(
     {
         "list_courses",
         "get_course",
-        "find_course_tee_times",
+        "search_tee_times",
         "list_plans",
         "get_plan",
         "create_plan",

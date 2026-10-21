@@ -235,6 +235,24 @@ class TeeTimeOut(BaseModel):
         )
 
 
+class FoundTeeTimeOut(TeeTimeOut):
+    course: str = Field(description="Course key")
+    course_name: str
+
+
+class TeeTimeSearchOut(BaseModel):
+    tee_times: list[FoundTeeTimeOut] = Field(
+        description="Every slot in the window at every course searched, earliest first"
+    )
+    searched: list[str] = Field(description="Keys of the courses searched")
+    not_searched: dict[str, str] = Field(
+        description=(
+            "Courses that couldn't be searched, by key, and why (no account on "
+            "that site, a sign-in that failed, ...)"
+        )
+    )
+
+
 # --- requests --------------------------------------------------------------
 
 

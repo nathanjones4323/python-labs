@@ -12,10 +12,13 @@ import pytest
 from fastapi.testclient import TestClient
 from tee_time_booker import worker as worker_module
 from tee_time_booker.api import create_app
-from tee_time_booker.api.routers import courses as courses_router
 from tee_time_booker.api.routers import plans as plans_router
+from tee_time_booker.api.routers import tee_times as tee_times_router
 from tee_time_booker.config import Settings
+from tee_time_booker.courses import OLIVAS_LINKS
+from tee_time_booker.db.service import ensure_site_account, get_user, upsert_course
 from tee_time_booker.models import BookingResult, TeeTime
+from tee_time_booker.runner import SearchResults
 from tee_time_booker.worker import BookingWorker
 
 SLOT = TeeTime(
@@ -327,33 +330,70 @@ def test_a_one_off_request_needs_no_plan(api, fake_booking):
     assert api.get("/runs").json()[0]["id"] == started["run_id"]
 
 
-def test_a_course_is_searched_without_a_plan(api, monkeypatch):
+def test_one_search_covers_every_course_in_the_window(api, monkeypatch):
     seen = {}
 
-    def find_tee_times(course, criteria, settings, *, account_env_prefix):
-        seen.update(course=course, criteria=criteria, prefix=account_env_prefix)
-        return [SLOT]
+    def search_courses(searches, criteria, settings):
+        seen.update(searches=searches, criteria=criteria)
+        early = TeeTime(
+            platform="golfnow", course_name="x", start=datetime(2026, 11, 1, 6)
+        )
+        late = TeeTime(
+            platform="golfnow", course_name="x", start=datetime(2026, 11, 1, 9)
+        )
+        return SearchResults(
+            tee_times={"saticoy": [late, early]},
+            errors={"soule-park": "RuntimeError: Login failed (403)"},
+        )
 
-    monkeypatch.setattr(courses_router, "find_tee_times", find_tee_times)
+    monkeypatch.setattr(tee_times_router, "search_courses", search_courses)
     params = {
         "user_email": "golfer@example.com",
         "date": "2026-11-01",
         "players": 3,
         "holes": 9,
+        "earliest": "08:00",
+        "latest": "10:00",
     }
-    response = api.get("/courses/saticoy/tee-times", params=params)
+    response = api.get("/tee-times", params=params)
     assert response.status_code == 200, response.text
-    assert [t["start"] for t in response.json()] == ["2026-10-03T08:00:00"]
-    # The user's one GolfNow account, found by the course's site.
-    assert seen["course"].key == "saticoy" and seen["prefix"] == "GOLFNOW"
+    body = response.json()
+    # Every course, each with the user's account on its site.
+    assert {(s.course.key, s.account_env_prefix) for s in seen["searches"]} == {
+        ("saticoy", "GOLFNOW"),
+        ("soule-park", "SOULE"),
+    }
     assert (seen["criteria"].players, seen["criteria"].holes) == (3, 9)
-    assert seen["criteria"].target_date == date(2026, 11, 1)
+    # Only the slot inside the window, named by course.
+    assert [(t["course"], t["start"]) for t in body["tee_times"]] == [
+        ("saticoy", "2026-11-01T09:00:00")
+    ]
+    assert body["tee_times"][0]["course_name"] == "Saticoy Regional Golf Course"
+    assert body["searched"] == ["saticoy"]
+    assert body["not_searched"] == {"soule-park": "RuntimeError: Login failed (403)"}
 
-    wrong = api.get(
-        "/courses/saticoy/tee-times", params={**params, "env_prefix": "SOULE"}
+    # Or just the courses asked for.
+    api.get("/tee-times", params={**params, "courses": ["saticoy"]})
+    assert [s.course.key for s in seen["searches"]] == ["saticoy"]
+    assert (
+        api.get("/tee-times", params={**params, "courses": ["nope"]}).status_code == 404
     )
-    assert wrong.status_code == 422  # a foreUP login on a GolfNow course
-    assert api.get("/courses/nope/tee-times", params=params).status_code == 404
+
+
+def test_a_course_without_an_account_is_reported_not_searched(api, db, monkeypatch):
+    with db() as session, session.begin():
+        upsert_course(session, OLIVAS_LINKS)
+        user = get_user(session, "golfer@example.com")
+        # A second GolfNow login: which one to use is ambiguous now.
+        ensure_site_account(
+            session, user, platform="golfnow", login_email="b@x", env_prefix="GN2"
+        )
+    monkeypatch.setattr(
+        tee_times_router, "search_courses", lambda s, c, st: SearchResults()
+    )
+    params = {"user_email": "golfer@example.com", "date": "2026-11-01"}
+    body = api.get("/tee-times", params={**params, "players": 2, "holes": 18}).json()
+    assert "several golfnow accounts" in body["not_searched"]["olivas-links"]
 
 
 def test_an_auto_booked_plan_says_when_it_first_tries(api):

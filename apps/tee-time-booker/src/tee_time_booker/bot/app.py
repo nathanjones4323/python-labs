@@ -340,18 +340,26 @@ class BookingBot:
     ) -> None:
         # A keyboard under the card, not buttons in its table: Telegram shows
         # those but (as of Bot API 10.3) doesn't send the bot their taps.
+        numbered = len(offer.searches) > 1
         buttons = [
-            InlineKeyboardButton(slot_label(slot), callback_data=f"book:{offer.id}:{i}")
+            InlineKeyboardButton(
+                slot_label(slot, i + 1 if numbered else None),
+                callback_data=f"book:{offer.id}:{i}",
+            )
             for i, slot in enumerate(offer.slots)
         ]
         keyboard = InlineKeyboardMarkup(
             [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
         )
-        course = await self._course_name(str(offer.search["course"]))
+        names = {}
+        for slot in offer.slots:
+            key = slot["course"]
+            if key not in names:
+                names[key] = slot.get("course_name") or await self._course_name(key)
         await send_with_retry(
             context.bot,
             offer.chat_id,
-            format_offer(offer, offer.search, course),
+            format_offer(offer, names),
             reply_markup=keyboard,
         )
 
@@ -698,30 +706,38 @@ def detail_table(details: dict[str, str]) -> str:
     return f"<table compact>{cells}</table>"
 
 
-def slot_label(slot: dict[str, Any]) -> str:
-    """A tee-time slot on a button: its time (the card's table has the price)."""
-    return format_time(datetime.fromisoformat(slot["start"]).time().isoformat())
+def slot_label(slot: dict[str, Any], number: int | None = None) -> str:
+    """A tee-time slot on a button: its time (the card's table has the price),
+    and its row number when the card spans courses."""
+    label = format_time(datetime.fromisoformat(slot["start"]).time().isoformat())
+    return f"#{number} {label}" if number is not None else label
 
 
-def format_offer(
-    offer: TeeTimeOffer, plan: dict[str, Any] | None, course: str | None
-) -> str:
+def format_offer(offer: TeeTimeOffer, names: dict[str, str]) -> str:
+    """The card for `offer`; `names` maps its course keys to course names."""
     day = format_date(offer.slots[0]["start"][:10])
-    title = f"{escape(course)} · {day}" if course else day
+    several = len(names) > 1
+    title = day if several else f"{escape(next(iter(names.values())))} · {day}"
     count = len(offer.slots)
     about = [f"{count} {'time' if count == 1 else 'times'}"]
-    if plan:
-        about += [f"{plan['players']} golfers", f"{plan['holes']} holes"]
+    search = next(iter(offer.searches.values()))
+    about += [f"{search['players']} golfers", f"{search['holes']} holes"]
+    if several:
+        about.append(f"{len(names)} courses")
     # A Side column only when it tells the slots apart.
     sides = len({slot.get("side") for slot in offer.slots}) > 1
-    head = '<th align="left">Time</th>'
+    head = '<th align="left">#</th><th align="left">Course</th>' if several else ""
+    head += '<th align="left">Time</th>'
     if sides:
         head += '<th align="left">Side</th>'
     head += '<th align="right">Per player</th>'
     rows = []
-    for slot in offer.slots:
+    for number, slot in enumerate(offer.slots, 1):
         start = datetime.fromisoformat(slot["start"])
-        row = f"<td><b>{format_time(start.time().isoformat())}</b></td>"
+        row = ""
+        if several:
+            row += f"<td>{number}</td><td>{html.escape(names[slot['course']])}</td>"
+        row += f"<td><b>{format_time(start.time().isoformat())}</b></td>"
         if sides:
             row += f"<td>{html.escape(slot.get('side') or '')}</td>"
         fee = slot.get("green_fee")
