@@ -156,7 +156,7 @@ class Course(Base):
     booking_window_days: Mapped[int | None] = mapped_column(SmallInteger)
     description: Mapped[str | None] = mapped_column(Text)
     # `courses.GreenFees` as a dict (`sampled_on` as an ISO date), or null.
-    green_fees: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    green_fees: Mapped[dict[str, Any] | None]
     # The adapter's own identifiers (`CourseConfig.platform_config()`).
     platform_config: Mapped[dict[str, Any]] = mapped_column(default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

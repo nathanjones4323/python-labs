@@ -22,7 +22,13 @@ def upgrade() -> None:
     op.add_column("courses", sa.Column("description", sa.Text(), nullable=True))
     op.add_column(
         "courses",
-        sa.Column("green_fees", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column(
+            "green_fees",
+            sa.JSON().with_variant(
+                postgresql.JSONB(astext_type=sa.Text()), "postgresql"
+            ),
+            nullable=True,
+        ),
     )
 
 
