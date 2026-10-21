@@ -13,8 +13,10 @@ when the bot stops isn't reported after a restart (`/runs` shows it).
 """
 
 import asyncio
+import html
 import sys
 import tempfile
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from datetime import date, datetime, time
 from pathlib import Path
@@ -39,6 +41,7 @@ from telegram.ext import (
 
 from tee_time_booker.api import create_app
 from tee_time_booker.bot.agent import BookingAgent, PendingPayment, StartedRun
+from tee_time_booker.bot.rich import Progress, edit_rich, escape, send_rich
 from tee_time_booker.bot.tools import BookingTools
 from tee_time_booker.bot.voice import Transcriber, VoiceUnavailable
 from tee_time_booker.config import BotSettings, Settings
@@ -49,8 +52,9 @@ from tee_time_booker.mcp import create_server
 RUN_POLL_S = 30
 # Consecutive failed checks before a watch gives up (10 minutes' worth).
 MAX_WATCH_ERRORS = 20
-# Telegram's limit is 4096 characters per message.
+# Telegram's limits: 4096 characters per plain message, 32768 per rich one.
 MAX_MESSAGE = 4000
+MAX_RICH_MESSAGE = 30000
 # How long a message to the chat keeps retrying through a dropped connection
 # before it's given up on, and the longest wait between tries.
 SEND_RETRY_S = 15 * 60
@@ -58,16 +62,26 @@ SEND_BACKOFF_MAX_S = 30
 # Claude calls retry with backoff on connection errors, timeouts and 5xx.
 CLAUDE_MAX_RETRIES = 6
 
+# Rich Markdown: a single newline doesn't break a line, a blank one does.
 HELP = """\
-Tell me what you'd like to book, by text or voice note. For example:
-• what's open at Saticoy this Saturday morning?
-• book my Soule plan for next Saturday, 4 players after 9
-• how did my last booking go?
+**Tell me what you'd like to book**, by text or voice note. For example:
 
-Real payments always wait for you to tap Confirm.
-{payment_mode}
+- what's open at Saticoy this Saturday morning?
+- book my Soule plan for next Saturday, 4 players after 9
+- how did my last booking go?
 
-/new starts a fresh conversation. /runs shows recent runs."""
+Real payments always wait for you to tap **Confirm**. {payment_mode}
+
+- /new starts a fresh conversation
+- /runs shows recent runs"""
+
+RUN_STATUS = {
+    "running": "⏳ running",
+    "success": "✅ booked",
+    "dry_run": "🧪 dry run",
+    "unknown": "⚠️ unconfirmed",
+    "error": "❌ failed",
+}
 
 
 class BookingBot:
@@ -117,24 +131,26 @@ class BookingBot:
 
     async def _help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         mode = (
-            "Payment is ON: a confirmed booking really pays."
+            "**Payment is ON:** a confirmed booking really pays."
             if self.pays
-            else "Payment is OFF (TEE_TIME_SUBMIT_PAYMENT): every run is a dry run."
+            else "**Payment is OFF** (`TEE_TIME_SUBMIT_PAYMENT`): every run is a "
+            "dry run."
         )
-        await update.effective_message.reply_text(HELP.format(payment_mode=mode))
+        await self._send(
+            context, update.effective_chat.id, HELP.format(payment_mode=mode)
+        )
 
     async def _new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         self.agent.reset(update.effective_chat.id)
         await update.effective_message.reply_text("Starting fresh.")
 
     async def _runs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id
         result = await self.tools.call("list_runs", {"limit": 5})
         if result.is_error:
-            await update.effective_message.reply_text(result.text[:MAX_MESSAGE])
+            await self._send(context, chat_id, escape(result.text))
             return
-        runs = result.json()
-        lines = [format_run_line(r) for r in runs] or ["No runs yet."]
-        await update.effective_message.reply_text("\n".join(lines))
+        await self._send(context, chat_id, format_runs(result.json()))
 
     async def _on_text(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -159,7 +175,7 @@ class BookingBot:
             await message.reply_text("I couldn't make out any words in that.")
             return
         # Said back first, so a mishearing is visible before anything is done.
-        await message.reply_text(f"🎙 {text}")
+        await self._send(context, message.chat_id, f"> 🎙 {escape(text)}")
         await self._converse(update, context, text)
 
     async def _on_button(
@@ -174,21 +190,46 @@ class BookingBot:
             return
         await query.answer()
         if action != "pay":
-            await query.edit_message_text(
-                f"{query.message.text}\n\nCancelled. Nothing was paid."
+            await self._close_prompt(
+                context, query, payment, "Cancelled. Nothing was paid."
             )
             await self.agent.note(payment.chat_id, "[The person tapped Cancel.]")
             return
-        await query.edit_message_text(
-            f"{query.message.text}\n\nConfirmed, starting the run…"
+        await self._close_prompt(
+            context, query, payment, "Confirmed, starting the run…"
         )
         result, run = await self.agent.confirm(payment)
         if run is None:
             await self._send(
-                context, payment.chat_id, f"Couldn't start it: {result.text}"
+                context, payment.chat_id, f"Couldn't start it: {escape(result.text)}"
             )
             return
         await self._started(context, payment.chat_id, run)
+
+    async def _close_prompt(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        query: Any,
+        payment: PendingPayment,
+        status: str,
+    ) -> None:
+        """Swap the Confirm / Cancel buttons for what became of them.
+
+        The prompt is drawn again rather than read back: a rich message has
+        no `text`, and python-telegram-bot doesn't parse its content yet.
+        """
+        card = await self._describe_payment(payment)
+        try:
+            await edit_rich(
+                context.bot,
+                payment.chat_id,
+                query.message.message_id,
+                f"{card}\n\n<footer>{status}</footer>",
+            )
+        except BadRequest:
+            logger.exception("Editing the payment prompt")
+            await query.edit_message_reply_markup(None)
+            await self._send(context, payment.chat_id, status)
 
     async def _on_error(
         self, update: object, context: ContextTypes.DEFAULT_TYPE
@@ -202,7 +243,9 @@ class BookingBot:
         logger.opt(exception=error).error("Telegram handler failed")
         if isinstance(update, Update) and update.effective_chat:
             await self._send(
-                context, update.effective_chat.id, f"Something went wrong: {error}"
+                context,
+                update.effective_chat.id,
+                f"Something went wrong: {escape(error)}",
             )
 
     # --- helpers ----------------------------------------------------------
@@ -211,8 +254,11 @@ class BookingBot:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
     ) -> None:
         chat_id = update.effective_chat.id
-        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        reply = await self.agent.respond(chat_id, text)
+        # The incoming message's id is unique per turn, so it names the draft.
+        async with Progress(
+            context.bot, chat_id, update.effective_message.message_id
+        ) as progress:
+            reply = await self.agent.respond(chat_id, text, on_step=progress.step)
         await self._send(context, chat_id, reply.text)
         for payment in reply.payments:
             await self._ask_to_pay(context, payment)
@@ -226,7 +272,9 @@ class BookingBot:
             [
                 [
                     InlineKeyboardButton(
-                        "Confirm and pay", callback_data=f"pay:{payment.id}"
+                        "Confirm and pay",
+                        callback_data=f"pay:{payment.id}",
+                        style="success",
                     ),
                     InlineKeyboardButton(
                         "Cancel", callback_data=f"cancel:{payment.id}"
@@ -240,7 +288,9 @@ class BookingBot:
     async def _describe_payment(self, payment: PendingPayment) -> str:
         """What a Confirm will book, read from the plan or request itself
         rather than from anything the model said."""
-        fallback = f"💳 Book and pay? ({payment.tool} {payment.arguments})"
+        fallback = (
+            f"**💳 Book and pay?**\n\n{escape(f'{payment.tool} {payment.arguments}')}"
+        )
         if payment.tool == "book_plan":
             looked_up = await self.tools.call(
                 "get_plan", {"plan_id": payment.arguments.get("plan_id")}
@@ -267,20 +317,30 @@ class BookingBot:
             or row.get("next_target_date")
         )
         which = "earliest" if row["prefer_earlier"] else "latest"
+        details = {
+            "Course": row["course"],
+            "Date": format_date(target),
+            "Tee-off": f"{format_time(row['earliest'])} – {format_time(row['latest'])}",
+            "Group": f"{row['players']} players · {row['holes']} holes",
+        }
+        # An HTML table: a Markdown one would need a header row.
+        cells = "".join(
+            f"<tr><td><b>{label}</b></td><td>{html.escape(str(value))}</td></tr>"
+            for label, value in details.items()
+        )
         lines = [
-            "💳 Book and pay?",
-            f"{row['course']}, {format_date(target)}",
-            f"Tee-off {format_time(row['earliest'])}–{format_time(row['latest'])}, "
-            f"{row['players']} players, {row['holes']} holes",
-            f"The run takes the {which} open slot in that window and pays at checkout.",
+            "**💳 Book and pay?**",
+            f"<table>{cells}</table>",
+            f"_The run takes the {which} open slot in that window and pays at "
+            "checkout._",
         ]
         if payment.arguments.get(
             "wait_for_release", True
         ) and not payment.arguments.get("target_date"):
             lines.append(
-                "If that day isn't released yet, it waits for the release first."
+                "_If that day isn't released yet, it waits for the release first._"
             )
-        return "\n".join(lines)
+        return "\n\n".join(lines)
 
     async def _started(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
@@ -289,8 +349,8 @@ class BookingBot:
         await self._send(
             context,
             chat_id,
-            f"{kind} started for {run.course} on {format_date(run.target_date)}. "
-            "I'll message you when it finishes.",
+            f"**{kind} started** · {escape(run.course)}, "
+            f"{format_date(run.target_date)}\n\nI'll message you when it finishes.",
         )
         self._watch(context, chat_id, run)
 
@@ -326,7 +386,8 @@ class BookingBot:
                     await self._send(
                         context,
                         chat_id,
-                        f"I lost track of the run for {run.course}; /runs shows it.",
+                        f"I lost track of the run for {escape(run.course)}; /runs "
+                        "shows it.",
                     )
                     return
                 continue
@@ -339,25 +400,41 @@ class BookingBot:
     async def _send(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str
     ) -> None:
-        for start in range(0, max(len(text), 1), MAX_MESSAGE):
-            await send_with_retry(
-                context.bot, chat_id, text[start : start + MAX_MESSAGE] or "…"
-            )
+        for chunk in _chunks(text, MAX_RICH_MESSAGE):
+            await send_with_retry(context.bot, chat_id, chunk)
+
+
+def _chunks(text: str, size: int) -> list[str]:
+    return [text[i : i + size] or "…" for i in range(0, max(len(text), 1), size)]
 
 
 async def send_with_retry(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
-    """Send a message, riding out a dropped connection or a rate limit.
+    """Send a rich message, riding out a dropped connection or a rate limit.
 
     A run's outcome may be the only word the person gets about it, so a blip
-    shouldn't lose it. Gives up (raising) after `SEND_RETRY_S`; a BadRequest
-    is a fault in the message itself and isn't retried.
+    shouldn't lose it. Gives up (raising) after `SEND_RETRY_S`. A BadRequest
+    is a fault in the message itself and isn't retried; for a rich message
+    it's most likely the formatting, so the words go again as plain text.
     """
+    try:
+        await _retrying(chat_id, lambda: send_rich(bot, chat_id, text, **kwargs))
+        return
+    except BadRequest as e:
+        logger.warning(f"Rich message to chat {chat_id} refused ({e}); sending plain")
+    chunks = _chunks(text, MAX_MESSAGE)
+    for i, chunk in enumerate(chunks):
+        # Any buttons go on the last part only.
+        extra = kwargs if i == len(chunks) - 1 else {}
+        await _retrying(chat_id, lambda: bot.send_message(chat_id, chunk, **extra))
+
+
+async def _retrying(chat_id: int, send: Callable[[], Awaitable[Any]]) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + SEND_RETRY_S
     backoff = 1.0
     while True:
         try:
-            await bot.send_message(chat_id, text, **kwargs)
+            await send()
             return
         except RetryAfter as e:
             wait = e.retry_after
@@ -396,36 +473,53 @@ def _slot(run: dict[str, Any]) -> str:
 
 
 def format_outcome(started: StartedRun, run: dict[str, Any]) -> str:
-    where = f"{started.course} on {format_date(started.target_date)}"
-    slot = _slot(run)
-    fee = f" Green fee ${run['green_fee']} per player." if run.get("green_fee") else ""
+    where = f"{escape(started.course)} on {format_date(started.target_date)}"
+    slot = escape(_slot(run))
+    fee = (
+        f"\n\nGreen fee {escape('$' + str(run['green_fee']))} per player."
+        if run.get("green_fee")
+        else ""
+    )
     match run["status"]:
         case "success":
+            # In code, so it's one tap to copy.
             confirmation = (
-                f" Confirmation: {run['confirmation']}."
+                f"\n\nConfirmation: `{run['confirmation'].replace('`', '')}`"
                 if run.get("confirmation")
                 else ""
             )
-            at = f" at {slot}" if slot else ""
-            return f"✅ Booked {where}{at}.{fee}{confirmation}"
+            at = f" at **{slot}**" if slot else ""
+            return f"✅ **Booked** {where}{at}.{fee}{confirmation}"
         case "dry_run":
             return (
-                f"Dry run done: reached checkout for {slot or 'a slot'} at {where}. "
-                f"Nothing was paid.{fee}"
+                f"🧪 **Dry run done:** reached checkout for {slot or 'a slot'} at "
+                f"{where}. Nothing was paid.{fee}"
             )
         case "unknown":
             return (
-                f"⚠️ Payment was submitted for {where} {slot}, but no confirmation "
-                "appeared. Check your account on the booking site before trying again."
+                f"⚠️ **Payment submitted, no confirmation** for {where} {slot}.\n\n"
+                "Check your account on the booking site before trying again."
             )
         case _:
-            return f"❌ The run for {where} failed: {run.get('detail') or 'no detail'}"
+            detail = html.escape(run.get("detail") or "no detail")
+            return (
+                f"❌ **The run failed** for {where}.\n\n"
+                f"<blockquote expandable>{detail}</blockquote>"
+            )
 
 
-def format_run_line(run: dict[str, Any]) -> str:
-    started = datetime.fromisoformat(run["started_at"]).astimezone()
-    slot = _slot(run)
-    return f"{started:%b %d %H:%M}  {run['status']}" + (f"  {slot}" if slot else "")
+def format_runs(runs: list[dict[str, Any]]) -> str:
+    if not runs:
+        return "No runs yet."
+    rows = ["| Started | Status | Slot |", "|:--|:--|:--|"]
+    for run in runs:
+        started = datetime.fromisoformat(run["started_at"]).astimezone()
+        status = RUN_STATUS.get(run["status"], escape(run["status"]))
+        rows.append(
+            f"| {started:%a %b} {started.day} {format_time(started.time().isoformat())}"
+            f" | {status} | {escape(_slot(run)) or '–'} |"
+        )
+    return "\n".join(rows)
 
 
 # --- entry point --------------------------------------------------------------

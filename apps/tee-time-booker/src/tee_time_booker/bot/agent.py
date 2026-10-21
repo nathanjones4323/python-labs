@@ -14,7 +14,7 @@ as a note rather than by editing earlier turns. `/new` starts over.
 import asyncio
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -60,10 +60,13 @@ tap Confirm. Don't repeat the call; point them at the button.
 date from today's date below.
 
 Replies are read on a phone, so keep them as short as a text message: one to three \
-lines, plain text, no Markdown, no headings, no preamble or sign-off. Don't explain \
-how the tools work, restate the question, or offer next steps unless asked. When \
-listing tee times, give at most five, comma-separated, like "Sat Oct 24: 8:44 AM, \
-9:02 AM, 9:20 AM ($20.75)". Write times like 9:12 AM and dates like Sat Oct 24.
+lines, no preamble or sign-off. Don't explain how the tools work, restate the \
+question, or offer next steps unless asked. Telegram renders Markdown: put the key \
+fact in **bold** (the date, the time picked), use no headings, and leave a blank \
+line between lines (a single newline doesn't break the line). When listing tee \
+times, give at most five: up to three on one line, like "**Sat Oct 24:** 8:44 AM, \
+9:02 AM, 9:20 AM ($20.75)", or more as a small table with Time and Price columns. \
+Write times like 9:12 AM and dates like Sat Oct 24.
 Today is {today:%A %B %-d, %Y}."""
 
 PAYMENT_ON = "Payment is switched on for this install: a confirmed booking really pays."
@@ -145,8 +148,16 @@ class BookingAgent:
             today=self._today(),
         )
 
-    async def respond(self, chat_id: int, text: str) -> Reply:
-        """Answer one message from the person, running tools as the model asks."""
+    async def respond(
+        self,
+        chat_id: int,
+        text: str,
+        on_step: Callable[[list[ToolUseBlock]], Awaitable[None]] | None = None,
+    ) -> Reply:
+        """Answer one message from the person, running tools as the model asks.
+
+        `on_step` hears each round of tool calls before it runs (the bot shows
+        it as progress)."""
         async with self._lock(chat_id):
             if self._tool_defs is None:
                 self._tool_defs = await self._tools.definitions()
@@ -171,6 +182,8 @@ class BookingAgent:
                         reply.text = _text(response.content) or _stop_text(response)
                         break
                     calls = [b for b in response.content if b.type == "tool_use"]
+                    if on_step is not None:
+                        await on_step(calls)
                     results = await asyncio.gather(
                         *(self._run_tool(chat_id, call, reply) for call in calls)
                     )
