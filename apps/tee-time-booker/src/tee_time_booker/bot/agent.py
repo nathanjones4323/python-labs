@@ -15,6 +15,7 @@ import asyncio
 import secrets
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -72,6 +73,16 @@ How runs work:
 - book_plan and run_request start a run in the background and answer at once with a \
 run id. The bot itself tells the person the run started and messages them when it \
 ends, so don't repeat either, and don't poll get_run unless they ask how a run is going.
+- When a run fails, you're told in a bracketed note and the person hears nothing \
+until you reply. Say what went wrong in plain words, never the raw error, then ask \
+a short follow-up about what they'd like instead. The scheduler won't try that \
+date again, but a plan's later weeks are unaffected.
+- When a plan's run found no tee times in its window, ask whether they'd like a \
+different time on that date while the weekly schedule stays as it is. Search the \
+day first, and if anything is open, offer the closest times with show_tee_times \
+along with the question. If they then name a time, book that date alone \
+(create_request, then run_request) and leave the plan as it is: create_plan with \
+the plan's name would change every week.
 - A run takes the best slot inside the window; it can't be aimed at one particular \
 slot. To get a particular time, give a narrow window around it.
 - Plans and requests need user_email {email}. env_prefix picks the site account; \
@@ -210,6 +221,8 @@ class Reply:
     payments: list[PendingPayment] = field(default_factory=list)
     runs: list[StartedRun] = field(default_factory=list)
     offers: list[TeeTimeOffer] = field(default_factory=list)
+    # Claude couldn't be reached; `text` says so.
+    failed: bool = False
 
 
 class BookingAgent:
@@ -299,6 +312,7 @@ class BookingAgent:
             except anthropic.APIError as e:
                 logger.exception("Claude request failed")
                 reply.text = f"Couldn't reach Claude ({type(e).__name__}). Try again."
+                reply.failed = True
                 return reply
             history.extend(turn)
             return reply
@@ -498,6 +512,27 @@ class BookingAgent:
         )
         return result, run
 
+    async def explain_failure(
+        self, chat_id: int, run: StartedRun, outcome: dict[str, Any], course: str
+    ) -> Reply:
+        """A run that ended in an error, put to the model to tell the person
+        about (and, where it can, help with) rather than sent as is."""
+        kind = "scheduled booking" if outcome.get("scheduled") else "booking"
+        mode = " (a dry run)" if run.dry_run else ""
+        request_id = outcome.get("request_id")
+        lines = [
+            f"The {kind}{mode} at {course} ({run.course}) on {run.target_date} "
+            f"failed: {outcome.get('detail') or 'no detail'}.",
+            f"Run {run.run_id}, request {request_id}.",
+        ]
+        # What was asked for, so the follow-up can offer something close to it.
+        looked_up = await self._tools.call("get_request", {"request_id": request_id})
+        if not looked_up.is_error:
+            with suppress(KeyError, TypeError, ValueError):
+                lines.extend(_asked_for(looked_up.json()))
+        lines.append("The person hasn't been told yet.")
+        return await self.respond(chat_id, f"[{' '.join(lines)}]")
+
     async def note(self, chat_id: int, text: str) -> None:
         """Something the conversation should know that happened outside it."""
         async with self._lock(chat_id):
@@ -515,6 +550,20 @@ class BookingAgent:
             del self._offers[offer_id]
         for key in [k for k in self._found if k[0] == chat_id]:
             del self._found[key]
+
+
+def _asked_for(request: dict[str, Any]) -> list[str]:
+    """A failed run's request, for the note that puts the failure to the model."""
+    lines = [
+        f"It asked for {request['earliest'][:5]}-{request['latest'][:5]}, "
+        f"{request['players']} players, {request['holes']} holes."
+    ]
+    if request.get("plan_id"):
+        lines.append(
+            f"It was this date of weekly plan {request['plan_id']}, which stays "
+            "scheduled for the weeks after."
+        )
+    return lines
 
 
 def _text(content: list[Any]) -> str:

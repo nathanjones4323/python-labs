@@ -8,7 +8,8 @@ dropped before any handler sees it.
 
 The API, its booking worker and the MCP tools all live in this process (see
 `agent.py` for the conversation). A run started from a chat is watched here
-and its outcome sent to that chat. The watch is in memory: a run still going
+and its outcome sent to that chat; a run that failed is handed to the model
+instead, to explain and offer what's open. The watch is in memory: a run still going
 when the bot stops isn't reported after a restart (`/runs` shows it).
 
 The scheduler runs here too: every minute it starts whatever auto-booked
@@ -49,6 +50,7 @@ from tee_time_booker.bot.agent import (
     BOOK_SLOT,
     BookingAgent,
     PendingPayment,
+    Reply,
     StartedRun,
     TeeTimeOffer,
 )
@@ -270,7 +272,7 @@ class BookingBot:
             await query.edit_message_reply_markup(None)
             return
         await query.answer()
-        await self._ask_to_pay(context, self.agent.hold_slot(offer, slot))
+        await self._ask_to_pay(context.bot, self.agent.hold_slot(offer, slot))
 
     async def _close_prompt(
         self,
@@ -326,18 +328,21 @@ class BookingBot:
             context.bot, chat_id, update.effective_message.message_id
         ) as progress:
             reply = await self.agent.respond(chat_id, text, on_step=progress.step)
-        if reply.text:
-            await self._send(context, chat_id, escape_prices(reply.text))
-        for offer in reply.offers:
-            await self._show_offer(context, offer)
-        for payment in reply.payments:
-            await self._ask_to_pay(context, payment)
-        for run in reply.runs:
-            self._watch(context.bot, chat_id, run)
+        await self._deliver(context.bot, chat_id, reply)
 
-    async def _show_offer(
-        self, context: ContextTypes.DEFAULT_TYPE, offer: TeeTimeOffer
-    ) -> None:
+    async def _deliver(self, bot: Any, chat_id: int, reply: Reply) -> None:
+        """Everything a reply holds: its words, cards, Confirm prompts, and
+        runs to watch."""
+        if reply.text:
+            await self._say(bot, chat_id, escape_prices(reply.text))
+        for offer in reply.offers:
+            await self._show_offer(bot, offer)
+        for payment in reply.payments:
+            await self._ask_to_pay(bot, payment)
+        for run in reply.runs:
+            self._watch(bot, chat_id, run)
+
+    async def _show_offer(self, bot: Any, offer: TeeTimeOffer) -> None:
         # A keyboard under the card, not buttons in its table: Telegram shows
         # those but (as of Bot API 10.3) doesn't send the bot their taps.
         numbered = len(offer.searches) > 1
@@ -357,7 +362,7 @@ class BookingBot:
             if key not in names:
                 names[key] = slot.get("course_name") or await self._course_name(key)
         await send_with_retry(
-            context.bot,
+            bot,
             offer.chat_id,
             format_offer(offer, names),
             reply_markup=keyboard,
@@ -367,9 +372,7 @@ class BookingBot:
         looked_up = await self.tools.call("get_course", {"key": key})
         return key if looked_up.is_error else looked_up.json()["name"]
 
-    async def _ask_to_pay(
-        self, context: ContextTypes.DEFAULT_TYPE, payment: PendingPayment
-    ) -> None:
+    async def _ask_to_pay(self, bot: Any, payment: PendingPayment) -> None:
         keyboard = InlineKeyboardMarkup(
             [
                 [
@@ -385,7 +388,7 @@ class BookingBot:
             ]
         )
         text = await self._describe_payment(payment)
-        await send_with_retry(context.bot, payment.chat_id, text, reply_markup=keyboard)
+        await send_with_retry(bot, payment.chat_id, text, reply_markup=keyboard)
 
     async def _describe_payment(self, payment: PendingPayment) -> str:
         """What a Confirm will book, read from the plan or request itself
@@ -526,11 +529,31 @@ class BookingBot:
                 continue
             if scheduled and body["status"] == "not_open":
                 return  # the scheduler tries again later
+            if body["status"] == "error" and await self._explain(
+                bot, chat_id, run, body, course
+            ):
+                return
             text = format_outcome(run, body, course)
             if scheduled:
                 text = f"⏰ **Scheduled booking**\n\n{text}"
             await self._say(bot, chat_id, text)
             return
+
+    async def _explain(
+        self, bot: Any, chat_id: int, run: StartedRun, body: dict[str, Any], course: str
+    ) -> bool:
+        """Have the model tell the person about a failed run, and offer what
+        it can instead. False when it couldn't, so the plain outcome goes out
+        after all."""
+        try:
+            reply = await self.agent.explain_failure(chat_id, run, body, course)
+        except Exception:
+            logger.exception(f"Explaining failed run {run.run_id}")
+            return False
+        if reply.failed or not (reply.text or reply.offers):
+            return False
+        await self._deliver(bot, chat_id, reply)
+        return True
 
     # --- scheduler ----------------------------------------------------------
 
