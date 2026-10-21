@@ -13,6 +13,7 @@ when the bot stops isn't reported after a restart (`/runs` shows it).
 """
 
 import asyncio
+import sys
 import tempfile
 from contextlib import AsyncExitStack
 from datetime import date, datetime, time
@@ -24,6 +25,7 @@ from fastmcp import Client
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
+from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -49,6 +51,12 @@ RUN_POLL_S = 30
 MAX_WATCH_ERRORS = 20
 # Telegram's limit is 4096 characters per message.
 MAX_MESSAGE = 4000
+# How long a message to the chat keeps retrying through a dropped connection
+# before it's given up on, and the longest wait between tries.
+SEND_RETRY_S = 15 * 60
+SEND_BACKOFF_MAX_S = 30
+# Claude calls retry with backoff on connection errors, timeouts and 5xx.
+CLAUDE_MAX_RETRIES = 6
 
 HELP = """\
 Tell me what you'd like to book, by text or voice note. For example:
@@ -185,10 +193,16 @@ class BookingBot:
     async def _on_error(
         self, update: object, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        logger.opt(exception=context.error).error("Telegram handler failed")
+        error = context.error
+        if isinstance(error, NetworkError) and not isinstance(error, BadRequest):
+            # A connection blip. Polling retries by itself, and there's no
+            # point telling a chat we can't reach.
+            logger.warning(f"Telegram unreachable: {error}")
+            return
+        logger.opt(exception=error).error("Telegram handler failed")
         if isinstance(update, Update) and update.effective_chat:
-            await context.bot.send_message(
-                update.effective_chat.id, f"Something went wrong: {context.error}"
+            await self._send(
+                context, update.effective_chat.id, f"Something went wrong: {error}"
             )
 
     # --- helpers ----------------------------------------------------------
@@ -221,7 +235,7 @@ class BookingBot:
             ]
         )
         text = await self._describe_payment(payment)
-        await context.bot.send_message(payment.chat_id, text, reply_markup=keyboard)
+        await send_with_retry(context.bot, payment.chat_id, text, reply_markup=keyboard)
 
     async def _describe_payment(self, payment: PendingPayment) -> str:
         """What a Confirm will book, read from the plan or request itself
@@ -272,7 +286,8 @@ class BookingBot:
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
     ) -> None:
         kind = "Dry run" if run.dry_run else "Booking"
-        await context.bot.send_message(
+        await self._send(
+            context,
             chat_id,
             f"{kind} started for {run.course} on {format_date(run.target_date)}. "
             "I'll message you when it finishes.",
@@ -325,9 +340,36 @@ class BookingBot:
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str
     ) -> None:
         for start in range(0, max(len(text), 1), MAX_MESSAGE):
-            await context.bot.send_message(
-                chat_id, text[start : start + MAX_MESSAGE] or "…"
+            await send_with_retry(
+                context.bot, chat_id, text[start : start + MAX_MESSAGE] or "…"
             )
+
+
+async def send_with_retry(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
+    """Send a message, riding out a dropped connection or a rate limit.
+
+    A run's outcome may be the only word the person gets about it, so a blip
+    shouldn't lose it. Gives up (raising) after `SEND_RETRY_S`; a BadRequest
+    is a fault in the message itself and isn't retried.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SEND_RETRY_S
+    backoff = 1.0
+    while True:
+        try:
+            await bot.send_message(chat_id, text, **kwargs)
+            return
+        except RetryAfter as e:
+            wait = e.retry_after
+            wait = wait.total_seconds() if hasattr(wait, "total_seconds") else wait
+        except BadRequest:
+            raise
+        except NetworkError as e:
+            if loop.time() >= deadline:
+                raise
+            logger.warning(f"Sending to chat {chat_id} failed ({e}); retrying")
+            wait, backoff = backoff, min(backoff * 2, SEND_BACKOFF_MAX_S)
+        await asyncio.sleep(wait)
 
 
 # --- formatting -------------------------------------------------------------
@@ -396,7 +438,10 @@ def build_application() -> Application:
     client = Client(create_server(api))
     tools = BookingTools(client)
     agent = BookingAgent(
-        anthropic.AsyncAnthropic(), tools, bot_settings, pays=settings.submit_payment
+        anthropic.AsyncAnthropic(max_retries=CLAUDE_MAX_RETRIES),
+        tools,
+        bot_settings,
+        pays=settings.submit_payment,
     )
     bot = BookingBot(
         agent,
@@ -434,4 +479,13 @@ def build_application() -> Application:
 
 
 def main() -> None:
-    build_application().run_polling(allowed_updates=Update.ALL_TYPES)
+    # loguru's default handler prints every variable in a traceback, and the
+    # Telegram client's frames hold the bot token.
+    logger.remove()
+    logger.add(sys.stderr, diagnose=False)
+    # bootstrap_retries=-1: started while offline, keep trying to reach
+    # Telegram rather than exit. Once up, polling retries a lost connection
+    # by itself.
+    build_application().run_polling(
+        allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1
+    )

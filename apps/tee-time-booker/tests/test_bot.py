@@ -17,11 +17,17 @@ import anthropic  # noqa: E402
 import httpx  # noqa: E402
 from tee_time_booker.api import create_app  # noqa: E402
 from tee_time_booker.bot import agent as agent_module  # noqa: E402
+from tee_time_booker.bot import app as app_module  # noqa: E402
 from tee_time_booker.bot.agent import BookingAgent, StartedRun  # noqa: E402
-from tee_time_booker.bot.app import BookingBot, format_outcome  # noqa: E402
+from tee_time_booker.bot.app import (  # noqa: E402
+    BookingBot,
+    format_outcome,
+    send_with_retry,
+)
 from tee_time_booker.bot.tools import ALLOWED_TOOLS, BookingTools, ToolResult  # noqa: E402
 from tee_time_booker.config import BotSettings, Settings  # noqa: E402
 from tee_time_booker.mcp import create_server  # noqa: E402
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut  # noqa: E402
 from telegram.ext import ApplicationHandlerStop  # noqa: E402
 
 RUN_STARTED = {
@@ -258,6 +264,54 @@ def test_run_outcomes_read_plainly(status, expected):
         "detail": "login rejected",
     }
     assert expected in format_outcome(started, run)
+
+
+class FlakyTelegram:
+    """Fails each `send_message` with the next scripted error, then sends."""
+
+    def __init__(self, *errors):
+        self.errors = list(errors)
+        self.sent = []
+
+    async def send_message(self, chat_id, text, **kwargs):
+        if self.errors:
+            raise self.errors.pop(0)
+        self.sent.append(text)
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(app_module.asyncio, "sleep", sleep)
+    return waits
+
+
+def test_a_send_rides_out_a_dropped_connection_and_a_rate_limit(no_sleep):
+    telegram = FlakyTelegram(
+        NetworkError("httpx.ConnectError"), TimedOut(), RetryAfter(5)
+    )
+    asyncio.run(send_with_retry(telegram, 7, "Dry run done"))
+    assert telegram.sent == ["Dry run done"]
+    assert no_sleep == [1.0, 2.0, 5]
+
+
+def test_a_bad_message_is_not_retried(no_sleep):
+    telegram = FlakyTelegram(BadRequest("message is too long"))
+    with pytest.raises(BadRequest):
+        asyncio.run(send_with_retry(telegram, 7, "x"))
+    assert no_sleep == []
+
+
+def test_a_send_gives_up_after_the_retry_window(no_sleep, monkeypatch):
+    monkeypatch.setattr(app_module, "SEND_RETRY_S", 0)
+    telegram = FlakyTelegram(NetworkError("down"), NetworkError("still down"))
+    with pytest.raises(NetworkError, match="down"):
+        asyncio.run(send_with_retry(telegram, 7, "x"))
+    assert telegram.sent == []
 
 
 def test_bot_settings_need_numeric_user_ids(monkeypatch):
