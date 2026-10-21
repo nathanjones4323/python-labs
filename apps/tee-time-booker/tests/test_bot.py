@@ -32,6 +32,7 @@ from tee_time_booker.bot.app import (  # noqa: E402
     send_with_retry,
     slot_label,
 )
+from tee_time_booker.bot.llm import AnthropicModel  # noqa: E402
 from tee_time_booker.bot.rich import Progress, escape, escape_prices  # noqa: E402
 from tee_time_booker.bot.tools import ALLOWED_TOOLS, BookingTools, ToolResult  # noqa: E402
 from tee_time_booker.config import BotSettings, Settings  # noqa: E402
@@ -104,7 +105,11 @@ class FakeTools:
 
 def _agent(claude, tools, *, pays=True):
     return BookingAgent(
-        claude, tools, BOT_SETTINGS, pays=pays, today=lambda: date(2026, 10, 20)
+        AnthropicModel(claude),
+        tools,
+        BOT_SETTINGS,
+        pays=pays,
+        today=lambda: date(2026, 10, 20),
     )
 
 
@@ -220,7 +225,7 @@ def test_a_failed_request_leaves_the_history_as_it_was():
     agent = _agent(claude, FakeTools({"list_plans": ToolResult("[]")}))
     _respond(agent, "hello")
     reply = _respond(agent, "my plans?")
-    assert "Couldn't reach Claude" in reply.text
+    assert "Couldn't reach the model (APIConnectionError)" in reply.text
 
     _respond(agent, "again")
     # The failed turn (with its unanswered tool call) was never kept.
@@ -448,6 +453,7 @@ def test_a_send_gives_up_after_the_retry_window(no_sleep, monkeypatch):
 
 
 def test_bot_settings_need_numeric_user_ids(monkeypatch):
+    monkeypatch.delenv("TEE_TIME_BOT_PROVIDER", raising=False)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("TEE_TIME_USER_EMAIL", "me@example.com")
@@ -456,6 +462,58 @@ def test_bot_settings_need_numeric_user_ids(monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "@me")
     with pytest.raises(RuntimeError, match="numeric"):
         BotSettings.from_env()
+
+
+@pytest.fixture
+def bot_env(monkeypatch):
+    for name in (
+        "TEE_TIME_BOT_PROVIDER",
+        "TEE_TIME_BOT_MODEL",
+        "TEE_TIME_BOT_BASE_URL",
+        "TEE_TIME_BOT_API_KEY",
+        "ANTHROPIC_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TEE_TIME_USER_EMAIL", "me@example.com")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    return monkeypatch
+
+
+def test_an_install_with_only_a_claude_key_stays_on_claude(bot_env):
+    bot_env.setenv("ANTHROPIC_API_KEY", "k")
+    settings = BotSettings.from_env()
+    assert (settings.provider, settings.model) == ("anthropic", "claude-sonnet-5-5")
+
+
+def test_no_model_chosen_points_at_setup(bot_env):
+    with pytest.raises(RuntimeError, match="setup --model"):
+        BotSettings.from_env()
+
+
+def test_a_local_model_needs_no_key(bot_env):
+    bot_env.setenv("TEE_TIME_BOT_PROVIDER", "local")
+    # Left over from a hosted API chosen before: not where Ollama is.
+    bot_env.setenv("TEE_TIME_BOT_BASE_URL", "https://openrouter.ai/api/v1")
+    settings = BotSettings.from_env()
+    assert settings.base_url == "http://localhost:11434/v1"
+    assert settings.model == "tee-time-booker"
+    assert settings.api_key is None
+
+
+def test_a_hosted_api_needs_its_url_key_and_model(bot_env):
+    bot_env.setenv("TEE_TIME_BOT_PROVIDER", "openai")
+    bot_env.setenv("TEE_TIME_BOT_BASE_URL", "https://openrouter.ai/api/v1")
+    bot_env.setenv("TEE_TIME_BOT_API_KEY", "sk")
+    with pytest.raises(RuntimeError, match="TEE_TIME_BOT_MODEL"):
+        BotSettings.from_env()
+    bot_env.setenv("TEE_TIME_BOT_MODEL", "x/y:free")
+    settings = BotSettings.from_env()
+    assert (settings.base_url, settings.api_key, settings.model) == (
+        "https://openrouter.ai/api/v1",
+        "sk",
+        "x/y:free",
+    )
 
 
 def test_the_real_tools_are_the_allowlist_and_answer(seeded, db, tmp_path: Path):

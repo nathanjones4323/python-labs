@@ -1,4 +1,4 @@
-"""The conversation: a message in, Claude and the booking tools, a reply out.
+"""The conversation: a message in, the model and the booking tools, a reply out.
 
 A manual tool-use loop rather than the SDK's tool runner, because one kind of
 call must not run at all: a paying booking (`tools.asks_to_pay`). The loop
@@ -20,10 +20,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
-import anthropic
-from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
+from anthropic.types import Message, MessageParam, ToolResultBlockParam, ToolUseBlock
 from loguru import logger
 
+from tee_time_booker.bot.llm import Model, ModelError
 from tee_time_booker.bot.tools import (
     RUN_TOOLS,
     BookingTools,
@@ -221,14 +221,14 @@ class Reply:
     payments: list[PendingPayment] = field(default_factory=list)
     runs: list[StartedRun] = field(default_factory=list)
     offers: list[TeeTimeOffer] = field(default_factory=list)
-    # Claude couldn't be reached; `text` says so.
+    # The model couldn't be reached; `text` says so.
     failed: bool = False
 
 
 class BookingAgent:
     def __init__(
         self,
-        client: anthropic.AsyncAnthropic,
+        client: Model,
         tools: BookingTools,
         settings: BotSettings,
         *,
@@ -309,9 +309,9 @@ class BookingAgent:
                     turn.append({"role": "user", "content": list(results)})
                 else:
                     reply.text = "That took too many steps; try asking more simply."
-            except anthropic.APIError as e:
-                logger.exception("Claude request failed")
-                reply.text = f"Couldn't reach Claude ({type(e).__name__}). Try again."
+            except ModelError as e:
+                logger.exception("Model request failed")
+                reply.text = f"Couldn't reach the model ({e}). Try again."
                 reply.failed = True
                 return reply
             history.extend(turn)
@@ -570,9 +570,9 @@ def _text(content: list[Any]) -> str:
     return "\n".join(b.text for b in content if b.type == "text").strip()
 
 
-def _stop_text(response: anthropic.types.Message) -> str:
+def _stop_text(response: Message) -> str:
     if response.stop_reason == "refusal":
-        return "Claude declined to answer that one."
+        return "The model declined to answer that one."
     if response.stop_reason == "max_tokens":
         return "That answer ran too long; try a narrower question."
     return "(no reply)"

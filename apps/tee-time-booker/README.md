@@ -51,7 +51,7 @@ reaching for an adapter directly.
 | `main.py` | The CLI |
 | `api/` | The FastAPI app: the same operations as routes (see "HTTP API") |
 | `mcp.py` | The API's routes as MCP tools, via FastMCP |
-| `bot/` | The Telegram bot: Claude over the MCP tools, the payment confirmation, optional voice notes, run updates (see "Chat and voice") |
+| `bot/` | The Telegram bot: a model (Claude, a local one, or a free hosted one; `llm.py`, `local_model.py`) over the MCP tools, the payment confirmation, optional voice notes, run updates (see "Chat and voice") |
 | `setup.py` | First-time setup for running it yourself: `.env`, the SQLite database, your plans |
 | `selection.py` | Which of the available slots wins |
 | `dates.py` | Which date to book, and when the site releases it |
@@ -266,16 +266,26 @@ transcript. To send voice notes anyway, add the `voice` extra
 (`--extra voice`) and the bot transcribes them itself (see below).
 
 It's one process holding the API, its booking worker and the MCP tools, with
-Claude (`bot/agent.py`) reading each message and calling the tools:
+a model (`bot/agent.py`) reading each message and calling the tools:
+
+- **Your choice of model** (`bot/llm.py`): Claude; a model on this machine
+  through [Ollama](https://ollama.com), free and private (`setup` picks the
+  strongest tool-calling model the memory fits, from `bot/local_model.py`,
+  downloads it and gives it a context window the tools fit in); or any
+  OpenAI-compatible API, such as a free OpenRouter, Gemini or OpenCode Zen
+  model. The agent speaks the Messages API; the OpenAI-compatible model
+  translates to chat completions and back. Claude follows the booking rules
+  best; smaller local models can misread dates or pick odd tools, but the
+  payment gate below is code, so no model pays without your tap.
 
 - **Long polling**: the bot asks Telegram for messages, so the machine opens
   no ports and needs no public address.
 - **Only you**: every update from a Telegram user not in
   `TELEGRAM_ALLOWED_USER_IDS` is dropped before any handler runs.
-- **Booking tools only**: Claude gets an allowlist of the MCP tools
+- **Booking tools only**: the model gets an allowlist of the MCP tools
   (`bot/tools.py`): looking (every course at once unless you name some),
   booking, scheduling, cancelling, plans, run history. No shell, no files.
-- **One card of tee times**: Claude picks the best slots from a search, up to
+- **One card of tee times**: the model picks the best slots from a search, up to
   twelve across courses, and the bot shows them as one card with a Book
   button each, taken only from what the search actually returned.
 - **Paying needs your tap**: a call that pays is not run — booking now
@@ -312,8 +322,7 @@ by the booker itself.
 
 Someone else can run their own copy, with their own logins and card, on
 their own machine: nothing is shared with you or anyone else. They need
-[uv](https://docs.astral.sh/uv/), a Telegram account, an Anthropic API key,
-and accounts on the booking sites they use. The repository is private, so
+[uv](https://docs.astral.sh/uv/), a Telegram account, and accounts on the booking sites they use. The repository is private, so
 they also need read access to it (a collaborator invite).
 
 ```bash
@@ -327,10 +336,16 @@ uv run --package tee-time-booker python -m tee_time_booker.bot
 ```
 
 `setup` walks through making the bot with @BotFather, finding your Telegram
-user id, and the logins (and, for foreUP, the card) for the courses you book.
+user id, choosing the model (a local one by default: it checks the machine's
+memory, and needs [Ollama](https://ollama.com/download) installed and
+running; or a free hosted API, or Claude with an Anthropic key), and the logins (and, for foreUP, the card) for the courses you book.
 It writes them to `.env` (mode 600), creates a SQLite database next to it
 and loads the courses with a default plan for each course you chose.
-Rerunning it keeps what's already in `.env` and asks only for what's missing.
+Rerunning it keeps what's already in `.env` and asks only for what's missing;
+`setup --model` asks only for the model again, to switch. Whichever model you
+pick gets one test message first, so a bad key, or a free model that's
+rate-limited or refuses this kind of app, shows up during setup with the
+provider's reason, and you can pick another.
 
 Things to know:
 
@@ -477,7 +492,7 @@ watch the browser. The same operations over HTTP: see "HTTP API" above.
 
 Tests cover the date logic, slot selection, both adapters' response parsing,
 the course/adapter wiring (no browser needed), the bot's payment gate and
-tool allowlist (no Telegram or Claude needed), and the migrations, the state
+tool allowlist (no Telegram or model needed), and the migrations, the state
 machine, and the CLI's and the API's bookkeeping against a real database: a
 throwaway SQLite file by default, or the Postgres in
 `TEE_TIME_TEST_DATABASE_URL` (the compose file creates `tee_time_booker_test`
@@ -507,10 +522,12 @@ The bot's tests skip themselves unless the `bot` extra is installed.
 | `TEE_TIME_TEST_DATABASE_URL` | no | | A throwaway Postgres for the test suite; without it DB tests use a temporary SQLite file |
 | `TELEGRAM_BOT_TOKEN` | for the bot | | From @BotFather |
 | `TELEGRAM_ALLOWED_USER_IDS` | for the bot | | Numeric Telegram user ids the bot answers, comma-separated |
-| `ANTHROPIC_API_KEY` | for the bot | | Claude reads the messages |
 | `TEE_TIME_USER_EMAIL` | for the bot | | The `users` row the bot books as |
-| `TEE_TIME_BOT_MODEL` | no | `claude-sonnet-5-5` | The Claude model |
-| `TEE_TIME_BOT_EFFORT` | no | `medium` | Claude's effort level (`low` … `max`) |
+| `TEE_TIME_BOT_PROVIDER` | for the bot | `anthropic` if `ANTHROPIC_API_KEY` is set | Who runs the model: `anthropic`, `local` (Ollama) or `openai` (any OpenAI-compatible API) |
+| `ANTHROPIC_API_KEY` | for `anthropic` | | Claude's key |
+| `TEE_TIME_BOT_BASE_URL`, `TEE_TIME_BOT_API_KEY` | for `openai` | | The API's base URL and key |
+| `TEE_TIME_BOT_MODEL` | for `openai` | `claude-sonnet-5-5` / `tee-time-booker` (local) | The model |
+| `TEE_TIME_BOT_EFFORT` | no | `medium` | Claude's effort level (`low` … `max`; `anthropic` only) |
 | `TEE_TIME_WHISPER_MODEL` | no | `base.en` | The local Whisper model for voice notes (`voice` extra) |
 | `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |
 | `TEE_TIME_TARGET_DATE` | no | | Testing aid: book this `YYYY-MM-DD` instead of the computed date, without waiting for a release |
