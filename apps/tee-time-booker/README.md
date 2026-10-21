@@ -1,8 +1,9 @@
 # Tee Time Booker
 
-Books a tee time with Playwright — on a schedule, from the command line, or
-over HTTP (and so as MCP tools). Who wants what booked, and what every run
-did, live in Postgres.
+Books a tee time with Playwright — on a schedule, from the command line,
+over HTTP (and so as MCP tools), or by texting or talking to a Telegram bot.
+Who wants what booked, and what every run did, live in Postgres, or in a
+SQLite file for someone running it on their own machine.
 
 Two booking sites are supported today, behind one interface:
 
@@ -48,6 +49,8 @@ reaching for an adapter directly.
 | `main.py` | The CLI |
 | `api/` | The FastAPI app: the same operations as routes (see "HTTP API") |
 | `mcp.py` | The API's routes as MCP tools, via FastMCP |
+| `bot/` | The Telegram bot: Claude over the MCP tools, the payment confirmation, optional voice notes, run updates (see "Chat and voice") |
+| `setup.py` | First-time setup for running it yourself: `.env`, the SQLite database, your plans |
 | `selection.py` | Which of the available slots wins |
 | `dates.py` | Which date to book, and when the site releases it |
 | `browser.py` | The Chromium session and the failure artifacts |
@@ -76,7 +79,12 @@ one: append a `CourseConfig` to `SEED_COURSES` and run
 
 ## Database
 
-The database is the source of truth for who books what:
+The database is the source of truth for who books what. It's Postgres for the
+hosted install and CI, or a SQLite file (`DATABASE_URL=sqlite:///...`) for
+someone running the booker on their own machine; the models and migrations
+work on both. On SQLite every transaction takes the write lock up front
+(`BEGIN IMMEDIATE`), standing in for Postgres's row lock when a request is
+claimed:
 
 | Table | Row |
 | --- | --- |
@@ -219,6 +227,92 @@ module with `DATABASE_URL` and the site logins in its environment; the
 agent then books with `book_plan` and polls `get_run`. The API's
 `/health` route is left out of the tools.
 
+## Chat and voice (Telegram)
+
+`python -m tee_time_booker.bot` books from your phone: text the bot "what's
+open at Saticoy Saturday morning?" or "book my Soule plan, 4 players after
+9".
+
+```bash
+uv sync --package tee-time-booker --extra bot
+uv run --package tee-time-booker python -m tee_time_booker.bot
+```
+
+To talk instead of type, use your phone keyboard's dictation (the mic key)
+and send the text. It needs no setup, and you see the words, and can fix a
+misheard course or time, before you send. Telegram's own "transcribe" button
+on voice messages doesn't help here: bots receive only the audio, never that
+transcript. To send voice notes anyway, add the `voice` extra
+(`--extra voice`) and the bot transcribes them itself (see below).
+
+It's one process holding the API, its booking worker and the MCP tools, with
+Claude (`bot/agent.py`) reading each message and calling the tools:
+
+- **Long polling**: the bot asks Telegram for messages, so the machine opens
+  no ports and needs no public address.
+- **Only you**: every update from a Telegram user not in
+  `TELEGRAM_ALLOWED_USER_IDS` is dropped before any handler runs.
+- **Booking tools only**: Claude gets an allowlist of the MCP tools
+  (`bot/tools.py`) — looking, booking, cancelling, run history. No shell, no
+  files, and not `create_plan`.
+- **Paying needs your tap**: a `book_plan` / `run_request` call with
+  `submit_payment: true` is not run. The bot sends a Confirm / Cancel button
+  describing what will be booked, read from the plan or request itself rather
+  than from Claude's text, and runs the call only when you tap Confirm (within
+  15 minutes; each button works once). Dry runs go ahead without asking, and
+  with `TEE_TIME_SUBMIT_PAYMENT` off every run is a dry run, so there's
+  nothing to confirm.
+- **Run updates**: a started run is watched (every 30 s) and its outcome sent
+  to the chat: booked, dry run, failed, or the "payment sent, no confirmation
+  seen" case. The watch is in memory, so a run still going when the bot stops
+  isn't reported after a restart; `/runs` lists recent runs. Stopping the
+  bot waits for runs in progress, as stopping the API does.
+- **Voice notes (optional) are transcribed on this machine** with
+  faster-whisper (`bot/voice.py`; the model downloads on first use), and the
+  bot replies with what it heard before acting on it. Without the `voice`
+  extra, the bot answers a voice note with the command to install it.
+
+Commands: `/help`, `/new` (forget the conversation), `/runs`. Each chat's
+history is kept in memory until `/new` or a restart.
+
+Telegram bot chats aren't end-to-end encrypted, so nothing secret goes
+through the chat: logins and the card stay in `.env` and are only ever read
+by the booker itself.
+
+## Run it yourself
+
+Someone else can run their own copy, with their own logins and card, on
+their own machine: nothing is shared with you or anyone else. They need
+[uv](https://docs.astral.sh/uv/), a Telegram account, an Anthropic API key,
+and accounts on the booking sites they use. The repository is private, so
+they also need read access to it (a collaborator invite).
+
+```bash
+git clone https://github.com/nathanjones4323/python-labs.git
+cd python-labs
+uv sync --package tee-time-booker --extra bot  # add --extra voice for voice notes
+uv run --package tee-time-booker playwright install chromium
+cd apps/tee-time-booker
+uv run --package tee-time-booker python -m tee_time_booker.setup
+uv run --package tee-time-booker python -m tee_time_booker.bot
+```
+
+`setup` walks through making the bot with @BotFather, finding your Telegram
+user id, and the logins (and, for foreUP, the card) for the courses you book.
+It writes them to `.env` (mode 600), creates a SQLite database next to it
+and loads the courses with a default plan for each course you chose.
+Rerunning it keeps what's already in `.env` and asks only for what's missing.
+
+Things to know:
+
+- **The machine has to be on.** Bookings run on it, so a laptop that's asleep
+  at a course's release (midnight for Soule Park) misses it. Booking an
+  already-open day from the chat works whenever the bot is running.
+- **Dry runs first.** `TEE_TIME_SUBMIT_PAYMENT=false` until you've seen a dry
+  run reach checkout; then set it to `true` in `.env` and restart the bot.
+- **Only the courses in `courses.py`** can be booked; adding one is described
+  under "Adding a course".
+
 ## foreUP (Soule Park)
 
 The flow: open the booking page, pick the booking class, log in, query
@@ -320,12 +414,14 @@ uv run --package tee-time-booker playwright install chromium
 ```
 
 Create `apps/tee-time-booker/.env` from `.env.example` and fill in the login
-and payment details for the site you're booking. Then, from
-`apps/tee-time-booker`, start a Postgres, migrate it and seed it with the
-known courses plus your own accounts and plans:
+and payment details for the site you're booking (or run the setup wizard,
+see "Run it yourself"). Then, from `apps/tee-time-booker`, migrate the
+database and seed it with the known courses plus your own accounts and plans.
+`.env.example` points at a SQLite file; for Postgres, start the compose one
+and point `DATABASE_URL` at it first:
 
 ```bash
-docker compose up -d --wait
+docker compose up -d --wait   # only for Postgres
 uv run --package tee-time-booker alembic upgrade head
 uv run --package tee-time-booker python -m tee_time_booker.seed --user you@example.com
 ```
@@ -351,20 +447,27 @@ runs one specific request instead. Set `TEE_TIME_HEADLESS=false` in `.env` to
 watch the browser. The same operations over HTTP: see "HTTP API" above.
 
 Tests cover the date logic, slot selection, both adapters' response parsing,
-the course/adapter wiring (no browser needed) and, with
-`TEE_TIME_TEST_DATABASE_URL` set, the migrations, the state machine, and the
-CLI's and the API's bookkeeping against a real Postgres (the compose file
-creates `tee_time_booker_test` for this; it is wiped every run):
+the course/adapter wiring (no browser needed), the bot's payment gate and
+tool allowlist (no Telegram or Claude needed), and the migrations, the state
+machine, and the CLI's and the API's bookkeeping against a real database: a
+throwaway SQLite file by default, or the Postgres in
+`TEE_TIME_TEST_DATABASE_URL` (the compose file creates `tee_time_booker_test`
+for this; it is wiped every run). Run both when touching the models or the
+migrations:
 
 ```bash
 uv run --package tee-time-booker pytest
+TEE_TIME_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5433/tee_time_booker_test \
+    uv run --package tee-time-booker pytest
 ```
+
+The bot's tests skip themselves unless the `bot` extra is installed.
 
 ## Environment variables
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | yes | | Postgres holding courses, plans, requests and runs (`postgresql://...`; the psycopg driver is added automatically) |
+| `DATABASE_URL` | yes | | The database holding courses, plans, requests and runs: Postgres (`postgresql://...`; the psycopg driver is added automatically) or SQLite (`sqlite:////absolute/path.db`) |
 | `TEE_TIME_PLAN` | to book | | Booking plan id (`--list-plans`); `--plan` / `--request` override it |
 | `SOULE_EMAIL`, `SOULE_PASSWORD` | for the seeded Soule Park account | | foreUP login (`env_prefix` `SOULE`) |
 | `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD` | for the seeded GolfNow account | | GolfNow login (`env_prefix` `GOLFNOW`) |
@@ -372,7 +475,14 @@ uv run --package tee-time-booker pytest
 | `CREDIT_CARD_STATE` (two-letter code), `CREDIT_CARD_POSTAL_CODE` | to book on GolfNow | | Billing details GolfNow asks for alongside the card saved on the account |
 | `TEE_TIME_SUBMIT_PAYMENT` | no | `false` | Click the final submit button. An operator kill switch: `false` makes every run a dry run |
 | `TEE_TIME_HEADLESS` | no | `true` | Run Chromium headless |
-| `TEE_TIME_TEST_DATABASE_URL` | no | | A throwaway database for the test suite; DB tests are skipped without it |
+| `TEE_TIME_TEST_DATABASE_URL` | no | | A throwaway Postgres for the test suite; without it DB tests use a temporary SQLite file |
+| `TELEGRAM_BOT_TOKEN` | for the bot | | From @BotFather |
+| `TELEGRAM_ALLOWED_USER_IDS` | for the bot | | Numeric Telegram user ids the bot answers, comma-separated |
+| `ANTHROPIC_API_KEY` | for the bot | | Claude reads the messages |
+| `TEE_TIME_USER_EMAIL` | for the bot | | The `users` row the bot books as |
+| `TEE_TIME_BOT_MODEL` | no | `claude-opus-5-5` | The Claude model |
+| `TEE_TIME_BOT_EFFORT` | no | `medium` | Claude's effort level (`low` … `max`) |
+| `TEE_TIME_WHISPER_MODEL` | no | `base.en` | The local Whisper model for voice notes (`voice` extra) |
 | `TEE_TIME_ARTIFACTS_DIR` | no | `artifacts` | Screenshot location |
 | `TEE_TIME_TARGET_DATE` | no | | Testing aid: book this `YYYY-MM-DD` instead of the computed date, without waiting for a release |
 

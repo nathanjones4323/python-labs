@@ -16,11 +16,12 @@ a request can't be booked twice or resurrected once cancelled.
 
 import enum
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -31,6 +32,7 @@ from sqlalchemy import (
     String,
     Text,
     Time,
+    TypeDecorator,
     UniqueConstraint,
     func,
 )
@@ -38,10 +40,37 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
+class UTCDateTime(TypeDecorator[datetime]):
+    """A timestamp that always comes back timezone-aware.
+
+    Postgres's `timestamptz` does this itself. SQLite has no timezone type:
+    values go in as naive UTC (its `CURRENT_TIMESTAMP` default is UTC too) and
+    get their tzinfo back on the way out, so callers never see a naive one.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: datetime | None, dialect: Any
+    ) -> datetime | None:
+        if value is not None and value.tzinfo is not None and dialect.name == "sqlite":
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(
+        self, value: datetime | None, dialect: Any
+    ) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
+
+
 class Base(DeclarativeBase):
     type_annotation_map = {
-        datetime: DateTime(timezone=True),
-        dict[str, Any]: JSONB,
+        datetime: UTCDateTime(),
+        # JSONB on Postgres; SQLite (a local install) stores it as text.
+        dict[str, Any]: JSON().with_variant(JSONB, "postgresql"),
     }
 
 

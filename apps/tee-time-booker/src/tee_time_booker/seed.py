@@ -54,10 +54,20 @@ DEFAULT_PLANS: dict[str, Preferences] = {
 }
 
 
-def seed_user(session, email: str, name: str | None, courses: dict[str, CourseConfig]):
+def seed_user(
+    session,
+    email: str,
+    name: str | None,
+    courses: dict[str, CourseConfig],
+    keys: set[str] | None = None,
+):
+    """The user, a site account and the default plan for each course in `keys`
+    (default: every course with a default plan)."""
     user = ensure_user(session, email, name)
     plans = []
     for key, prefs in DEFAULT_PLANS.items():
+        if keys is not None and key not in keys:
+            continue
         course = upsert_course(session, courses[key])
         prefix = ACCOUNT_ENV_PREFIXES[key]
         account = ensure_site_account(

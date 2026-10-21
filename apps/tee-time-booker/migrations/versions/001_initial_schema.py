@@ -30,12 +30,16 @@ def upgrade() -> None:
         sa.Column("release_pre_start", sa.Time(), nullable=True),
         sa.Column("booking_window_days", sa.SmallInteger(), nullable=True),
         sa.Column(
-            "platform_config", postgresql.JSONB(astext_type=sa.Text()), nullable=False
+            "platform_config",
+            sa.JSON().with_variant(
+                postgresql.JSONB(astext_type=sa.Text()), "postgresql"
+            ),
+            nullable=False,
         ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -49,7 +53,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -65,7 +69,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
@@ -93,7 +97,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
@@ -139,13 +143,13 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
@@ -184,7 +188,7 @@ def upgrade() -> None:
         sa.Column(
             "started_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
@@ -216,5 +220,7 @@ def downgrade() -> None:
     op.drop_table("site_accounts")
     op.drop_table("users")
     op.drop_table("courses")
-    sa.Enum(name="run_status").drop(op.get_bind())
-    sa.Enum(name="request_status").drop(op.get_bind())
+    # Postgres keeps the enums as types of their own; SQLite has none to drop.
+    if op.get_bind().dialect.name == "postgresql":
+        sa.Enum(name="run_status").drop(op.get_bind())
+        sa.Enum(name="request_status").drop(op.get_bind())
