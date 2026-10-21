@@ -193,6 +193,9 @@ class BookingAgent:
                 tool=call.name,
                 arguments=arguments,
             )
+            # Untapped buttons would otherwise stay in memory for good.
+            for stale in [p.id for p in self._payments.values() if p.expired]:
+                del self._payments[stale]
             self._payments[payment.id] = payment
             reply.payments.append(payment)
             content = (

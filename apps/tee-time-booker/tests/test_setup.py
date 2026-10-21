@@ -1,7 +1,7 @@
 import stat
 
 from dotenv import dotenv_values
-from tee_time_booker.setup import Question, ask_missing, write_env
+from tee_time_booker.setup import Question, absolute_sqlite_url, ask_missing, write_env
 
 
 def test_written_values_read_back_exactly_and_only_the_owner_can_read(tmp_path):
@@ -30,3 +30,16 @@ def test_only_unanswered_questions_are_asked(monkeypatch):
     )
     assert answers == {"UNSET": "new"}
     assert asked == ["UNSET"]
+
+
+def test_relative_sqlite_paths_are_made_absolute(tmp_path):
+    assert absolute_sqlite_url("sqlite:///tee.db", tmp_path) == (
+        f"sqlite:///{tmp_path.resolve() / 'tee.db'}"
+    )
+    for unchanged in (
+        "sqlite:////abs/tee.db",
+        "sqlite://",
+        "sqlite:///:memory:",
+        "postgresql://u:p@localhost:5433/tee_time_booker",
+    ):
+        assert absolute_sqlite_url(unchanged, tmp_path) == unchanged

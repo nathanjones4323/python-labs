@@ -45,6 +45,8 @@ from tee_time_booker.mcp import create_server
 # How often a watched run is checked. Runs take minutes, or up to 95 min
 # when waiting on a release.
 RUN_POLL_S = 30
+# Consecutive failed checks before a watch gives up (10 minutes' worth).
+MAX_WATCH_ERRORS = 20
 # Telegram's limit is 4096 characters per message.
 MAX_MESSAGE = 4000
 
@@ -75,6 +77,9 @@ class BookingBot:
         self.transcriber = transcriber
         self.settings = settings
         self.pays = pays
+        # Plain asyncio tasks, not `Application.create_task`: the Application
+        # awaits its own tasks on stop, and a watch can run for 95 minutes.
+        self._watches: set[asyncio.Task] = set()
 
     def install(self, application: Application) -> None:
         # Group -1 runs before every other handler; raising stops the update.
@@ -221,17 +226,27 @@ class BookingBot:
     async def _describe_payment(self, payment: PendingPayment) -> str:
         """What a Confirm will book, read from the plan or request itself
         rather than from anything the model said."""
+        fallback = f"💳 Book and pay? ({payment.tool} {payment.arguments})"
         if payment.tool == "book_plan":
             looked_up = await self.tools.call(
-                "get_plan", {"plan_id": payment.arguments["plan_id"]}
+                "get_plan", {"plan_id": payment.arguments.get("plan_id")}
             )
         else:
             looked_up = await self.tools.call(
-                "get_request", {"request_id": payment.arguments["request_id"]}
+                "get_request", {"request_id": payment.arguments.get("request_id")}
             )
         if looked_up.is_error:
-            return f"💳 Book and pay? ({payment.tool} {payment.arguments})"
-        row = looked_up.json()
+            return fallback
+        try:
+            return self._payment_lines(payment, looked_up.json())
+        except (KeyError, TypeError, ValueError):
+            # Malformed model arguments (e.g. an unparseable target_date) must
+            # not cost the person their Confirm / Cancel buttons.
+            logger.exception("Describing a held payment")
+            return fallback
+
+    @staticmethod
+    def _payment_lines(payment: PendingPayment, row: dict[str, Any]) -> str:
         target = (
             payment.arguments.get("target_date")
             or row.get("target_date")
@@ -267,17 +282,40 @@ class BookingBot:
     def _watch(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
     ) -> None:
-        context.application.create_task(self._follow(context, chat_id, run))
+        task = asyncio.create_task(self._follow(context, chat_id, run))
+        self._watches.add(task)
+        task.add_done_callback(self._watch_done)
+
+    def _watch_done(self, task: asyncio.Task) -> None:
+        self._watches.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.opt(exception=task.exception()).error("Watching a run failed")
+
+    async def stop_watching(self) -> None:
+        """Drop every watch (the runs themselves carry on; `/runs` shows them)."""
+        for task in list(self._watches):
+            task.cancel()
+        await asyncio.gather(*self._watches, return_exceptions=True)
 
     async def _follow(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
     ) -> None:
+        errors = 0
         while True:
             await asyncio.sleep(RUN_POLL_S)
             result = await self.tools.call("get_run", {"run_id": run.run_id})
             if result.is_error:
                 logger.warning(f"Checking run {run.run_id}: {result.text}")
+                errors += 1
+                if errors >= MAX_WATCH_ERRORS:
+                    await self._send(
+                        context,
+                        chat_id,
+                        f"I lost track of the run for {run.course}; /runs shows it.",
+                    )
+                    return
                 continue
+            errors = 0
             body = result.json()
             if body["status"] != "running":
                 await self._send(context, chat_id, format_outcome(run, body))
@@ -326,7 +364,8 @@ def format_outcome(started: StartedRun, run: dict[str, Any]) -> str:
                 if run.get("confirmation")
                 else ""
             )
-            return f"✅ Booked {where} at {slot}.{fee}{confirmation}"
+            at = f" at {slot}" if slot else ""
+            return f"✅ Booked {where}{at}.{fee}{confirmation}"
         case "dry_run":
             return (
                 f"Dry run done: reached checkout for {slot or 'a slot'} at {where}. "
@@ -376,6 +415,7 @@ def build_application() -> Application:
         )
 
     async def stopped(application: Application) -> None:
+        await bot.stop_watching()
         await stack.aclose()
         logger.info("Waiting for runs in progress to finish…")
         await asyncio.to_thread(api.state.worker.shutdown)

@@ -41,7 +41,9 @@ PAYING_TOOLS = frozenset({"book_plan", "run_request"})
 
 
 def asks_to_pay(name: str, arguments: dict[str, Any]) -> bool:
-    return name in PAYING_TOOLS and arguments.get("submit_payment") is True
+    # Anything but an absent or literal False is held: the API coerces "true"
+    # or 1 to True, so an `is True` check would let those pay unconfirmed.
+    return name in PAYING_TOOLS and arguments.get("submit_payment", False) is not False
 
 
 @dataclass(frozen=True)

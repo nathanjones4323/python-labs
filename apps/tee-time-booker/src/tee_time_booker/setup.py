@@ -23,6 +23,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from dotenv import dotenv_values
+from sqlalchemy.engine import make_url
 
 from tee_time_booker.courses import SEED_COURSES
 from tee_time_booker.db import make_session_factory
@@ -134,9 +135,13 @@ def write_env(path: Path, values: dict[str, str]) -> None:
     existing = path.read_text() if path.exists() else ""
     lines = [] if not existing or existing.endswith("\n") else [""]
     lines += [f"{name}={_quote(value)}" for name, value in values.items()]
-    with path.open("a") as f:
+    # Created 0600 (and tightened if it already existed) before any secret
+    # is written, so it is never readable by others even briefly.
+    mode = stat.S_IRUSR | stat.S_IWUSR
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
+    os.fchmod(fd, mode)
+    with os.fdopen(fd, "a") as f:
         f.write("\n".join(lines) + "\n")
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
 def _quote(value: str) -> str:
@@ -145,6 +150,24 @@ def _quote(value: str) -> str:
     if any(c in value for c in " #'\"\\$"):
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
     return value
+
+
+def absolute_sqlite_url(url: str, base: Path) -> str:
+    """`url` with a relative SQLite path resolved against `base`.
+
+    A relative path is opened from whatever directory the booker runs in, so
+    starting the bot from elsewhere would quietly get a new, empty database.
+    Other databases, and in-memory SQLite, come back unchanged.
+    """
+    parsed = make_url(url)
+    path = parsed.database
+    if parsed.get_backend_name() != "sqlite" or not path or path == ":memory:":
+        return url
+    if Path(path).is_absolute():
+        return url
+    return parsed.set(database=str((base / path).resolve())).render_as_string(
+        hide_password=False
+    )
 
 
 def migrate(database_url: str) -> None:
@@ -170,8 +193,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Setting up {env_file} (values already there are kept).")
     new: dict[str, str] = {}
 
-    if not known.get("DATABASE_URL"):
+    database_url = known.get("DATABASE_URL")
+    if not database_url:
         new["DATABASE_URL"] = f"sqlite:///{APP_DIR / 'tee_time_booker.db'}"
+    elif (
+        absolute := absolute_sqlite_url(database_url, env_file.parent)
+    ) != database_url:
+        # Appended after the relative one, so it's the value that's read.
+        new["DATABASE_URL"] = absolute
     new |= ask_missing(BOT_QUESTIONS, known)
 
     courses = {c.key: c for c in SEED_COURSES}
