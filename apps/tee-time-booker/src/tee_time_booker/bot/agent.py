@@ -16,7 +16,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import anthropic
@@ -43,6 +43,11 @@ How booking works here:
 - A plan is a standing wish: a course, a weekday some weeks ahead, a tee-off window, a \
 group size and holes. list_plans shows each plan with the date it would book next.
 - find_tee_times lists what's open on a plan's date (or another date) without booking.
+- To offer tee times, call show_tee_times with the ones that fit what the person asked \
+for (at most eight, best first) rather than listing them in your reply. It shows them \
+a card with a Book button per slot; a tap asks them to confirm and then books exactly \
+that slot, so you don't book it yourself. After it, reply with one short line or \
+nothing at all.
 - book_plan and run_request start a run in the background and answer at once with a \
 run id. The bot itself tells the person the run started and messages them when it \
 ends, so don't repeat either, and don't poll get_run unless they ask how a run is going.
@@ -63,11 +68,47 @@ Replies are read on a phone, so keep them as short as a text message: one to thr
 lines, no preamble or sign-off. Don't explain how the tools work, restate the \
 question, or offer next steps unless asked. Telegram renders Markdown: put the key \
 fact in **bold** (the date, the time picked), use no headings, and leave a blank \
-line between lines (a single newline doesn't break the line). When listing tee \
-times, give at most five: up to three on one line, like "**Sat Oct 24:** 8:44 AM, \
-9:02 AM, 9:20 AM ($20.75)", or more as a small table with Time and Price columns. \
+line between lines (a single newline doesn't break the line). If you mention tee \
+times in text, give at most three, like "**Sat Oct 24:** 8:44 AM, 9:02 AM ($20.75)". \
 Write times like 9:12 AM and dates like Sat Oct 24.
 Today is {today:%A %B %-d, %Y}."""
+
+# Answered by the bot itself, not the MCP server: the slots must come from a
+# find_tee_times result in the same chat, so the card can't show a made-up one.
+SHOW_TEE_TIMES = "show_tee_times"
+MAX_OFFERED = 8
+SHOW_TEE_TIMES_DEF = {
+    "name": SHOW_TEE_TIMES,
+    "description": (
+        "Show the person tee times from an earlier find_tee_times result as a card "
+        "with a Book button per slot. A tap asks them to confirm, then books that "
+        "exact slot."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "plan_id": {
+                "type": "string",
+                "description": "The plan find_tee_times was called with",
+            },
+            "date": {
+                "type": "string",
+                "format": "date",
+                "description": "The day searched, YYYY-MM-DD",
+            },
+            "times": {
+                "type": "array",
+                "items": {"type": "string", "description": "Tee-off, HH:MM 24-hour"},
+                "minItems": 1,
+                "maxItems": MAX_OFFERED,
+                "description": "The slots to offer, best first",
+            },
+        },
+        "required": ["plan_id", "date", "times"],
+    },
+}
+# A held booking of one slot from a card, run by `confirm` (not an MCP tool).
+BOOK_SLOT = "book_slot"
 
 PAYMENT_ON = "Payment is switched on for this install: a confirmed booking really pays."
 PAYMENT_OFF = (
@@ -111,11 +152,28 @@ class StartedRun:
         )
 
 
+@dataclass(frozen=True)
+class TeeTimeOffer:
+    """Slots shown on a card, each with a Book button. `slots` are rows of a
+    find_tee_times result, as the API returned them."""
+
+    id: str
+    chat_id: int
+    plan_id: str
+    slots: tuple[dict[str, Any], ...]
+    created: float = field(default_factory=time.monotonic)
+
+    @property
+    def expired(self) -> bool:
+        return time.monotonic() - self.created > PAYMENT_TTL_S
+
+
 @dataclass
 class Reply:
     text: str
     payments: list[PendingPayment] = field(default_factory=list)
     runs: list[StartedRun] = field(default_factory=list)
+    offers: list[TeeTimeOffer] = field(default_factory=list)
 
 
 class BookingAgent:
@@ -137,6 +195,9 @@ class BookingAgent:
         self._history: dict[int, list[MessageParam]] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._payments: dict[str, PendingPayment] = {}
+        self._offers: dict[str, TeeTimeOffer] = {}
+        # The latest find_tee_times slots per (chat, plan, day), for show_tee_times.
+        self._found: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
 
     def _lock(self, chat_id: int) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())
@@ -160,7 +221,10 @@ class BookingAgent:
         it as progress)."""
         async with self._lock(chat_id):
             if self._tool_defs is None:
-                self._tool_defs = await self._tools.definitions()
+                self._tool_defs = [
+                    *await self._tools.definitions(),
+                    SHOW_TEE_TIMES_DEF,
+                ]
             history = self._history.setdefault(chat_id, [])
             # Built up here and kept only if the turn completes, so a failed
             # request never leaves a tool call without its result in history.
@@ -179,7 +243,10 @@ class BookingAgent:
                     )
                     turn.append({"role": "assistant", "content": response.content})
                     if response.stop_reason != "tool_use":
-                        reply.text = _text(response.content) or _stop_text(response)
+                        # After a card, saying nothing more is fine.
+                        reply.text = _text(response.content) or (
+                            "" if reply.offers else _stop_text(response)
+                        )
                         break
                     calls = [b for b in response.content if b.type == "tool_use"]
                     if on_step is not None:
@@ -201,6 +268,8 @@ class BookingAgent:
         self, chat_id: int, call: ToolUseBlock, reply: Reply
     ) -> ToolResultBlockParam:
         arguments = dict(call.input)
+        if call.name == SHOW_TEE_TIMES:
+            return self._show(chat_id, call, reply)
         if self._pays and asks_to_pay(call.name, arguments):
             payment = PendingPayment(
                 id=secrets.token_urlsafe(8),
@@ -222,12 +291,117 @@ class BookingAgent:
         result = await self._tools.call(call.name, arguments)
         if call.name in PAYING_TOOLS and not result.is_error:
             reply.runs.append(StartedRun.from_result(result))
+        if call.name == "find_tee_times" and not result.is_error:
+            self._remember_found(chat_id, str(arguments.get("plan_id")), result)
         return {
             "type": "tool_result",
             "tool_use_id": call.id,
             "content": result.text,
             "is_error": result.is_error,
         }
+
+    def _remember_found(self, chat_id: int, plan_id: str, result: ToolResult) -> None:
+        by_day: dict[str, list[dict[str, Any]]] = {}
+        for slot in result.json():
+            by_day.setdefault(slot["start"][:10], []).append(slot)
+        for day, slots in by_day.items():
+            self._found[(chat_id, plan_id, day)] = slots
+
+    def _show(
+        self, chat_id: int, call: ToolUseBlock, reply: Reply
+    ) -> ToolResultBlockParam:
+        arguments = dict(call.input)
+        plan_id = str(arguments.get("plan_id"))
+        found = self._found.get((chat_id, plan_id, str(arguments.get("date"))))
+        if found is None:
+            content = "Call find_tee_times for that plan and date first."
+            return {
+                "type": "tool_result",
+                "tool_use_id": call.id,
+                "content": content,
+                "is_error": True,
+            }
+        by_time = {slot["start"][11:16]: slot for slot in found}
+        times = [str(t)[:5].zfill(5) for t in arguments.get("times") or []]
+        slots = [by_time[t] for t in dict.fromkeys(times) if t in by_time]
+        missing = [t for t in times if t not in by_time]
+        if not slots:
+            content = (
+                f"None of {missing} is in the find_tee_times result. Open: "
+                f"{sorted(by_time)}"
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": call.id,
+                "content": content,
+                "is_error": True,
+            }
+        offer = TeeTimeOffer(
+            id=secrets.token_urlsafe(8),
+            chat_id=chat_id,
+            plan_id=plan_id,
+            slots=tuple(slots[:MAX_OFFERED]),
+        )
+        for stale in [o.id for o in self._offers.values() if o.expired]:
+            del self._offers[stale]
+        self._offers[offer.id] = offer
+        reply.offers.append(offer)
+        content = f"Shown as a card with Book buttons: {[s['start'] for s in slots]}."
+        if missing:
+            content += f" Not in the result, so left out: {missing}."
+        return {"type": "tool_result", "tool_use_id": call.id, "content": content}
+
+    def offer(self, offer_id: str) -> TeeTimeOffer | None:
+        """A card's slots, for as long as its buttons work. Not used up by a
+        tap: a Book only asks to confirm, so the person may pick another."""
+        offer = self._offers.get(offer_id)
+        if offer is None or offer.expired:
+            return None
+        return offer
+
+    def hold_slot(self, offer: TeeTimeOffer, slot: dict[str, Any]) -> PendingPayment:
+        """A Book tap: booking that one slot, waiting on Confirm."""
+        payment = PendingPayment(
+            id=secrets.token_urlsafe(8),
+            chat_id=offer.chat_id,
+            tool=BOOK_SLOT,
+            arguments={"plan_id": offer.plan_id, "slot": slot},
+        )
+        for stale in [p.id for p in self._payments.values() if p.expired]:
+            del self._payments[stale]
+        self._payments[payment.id] = payment
+        return payment
+
+    async def _book_slot(self, arguments: dict[str, Any]) -> ToolResult:
+        """A one-off request for exactly this slot, then a run on it."""
+        plan = await self._tools.call("get_plan", {"plan_id": arguments["plan_id"]})
+        if plan.is_error:
+            return plan
+        row = plan.json()
+        start = datetime.fromisoformat(arguments["slot"]["start"])
+        created = await self._tools.call(
+            "create_request",
+            {
+                "user_email": row["user_email"],
+                "course": row["course"],
+                "env_prefix": row["env_prefix"],
+                "target_date": start.date().isoformat(),
+                "earliest": start.time().isoformat(),
+                "latest": start.time().isoformat(),
+                "holes": row["holes"],
+                "players": row["players"],
+            },
+        )
+        if created.is_error:
+            return created
+        return await self._tools.call(
+            "run_request",
+            {
+                "request_id": created.json()["id"],
+                "submit_payment": self._pays,
+                "wait_for_release": False,
+            },
+        )
 
     def take_payment(self, payment_id: str) -> PendingPayment | None:
         """The pending payment for a button, once; None if unknown or stale."""
@@ -240,12 +414,19 @@ class BookingAgent:
         self, payment: PendingPayment
     ) -> tuple[ToolResult, StartedRun | None]:
         """Run a payment the person confirmed, and tell the conversation."""
-        result = await self._tools.call(payment.tool, payment.arguments)
+        if payment.tool == BOOK_SLOT:
+            result = await self._book_slot(payment.arguments)
+            what = f"booking {payment.arguments['slot']['start']} from the card"
+        else:
+            result = await self._tools.call(payment.tool, payment.arguments)
+            what = payment.tool
         run = None if result.is_error else StartedRun.from_result(result)
         outcome = (
             f"run {run.run_id} started" if run else f"it failed: {result.text[:300]}"
         )
-        await self.note(payment.chat_id, f"[The person tapped Confirm; {outcome}.]")
+        await self.note(
+            payment.chat_id, f"[The person tapped Confirm on {what}; {outcome}.]"
+        )
         return result, run
 
     async def note(self, chat_id: int, text: str) -> None:
@@ -261,6 +442,10 @@ class BookingAgent:
             p.id for p in self._payments.values() if p.chat_id == chat_id
         ]:
             del self._payments[payment_id]
+        for offer_id in [o.id for o in self._offers.values() if o.chat_id == chat_id]:
+            del self._offers[offer_id]
+        for key in [k for k in self._found if k[0] == chat_id]:
+            del self._found[key]
 
 
 def _text(content: list[Any]) -> str:

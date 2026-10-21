@@ -27,6 +27,7 @@ DRAFT_REFRESH_S = 20
 
 STEP_LABELS = {
     "find_tee_times": "Checking what's open…",
+    "show_tee_times": "Laying out the times…",
     "list_plans": "Looking at your plans…",
     "get_plan": "Looking at your plans…",
     "list_courses": "Looking up courses…",
@@ -48,12 +49,18 @@ def escape(text: Any) -> str:
     return _SPECIAL.sub(r"\\\1", str(text))
 
 
+def escape_prices(markdown: str) -> str:
+    """The model's Markdown with its prices kept out of formulas. Not for
+    templates: inside an HTML block a backslash shows as itself."""
+    return _PRICE.sub(r"\\$", markdown)
+
+
 async def send_rich(bot: Any, chat_id: int, markdown: str, **kwargs: Any) -> None:
     await bot.do_api_request(
         "sendRichMessage",
         api_kwargs={
             "chat_id": chat_id,
-            "rich_message": {"markdown": _PRICE.sub(r"\\$", markdown)},
+            "rich_message": {"markdown": markdown},
             **kwargs,
         },
     )
@@ -66,7 +73,7 @@ async def edit_rich(bot: Any, chat_id: int, message_id: int, markdown: str) -> N
         api_kwargs={
             "chat_id": chat_id,
             "message_id": message_id,
-            "rich_message": {"markdown": _PRICE.sub(r"\\$", markdown)},
+            "rich_message": {"markdown": markdown},
         },
     )
 

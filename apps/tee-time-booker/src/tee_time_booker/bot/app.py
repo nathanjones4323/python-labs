@@ -17,7 +17,7 @@ import html
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
@@ -40,8 +40,20 @@ from telegram.ext import (
 )
 
 from tee_time_booker.api import create_app
-from tee_time_booker.bot.agent import BookingAgent, PendingPayment, StartedRun
-from tee_time_booker.bot.rich import Progress, edit_rich, escape, send_rich
+from tee_time_booker.bot.agent import (
+    BOOK_SLOT,
+    BookingAgent,
+    PendingPayment,
+    StartedRun,
+    TeeTimeOffer,
+)
+from tee_time_booker.bot.rich import (
+    Progress,
+    edit_rich,
+    escape,
+    escape_prices,
+    send_rich,
+)
 from tee_time_booker.bot.tools import BookingTools
 from tee_time_booker.bot.voice import Transcriber, VoiceUnavailable
 from tee_time_booker.config import BotSettings, Settings
@@ -183,6 +195,9 @@ class BookingBot:
     ) -> None:
         query = update.callback_query
         action, _, payment_id = (query.data or "").partition(":")
+        if action == "book":
+            await self._on_book(context, query, payment_id)
+            return
         payment = self.agent.take_payment(payment_id)
         if payment is None or payment.chat_id != query.message.chat_id:
             await query.answer("That button has expired. Ask me again.")
@@ -195,16 +210,40 @@ class BookingBot:
             )
             await self.agent.note(payment.chat_id, "[The person tapped Cancel.]")
             return
-        await self._close_prompt(
-            context, query, payment, "Confirmed, starting the run…"
-        )
+        # A run starts in the background, so this answers at once; the card
+        # then says how it went rather than a message of its own.
         result, run = await self.agent.confirm(payment)
         if run is None:
-            await self._send(
-                context, payment.chat_id, f"Couldn't start it: {escape(result.text)}"
+            await self._close_prompt(
+                context, query, payment, f"Couldn't start it: {result.text[:300]}"
             )
             return
-        await self._started(context, payment.chat_id, run)
+        kind = "Dry run" if run.dry_run else "Booking"
+        await self._close_prompt(
+            context,
+            query,
+            payment,
+            f"{kind} started. I'll message you when it finishes.",
+        )
+        self._watch(context, payment.chat_id, run)
+
+    async def _on_book(
+        self, context: ContextTypes.DEFAULT_TYPE, query: Any, data: str
+    ) -> None:
+        """A Book tap on a tee-time card: ask to confirm that one slot. The
+        card keeps its buttons, so another slot can still be picked."""
+        offer_id, _, index = data.partition(":")
+        offer = self.agent.offer(offer_id)
+        slot = None
+        if offer is not None and offer.chat_id == query.message.chat_id:
+            with suppress(ValueError, IndexError):
+                slot = offer.slots[int(index)]
+        if slot is None:
+            await query.answer("Those times have expired. Ask me again.")
+            await query.edit_message_reply_markup(None)
+            return
+        await query.answer()
+        await self._ask_to_pay(context, self.agent.hold_slot(offer, slot))
 
     async def _close_prompt(
         self,
@@ -213,7 +252,8 @@ class BookingBot:
         payment: PendingPayment,
         status: str,
     ) -> None:
-        """Swap the Confirm / Cancel buttons for what became of them.
+        """Swap the Confirm / Cancel buttons for what became of them
+        (`status`, plain text).
 
         The prompt is drawn again rather than read back: a rich message has
         no `text`, and python-telegram-bot doesn't parse its content yet.
@@ -224,12 +264,12 @@ class BookingBot:
                 context.bot,
                 payment.chat_id,
                 query.message.message_id,
-                f"{card}\n\n<footer>{status}</footer>",
+                f"{card}\n\n<footer>{html.escape(status)}</footer>",
             )
         except BadRequest:
             logger.exception("Editing the payment prompt")
             await query.edit_message_reply_markup(None)
-            await self._send(context, payment.chat_id, status)
+            await self._send(context, payment.chat_id, escape(status))
 
     async def _on_error(
         self, update: object, context: ContextTypes.DEFAULT_TYPE
@@ -259,11 +299,40 @@ class BookingBot:
             context.bot, chat_id, update.effective_message.message_id
         ) as progress:
             reply = await self.agent.respond(chat_id, text, on_step=progress.step)
-        await self._send(context, chat_id, reply.text)
+        if reply.text:
+            await self._send(context, chat_id, escape_prices(reply.text))
+        for offer in reply.offers:
+            await self._show_offer(context, offer)
         for payment in reply.payments:
             await self._ask_to_pay(context, payment)
         for run in reply.runs:
             self._watch(context, chat_id, run)
+
+    async def _show_offer(
+        self, context: ContextTypes.DEFAULT_TYPE, offer: TeeTimeOffer
+    ) -> None:
+        # A keyboard under the card, not buttons in its table: Telegram shows
+        # those but (as of Bot API 10.3) doesn't send the bot their taps.
+        buttons = [
+            InlineKeyboardButton(slot_label(slot), callback_data=f"book:{offer.id}:{i}")
+            for i, slot in enumerate(offer.slots)
+        ]
+        keyboard = InlineKeyboardMarkup(
+            [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+        )
+        plan = await self.tools.call("get_plan", {"plan_id": offer.plan_id})
+        row = None if plan.is_error else plan.json()
+        course = await self._course_name(row["course"]) if row else None
+        await send_with_retry(
+            context.bot,
+            offer.chat_id,
+            format_offer(offer, row, course),
+            reply_markup=keyboard,
+        )
+
+    async def _course_name(self, key: str) -> str:
+        looked_up = await self.tools.call("get_course", {"key": key})
+        return key if looked_up.is_error else looked_up.json()["name"]
 
     async def _ask_to_pay(
         self, context: ContextTypes.DEFAULT_TYPE, payment: PendingPayment
@@ -272,9 +341,9 @@ class BookingBot:
             [
                 [
                     InlineKeyboardButton(
-                        "Confirm and pay",
+                        "Confirm and pay" if self.pays else "Start dry run",
                         callback_data=f"pay:{payment.id}",
-                        style="success",
+                        style="success" if self.pays else "primary",
                     ),
                     InlineKeyboardButton(
                         "Cancel", callback_data=f"cancel:{payment.id}"
@@ -291,7 +360,7 @@ class BookingBot:
         fallback = (
             f"**💳 Book and pay?**\n\n{escape(f'{payment.tool} {payment.arguments}')}"
         )
-        if payment.tool == "book_plan":
+        if payment.tool in ("book_plan", BOOK_SLOT):
             looked_up = await self.tools.call(
                 "get_plan", {"plan_id": payment.arguments.get("plan_id")}
             )
@@ -302,15 +371,47 @@ class BookingBot:
         if looked_up.is_error:
             return fallback
         try:
-            return self._payment_lines(payment, looked_up.json())
+            row = looked_up.json()
+            course = await self._course_name(row["course"])
+            if payment.tool == BOOK_SLOT:
+                return self._slot_lines(payment.arguments["slot"], row, course)
+            return self._payment_lines(payment, row, course)
         except (KeyError, TypeError, ValueError):
             # Malformed model arguments (e.g. an unparseable target_date) must
             # not cost the person their Confirm / Cancel buttons.
             logger.exception("Describing a held payment")
             return fallback
 
+    def _slot_lines(
+        self, slot: dict[str, Any], row: dict[str, Any], course: str
+    ) -> str:
+        start = datetime.fromisoformat(slot["start"])
+        side = f" ({slot['side']})" if slot.get("side") else ""
+        details = {
+            "Course": course,
+            "Date": format_date(start.date().isoformat()),
+            "Tee-off": f"{format_time(start.time().isoformat())}{side}",
+            "Group": f"{row['players']} players · {row['holes']} holes",
+        }
+        if slot.get("green_fee") is not None:
+            per_player = slot["green_fee"] + (slot.get("service_fee") or 0)
+            details["Green fee"] = f"{format_money(slot['green_fee'])} / player"
+            details["Total"] = f"about {format_money(per_player * row['players'])}"
+        lines = [
+            "**💳 Book this tee time?**"
+            if self.pays
+            else "**🧪 Dry run this tee time?**",
+            detail_table(details),
+            "_Pays at checkout when you confirm._"
+            if self.pays
+            else "_Payment is off: the run stops at checkout and pays nothing._",
+        ]
+        return "\n\n".join(lines)
+
     @staticmethod
-    def _payment_lines(payment: PendingPayment, row: dict[str, Any]) -> str:
+    def _payment_lines(
+        payment: PendingPayment, row: dict[str, Any], course: str
+    ) -> str:
         target = (
             payment.arguments.get("target_date")
             or row.get("target_date")
@@ -318,19 +419,14 @@ class BookingBot:
         )
         which = "earliest" if row["prefer_earlier"] else "latest"
         details = {
-            "Course": row["course"],
+            "Course": course,
             "Date": format_date(target),
             "Tee-off": f"{format_time(row['earliest'])} – {format_time(row['latest'])}",
             "Group": f"{row['players']} players · {row['holes']} holes",
         }
-        # An HTML table: a Markdown one would need a header row.
-        cells = "".join(
-            f"<tr><td><b>{label}</b></td><td>{html.escape(str(value))}</td></tr>"
-            for label, value in details.items()
-        )
         lines = [
             "**💳 Book and pay?**",
-            f"<table>{cells}</table>",
+            detail_table(details),
             f"_The run takes the {which} open slot in that window and pays at "
             "checkout._",
         ]
@@ -341,18 +437,6 @@ class BookingBot:
                 "_If that day isn't released yet, it waits for the release first._"
             )
         return "\n\n".join(lines)
-
-    async def _started(
-        self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
-    ) -> None:
-        kind = "Dry run" if run.dry_run else "Booking"
-        await self._send(
-            context,
-            chat_id,
-            f"**{kind} started** · {escape(run.course)}, "
-            f"{format_date(run.target_date)}\n\nI'll message you when it finishes.",
-        )
-        self._watch(context, chat_id, run)
 
     def _watch(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
@@ -376,6 +460,7 @@ class BookingBot:
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
     ) -> None:
         errors = 0
+        course = await self._course_name(run.course)
         while True:
             await asyncio.sleep(RUN_POLL_S)
             result = await self.tools.call("get_run", {"run_id": run.run_id})
@@ -386,7 +471,7 @@ class BookingBot:
                     await self._send(
                         context,
                         chat_id,
-                        f"I lost track of the run for {escape(run.course)}; /runs "
+                        f"I lost track of the run for {escape(course)}; /runs "
                         "shows it.",
                     )
                     return
@@ -394,7 +479,7 @@ class BookingBot:
             errors = 0
             body = result.json()
             if body["status"] != "running":
-                await self._send(context, chat_id, format_outcome(run, body))
+                await self._send(context, chat_id, format_outcome(run, body, course))
                 return
 
     async def _send(
@@ -464,6 +549,59 @@ def format_time(value: str) -> str:
     return f"{t.hour % 12 or 12}:{t:%M} {'AM' if t.hour < 12 else 'PM'}"
 
 
+def format_money(value: float) -> str:
+    return f"${value:,.2f}".removesuffix(".00")
+
+
+def detail_table(details: dict[str, str]) -> str:
+    """Label / value rows. HTML, since a Markdown table needs a header row."""
+    cells = "".join(
+        f"<tr><td><b>{label}</b></td><td>{html.escape(value)}</td></tr>"
+        for label, value in details.items()
+    )
+    return f"<table compact>{cells}</table>"
+
+
+def slot_label(slot: dict[str, Any]) -> str:
+    """A tee-time slot on a button: its time (the card's table has the price)."""
+    return format_time(datetime.fromisoformat(slot["start"]).time().isoformat())
+
+
+def format_offer(
+    offer: TeeTimeOffer, plan: dict[str, Any] | None, course: str | None
+) -> str:
+    day = format_date(offer.slots[0]["start"][:10])
+    title = f"{escape(course)} · {day}" if course else day
+    count = len(offer.slots)
+    about = [f"{count} {'time' if count == 1 else 'times'}"]
+    if plan:
+        about += [f"{plan['players']} golfers", f"{plan['holes']} holes"]
+    # A Side column only when it tells the slots apart.
+    sides = len({slot.get("side") for slot in offer.slots}) > 1
+    head = '<th align="left">Time</th>'
+    if sides:
+        head += '<th align="left">Side</th>'
+    head += '<th align="right">Per player</th>'
+    rows = []
+    for slot in offer.slots:
+        start = datetime.fromisoformat(slot["start"])
+        row = f"<td><b>{format_time(start.time().isoformat())}</b></td>"
+        if sides:
+            row += f"<td>{html.escape(slot.get('side') or '')}</td>"
+        fee = slot.get("green_fee")
+        price = f"<b>{format_money(fee)}</b>" if fee is not None else "–"
+        row += f'<td align="right">{price}</td>'
+        rows.append(f"<tr>{row}</tr>")
+    return "\n\n".join(
+        [
+            f"📅 **{title}**",
+            " · ".join(about),
+            f"<table striped compact><tr>{head}</tr>{''.join(rows)}</table>",
+            "_Tap a time to book it._",
+        ]
+    )
+
+
 def _slot(run: dict[str, Any]) -> str:
     if not run.get("tee_time_local"):
         return ""
@@ -472,11 +610,15 @@ def _slot(run: dict[str, Any]) -> str:
     return f"{format_time(start.time().isoformat())}{side}"
 
 
-def format_outcome(started: StartedRun, run: dict[str, Any]) -> str:
-    where = f"{escape(started.course)} on {format_date(started.target_date)}"
+def format_outcome(
+    started: StartedRun, run: dict[str, Any], course: str | None = None
+) -> str:
+    """`course` is the course's name; without it the key stands in."""
+    name = escape(course or started.course)
+    where = f"{name} on {format_date(started.target_date)}"
     slot = escape(_slot(run))
     fee = (
-        f"\n\nGreen fee {escape('$' + str(run['green_fee']))} per player."
+        f"\n\nGreen fee {escape(format_money(float(run['green_fee'])))} per player."
         if run.get("green_fee")
         else ""
     )
