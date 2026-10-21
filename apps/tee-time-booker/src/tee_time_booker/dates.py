@@ -15,10 +15,20 @@ from loguru import logger
 from tee_time_booker.courses import CourseConfig
 from tee_time_booker.models import Preferences
 
-# Refuse to wait longer than this for a release. The GitHub job is killed at
-# 110 min (tee-time-booker.yml), which would skip logging the run entirely, so
-# fail early with a clear message instead.
+# Refuse to wait longer than this for a release: a run started hours early
+# (by hand, in the evening) is more likely a mistake than a plan, and fails
+# with a clear message instead of tying up a browser all night. The scheduler
+# starts runs minutes before a release, well inside this.
 MAX_RELEASE_WAIT_SECONDS = 95 * 60
+
+
+class NotYetBookable(ValueError):
+    """The target is past the site's booking window: not open *yet*.
+
+    A `ValueError` like any other bad date, but the worker records it as a
+    `not_open` run and leaves the request pending, so the scheduler can try
+    again once the window reaches the day.
+    """
 
 
 def nth_upcoming_weekday(today: date, weekday: int, n: int) -> date:
@@ -105,7 +115,7 @@ def check_target_date(
             f"{course.name} target date {target} is in the past (today is {first})"
         )
     if last is not None and target > last:
-        raise ValueError(
+        raise NotYetBookable(
             f"{course.name} target date {target} is beyond its booking window; "
             f"{last} ({(last - first).days} days ahead) is the last bookable day"
         )

@@ -11,7 +11,9 @@ an HTTP layer should call them tomorrow, rather than reaching for an adapter.
 
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 from loguru import logger
 
@@ -130,6 +132,103 @@ def find_tee_times(
         with_payment=False,
     ) as platform:
         return search(platform, criteria, poll_seconds=poll_seconds)
+
+
+@dataclass(frozen=True)
+class CourseSearch:
+    """One course to search, and the site account to sign in with."""
+
+    course: CourseConfig
+    account_env_prefix: str
+
+
+@dataclass
+class SearchResults:
+    """What `search_courses` found, by course key, and why any course wasn't
+    searched."""
+
+    tee_times: dict[str, list[TeeTime]] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+
+def search_courses(
+    searches: list[CourseSearch], criteria: SearchCriteria, settings: Settings
+) -> SearchResults:
+    """Every slot for `criteria` at each course, without booking.
+
+    One browser and one sign-in per site account, the sites searched in
+    parallel. On a site whose sign-in covers every course (GolfNow), each
+    further course is one search-API call in the same session, so searching
+    a dozen courses costs about what searching one does. The booking window
+    isn't measured: a day not open yet at a course is just no slots there.
+    A course that can't be searched is reported in `errors`, not raised.
+    """
+    groups: dict[tuple[str, str], list[CourseSearch]] = {}
+    for item in searches:
+        key = (item.course.platform, item.account_env_prefix)
+        groups.setdefault(key, []).append(item)
+    results = SearchResults()
+    if not groups:
+        return results
+    with ThreadPoolExecutor(len(groups), thread_name_prefix="search") as pool:
+        parts = pool.map(
+            lambda group: _search_site(group, criteria, settings), groups.values()
+        )
+        for part in parts:
+            results.tee_times.update(part.tee_times)
+            results.errors.update(part.errors)
+    return results
+
+
+def _search_site(
+    group: list[CourseSearch], criteria: SearchCriteria, settings: Settings
+) -> SearchResults:
+    """`search_courses` for the courses of one site account, in one browser."""
+    results = SearchResults()
+    first = group[0]
+    shared_sign_in = not get_platform(first.course.platform).signs_in_per_course
+    try:
+        credentials = load_credentials(
+            first.course, first.account_env_prefix, with_payment=False
+        )
+        with browser_session(
+            headless=settings.headless,
+            artifacts_dir=settings.artifacts_dir,
+            timezone=first.course.timezone,
+        ) as session:
+            signed_in = False
+            for item in group:
+                course = item.course
+                platform = build_platform(course, credentials, session)
+                try:
+                    if not (shared_sign_in and signed_in):
+                        platform.start(criteria)
+                        signed_in = True
+                    results.tee_times[course.key] = platform.find_tee_times(criteria)
+                except Exception as e:
+                    logger.exception(f"Searching {course.name}")
+                    results.errors[course.key] = brief(e)
+                    if shared_sign_in and not signed_in:
+                        break  # the site sign-in failed: so does every course
+    except Exception as e:
+        # No credentials, or no browser: nothing on this site was searched.
+        logger.exception(f"Searching {first.course.platform}")
+        detail = brief(e)
+        for item in group:
+            results.errors.setdefault(item.course.key, detail)
+    for item in group:
+        if item.course.key not in results.tee_times:
+            results.errors.setdefault(
+                item.course.key, results.errors.get(first.course.key, "not searched")
+            )
+    return results
+
+
+def brief(e: Exception, limit: int = 200) -> str:
+    """`ExcType: first line of the message`, capped at `limit` characters."""
+    message = str(e).splitlines()[0] if str(e) else ""
+    text = f"{type(e).__name__}: {message}" if message else type(e).__name__
+    return text[:limit]
 
 
 def search(

@@ -28,7 +28,7 @@ from tee_time_booker.models import Preferences
 SATURDAY = 5
 
 # The env-var prefix each seeded course's login is read from (`<PREFIX>_EMAIL`,
-# `<PREFIX>_PASSWORD`), i.e. the variables the GitHub workflow already sets.
+# `<PREFIX>_PASSWORD`), i.e. the variables in `.env.example`.
 ACCOUNT_ENV_PREFIXES: dict[str, str] = {
     SOULE_PARK.key: "SOULE",
     SATICOY.key: "GOLFNOW",

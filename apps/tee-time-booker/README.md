@@ -1,7 +1,8 @@
 # Tee Time Booker
 
-Books a tee time with Playwright — on a schedule, from the command line,
-over HTTP (and so as MCP tools), or by texting or talking to a Telegram bot.
+Books a tee time with Playwright — from the command line, over HTTP (and so
+as MCP tools), or by texting or talking to a Telegram bot, either right away
+or scheduled to book itself the moment a day opens.
 Who wants what booked, and what every run did, live in Postgres, or in a
 SQLite file for someone running it on their own machine.
 
@@ -46,6 +47,7 @@ reaching for an adapter directly.
 | `platforms/{foreup,golfnow}.py` | One site each |
 | `runner.py` | The standard operations: find, book |
 | `worker.py` | Carrying out a claimed request and recording the run; `BookingWorker` does it on a background thread for the API |
+| `scheduler.py` | Starting auto-booked plans and requests as soon as their day can be booked (see "Scheduled booking") |
 | `main.py` | The CLI |
 | `api/` | The FastAPI app: the same operations as routes (see "HTTP API") |
 | `mcp.py` | The API's routes as MCP tools, via FastMCP |
@@ -167,12 +169,12 @@ request directly. It then:
 
 On any failure a full-page screenshot and the page HTML are written to
 `artifacts/`; the HTML is what you need to repair a selector. Card and personal inputs are
-hidden in every screenshot, since artifacts are uploaded to GitHub Actions.
+hidden in every screenshot, in case artifacts are ever shared.
 
 ## HTTP API
 
-Everything the CLI does is also a route, so a booking can be started on
-demand — by a script, a UI, or an agent — instead of only by the cron:
+Everything the CLI does is also a route, so a booking can be started or
+scheduled by a script, a UI, or an agent:
 
 ```bash
 # from apps/tee-time-booker, with .env filled in
@@ -183,11 +185,14 @@ open http://localhost:8000/docs
 | Route | Does |
 | --- | --- |
 | `GET /courses`, `GET /courses/{key}` | The bookable courses |
-| `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now |
-| `POST /plans` | Create a plan, or update the user's plan of that name (the user and their site account must exist — see the seed) |
+| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=` | What's open on a day in a tee-off window across every course (or just `courses`), no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
+| `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now (and `first_attempt_at` when auto-booked) |
+| `POST /plans` | Create a plan, or update the user's plan of that name (the user must exist — see the seed). `auto_book: true` schedules it |
+| `POST /plans/{id}/auto-book` | Turn a plan's automatic booking on or off |
+| `DELETE /plans/{id}` | Delete a plan; its requests and runs stay |
 | `GET /plans/{id}/tee-times?date=` | Sign in and list what's bookable for the plan, without booking. Slow (a real browser); no card details needed |
 | `POST /plans/{id}/book` | Find or create the plan's request for its next date (or `target_date`), claim it and start a run → **202** with a `run_id` |
-| `POST /requests` | A one-off request: one date at one course, no plan behind it |
+| `POST /requests` | A one-off request: one date at one course, no plan behind it. `auto_book: true` schedules it |
 | `GET /requests?status=&user_email=`, `GET /requests/{id}`, `GET /requests/{id}/runs` | Requests and their attempts |
 | `POST /requests/{id}/run` | Start a run on a pending or failed request → **202** |
 | `POST /requests/{id}/cancel` | Cancel a request that isn't running or booked |
@@ -201,6 +206,9 @@ once. The run's row is the record of what's happening; poll it until `status`
 leaves `running`. The service layer's errors map to one status each: unknown
 id → 404, a move the request's state machine forbids → 409, a bad date or
 mismatched account → 422, the booking site or a missing secret → 502.
+
+Plans and requests name the site account by `env_prefix`; leave it out and
+the user's only account on the course's site is used.
 
 Paying needs **both** switches: the operator's `TEE_TIME_SUBMIT_PAYMENT` in
 the environment and `submit_payment: true` in the request body. Either off is
@@ -235,6 +243,10 @@ module with `DATABASE_URL` and the site logins in its environment; the
 agent then books with `book_plan` and polls `get_run`. The API's
 `/health` route is left out of the tools.
 
+An MCP client can schedule bookings too (`create_plan` / `create_request`
+with `auto_book`), but the scheduler only runs inside the Telegram bot, so
+those book only while the bot is running against the same database.
+
 ## Chat and voice (Telegram)
 
 `python -m tee_time_booker.bot` books from your phone: text the bot "what's
@@ -261,15 +273,24 @@ Claude (`bot/agent.py`) reading each message and calling the tools:
 - **Only you**: every update from a Telegram user not in
   `TELEGRAM_ALLOWED_USER_IDS` is dropped before any handler runs.
 - **Booking tools only**: Claude gets an allowlist of the MCP tools
-  (`bot/tools.py`) — looking, booking, cancelling, run history. No shell, no
-  files, and not `create_plan`.
-- **Paying needs your tap**: a `book_plan` / `run_request` call with
-  `submit_payment: true` is not run. The bot sends a Confirm / Cancel button
-  describing what will be booked, read from the plan or request itself rather
-  than from Claude's text, and runs the call only when you tap Confirm (within
-  15 minutes; each button works once). Dry runs go ahead without asking, and
-  with `TEE_TIME_SUBMIT_PAYMENT` off every run is a dry run, so there's
-  nothing to confirm.
+  (`bot/tools.py`): looking (every course at once unless you name some),
+  booking, scheduling, cancelling, plans, run history. No shell, no files.
+- **One card of tee times**: Claude picks the best slots from a search, up to
+  twelve across courses, and the bot shows them as one card with a Book
+  button each, taken only from what the search actually returned.
+- **Paying needs your tap**: a call that pays is not run — booking now
+  (`book_plan` / `run_request` with `submit_payment: true`, or a Book button
+  on a tee-time card) or scheduling a booking to pay later (`create_plan` /
+  `create_request` with `auto_book: true`, `set_plan_auto_book` on). The bot
+  sends a Confirm / Cancel button describing what will be booked, and runs
+  the call only when you tap Confirm (within 15 minutes; each button works
+  once). For a scheduled booking that tap is the only one: it books and pays
+  later without asking again. Dry runs, pausing and cancelling go ahead
+  without asking, and with `TEE_TIME_SUBMIT_PAYMENT` off every run is a dry
+  run, so there's nothing to confirm.
+- **Scheduled booking**: the bot runs the scheduler every minute (see
+  "Scheduled booking") and sends each scheduled run's outcome to every
+  allowed user. A try that finds the day not open yet isn't reported.
 - **Run updates**: a started run is watched (every 30 s) and its outcome sent
   to the chat: booked, dry run, failed, or the "payment sent, no confirmation
   seen" case. The watch is in memory, so a run still going when the bot stops
@@ -497,43 +518,38 @@ The bot's tests skip themselves unless the `bot` extra is installed.
 Each adapter declares the payment fields its checkout needs, so a foreUP run
 never fails over a GolfNow-only variable, and a GolfNow run never needs a card number.
 
-## Deployment (GitHub Actions)
+## Scheduled booking
 
-`.github/workflows/tee-time-booker.yml` runs every Sunday at 06:40 UTC
-(11:40 PM PDT / 10:40 PM PST Saturday) and on manual dispatch. The booker
-itself waits for course-local midnight, so the cron only has to land before
-it in both DST states; the job timeout (110 min) covers the longest wait. It
-runs pending migrations first, records the run in the database, and uploads
-screenshots as a workflow artifact.
+An **auto-booked** plan or one-off request (`auto_book`) is booked by the
+scheduler (`scheduler.py`) as soon as its day can be booked, and pays without
+asking again: confirming it once, when you schedule it, is the permission.
+The Telegram bot runs the scheduler every minute, so scheduled bookings
+happen only while the bot is running, on a machine that's awake. When a
+request is due depends on its course:
 
-The schedule books the plan in the `TEE_TIME_PLAN` repository variable, which
-should be a Soule Park plan since the cron is timed for its midnight release.
-A manual run can pick any plan with the "plan" input. The hosted database
-needs the schema applied and the seed run once
-(`python -m tee_time_booker.seed --user ...` with `DATABASE_URL` pointing at
-it) — that prints the plan ids.
+- **A fixed release** (Soule Park: midnight, 20 days ahead): the run starts
+  10 minutes before the release that opens the day and waits for it, or at
+  once if the day is already open. A plan's next date moves on at
+  `pre_release_start` (8 PM the evening before), so an armed weekly plan
+  books every week right at the drop.
+- **A rolling window** (GolfNow, where each facility's window is only known
+  signed in): one try a morning at 6 AM course-local, from 30 days before
+  the day. A try that finds the day still beyond the window is a `not_open`
+  run and leaves the request pending for the next morning.
 
-Repository **secrets** needed: `DATABASE_URL`, `SOULE_EMAIL`, `SOULE_PASSWORD`,
-`CREDIT_CARD_NUMBER`, `CREDIT_CARD_EXPIRATION_MONTH`,
-`CREDIT_CARD_EXPIRATION_YEAR`, `CREDIT_CARD_CVC` and `CREDIT_CARD_POSTAL_CODE`
-for Soule Park; `GOLFNOW_EMAIL`, `GOLFNOW_PASSWORD`, `CREDIT_CARD_STATE` and
-`CREDIT_CARD_POSTAL_CODE` for GolfNow runs, which pay with the card saved on
-the GolfNow account.
+Each request gets one real scheduled attempt: once a scheduled run has done
+anything but find the day not open (booked, failed, dry run), the scheduler
+leaves it alone, so a failure is reported, not retried in a loop. It never
+tries twice in one course-local day, and never a date that has passed. A
+manual run (a dry run to test, say) doesn't use up the scheduled attempt.
 
-Scheduled runs are dry runs until you set the repository **variable**
-`TEE_TIME_SUBMIT_PAYMENT=true`. A manual run can also tick the
-"Actually submit payment" box for a one-off real booking, and can set
-"target_date" to book a specific already-open day.
+Pause a plan with `set_plan_auto_book` (or `POST /plans/{id}/auto-book`);
+pausing it also stops its waiting request. Updating a plan turns auto-booking
+off unless the update asks for it again. Call off a scheduled one-off with
+`cancel_request`.
 
-Suggested rollout for a new course:
-
-1. Manual run, dry run, no date: confirms secrets and the flow in CI.
-2. Manual run, **submit payment**, `target_date` = a cheap open weekday: the
-   first real charge, on a slot you actually want. Check the
-   `confirmation-*.png` artifact and your account; the `success` run is
-   based on the confirmation page appearing after payment.
-3. Set the `TEE_TIME_SUBMIT_PAYMENT=true` variable so scheduled runs book for
-   real.
+With `TEE_TIME_SUBMIT_PAYMENT` off, scheduled runs are dry runs like any
+other.
 
 ## Run history
 
@@ -541,7 +557,9 @@ Every run is a row in `runs` (`python -m tee_time_booker --runs`, or query the
 table): when it started and finished, the request it served, the slot it held
 (`tee_time_local`, course-local, plus `side`), `green_fee` per player and
 `service_fee` where the site reports one (GolfNow does, foreUP doesn't), the
-site's `confirmation` after a real booking, and a `status`: `success`,
-`dry_run`, `error` (with a short `detail`; the traceback is in the job log)
-or `unknown` — the final submit was clicked but no confirmation or error
-appeared, so check your account on the booking site before retrying.
+site's `confirmation` after a real booking, whether the scheduler started it
+(`scheduled`), and a `status`: `success`, `dry_run`, `error` (with a short
+`detail`; the traceback is in the log), `not_open` (the day wasn't in the
+site's booking window yet; the request stays pending) or `unknown` — the
+final submit was clicked but no confirmation or error appeared, so check your
+account on the booking site before retrying.

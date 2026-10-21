@@ -49,9 +49,13 @@ class BookingPlatform(ABC):
     # Start the browser and sign in this long before a release, so the session
     # is fresh but ready the moment slots appear.
     release_lead_seconds: ClassVar[float] = 45
+    # Whether `start` signs in to one course (its own booking page) or to the
+    # whole site. A site-wide sign-in lets one browser search every course on
+    # the site (`runner.search_courses`) after a single `start`.
+    signs_in_per_course: ClassVar[bool] = True
     # CSS selector for the checkout inputs holding card or personal details.
-    # Hidden before every screenshot so none of it lands in artifacts (they're
-    # uploaded to GitHub Actions and downloadable by anyone with repo read).
+    # Hidden before every screenshot so none of it lands in artifacts, which
+    # are easily shared when debugging a selector.
     sensitive_fields: ClassVar[str] = ""
 
     def __init__(

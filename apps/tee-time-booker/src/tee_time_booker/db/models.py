@@ -10,8 +10,9 @@
 A `BookingRequest` is the unit of work. It starts `pending`; a worker moves it
 to `running` while it drives the site, and the outcome of that `Run` moves it
 on to `booked`, `failed` or `unknown` — or back to `pending` after a dry run,
-which fulfils nothing. `BookingRequest.transition` refuses any other move, so
-a request can't be booked twice or resurrected once cancelled.
+which fulfils nothing, or a run that found the day not open for booking yet.
+`BookingRequest.transition` refuses any other move, so a request can't be
+booked twice or resurrected once cancelled.
 """
 
 import enum
@@ -115,12 +116,14 @@ class RunStatus(enum.StrEnum):
     DRY_RUN = "dry_run"  # reached checkout, stopped before paying
     ERROR = "error"
     UNKNOWN = "unknown"  # submit clicked, no confirmation or error shown
+    NOT_OPEN = "not_open"  # the day isn't in the site's booking window yet
 
 
 # What a finished run does to its request.
 REQUEST_STATUS_AFTER_RUN: dict[RunStatus, RequestStatus] = {
     RunStatus.SUCCESS: RequestStatus.BOOKED,
     RunStatus.DRY_RUN: RequestStatus.PENDING,
+    RunStatus.NOT_OPEN: RequestStatus.PENDING,
     RunStatus.ERROR: RequestStatus.FAILED,
     RunStatus.UNKNOWN: RequestStatus.UNKNOWN,
 }
@@ -189,6 +192,8 @@ class BookingPlan(Base):
     """A standing wish: book this course, this weekday, this far ahead.
 
     The columns from `target_weekday` on are a `models.Preferences`.
+    `auto_book` hands the plan to the scheduler (`tee_time_booker.scheduler`),
+    which books each next date as soon as it can, paying without asking.
     """
 
     __tablename__ = "booking_plans"
@@ -201,6 +206,7 @@ class BookingPlan(Base):
     site_account_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("site_accounts.id"))
     name: Mapped[str] = mapped_column(String(200))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_book: Mapped[bool] = mapped_column(Boolean, default=False)
     target_weekday: Mapped[int] = mapped_column(SmallInteger)
     weeks_ahead: Mapped[int] = mapped_column(SmallInteger)
     earliest: Mapped[time] = mapped_column(Time)
@@ -220,7 +226,9 @@ class BookingRequest(Base):
     """One plan pinned to one date — or a one-off with no plan behind it.
 
     The search columns are copied from the plan at creation so editing a plan
-    never changes a request already in flight.
+    never changes a request already in flight. A one-off's `auto_book` hands it
+    to the scheduler; a plan's request follows its plan's flag instead (see
+    `armed`), so pausing the plan pauses its requests too.
     """
 
     __tablename__ = "booking_requests"
@@ -242,6 +250,7 @@ class BookingRequest(Base):
     holes: Mapped[int] = mapped_column(SmallInteger)
     players: Mapped[int] = mapped_column(SmallInteger)
     prefer_earlier: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_book: Mapped[bool] = mapped_column(Boolean, default=False)
     # Indexed: a worker's first question is "what's pending?".
     status: Mapped[RequestStatus] = mapped_column(
         _enum(RequestStatus, "request_status"),
@@ -260,6 +269,11 @@ class BookingRequest(Base):
     runs: Mapped[list["Run"]] = relationship(
         back_populates="request", order_by="Run.started_at"
     )
+
+    @property
+    def armed(self) -> bool:
+        """Whether the scheduler should book this request."""
+        return self.plan.auto_book if self.plan is not None else self.auto_book
 
     def transition(self, to: RequestStatus) -> None:
         """Move to `to`, or raise if the state machine doesn't allow it."""
@@ -284,6 +298,8 @@ class Run(Base):
     )
     started_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
     finished_at: Mapped[datetime | None]
+    # Started by the scheduler rather than by a person.
+    scheduled: Mapped[bool] = mapped_column(Boolean, default=False)
     # A short error message; the traceback belongs in the job log.
     detail: Mapped[str | None] = mapped_column(Text)
     # The slot that was held (naive, course-local), when the run got that far.

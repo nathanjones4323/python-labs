@@ -6,15 +6,19 @@ run's future before reading the outcome back through the API.
 
 import threading
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 from tee_time_booker import worker as worker_module
 from tee_time_booker.api import create_app
 from tee_time_booker.api.routers import plans as plans_router
+from tee_time_booker.api.routers import tee_times as tee_times_router
 from tee_time_booker.config import Settings
+from tee_time_booker.courses import OLIVAS_LINKS
+from tee_time_booker.db.service import ensure_site_account, get_user, upsert_course
 from tee_time_booker.models import BookingResult, TeeTime
+from tee_time_booker.runner import SearchResults
 from tee_time_booker.worker import BookingWorker
 
 SLOT = TeeTime(
@@ -324,6 +328,140 @@ def test_a_one_off_request_needs_no_plan(api, fake_booking):
     assert seen["criteria"].target_date == date(2026, 9, 26)
     assert seen["criteria"].players == 2
     assert api.get("/runs").json()[0]["id"] == started["run_id"]
+
+
+def test_one_search_covers_every_course_in_the_window(api, monkeypatch):
+    seen = {}
+
+    def search_courses(searches, criteria, settings):
+        seen.update(searches=searches, criteria=criteria)
+        early = TeeTime(
+            platform="golfnow", course_name="x", start=datetime(2026, 11, 1, 6)
+        )
+        late = TeeTime(
+            platform="golfnow", course_name="x", start=datetime(2026, 11, 1, 9)
+        )
+        return SearchResults(
+            tee_times={"saticoy": [late, early]},
+            errors={"soule-park": "RuntimeError: Login failed (403)"},
+        )
+
+    monkeypatch.setattr(tee_times_router, "search_courses", search_courses)
+    params = {
+        "user_email": "golfer@example.com",
+        "date": "2026-11-01",
+        "players": 3,
+        "holes": 9,
+        "earliest": "08:00",
+        "latest": "10:00",
+    }
+    response = api.get("/tee-times", params=params)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Every course, each with the user's account on its site.
+    assert {(s.course.key, s.account_env_prefix) for s in seen["searches"]} == {
+        ("saticoy", "GOLFNOW"),
+        ("soule-park", "SOULE"),
+    }
+    assert (seen["criteria"].players, seen["criteria"].holes) == (3, 9)
+    # Only the slot inside the window, named by course.
+    assert [(t["course"], t["start"]) for t in body["tee_times"]] == [
+        ("saticoy", "2026-11-01T09:00:00")
+    ]
+    assert body["tee_times"][0]["course_name"] == "Saticoy Regional Golf Course"
+    assert body["searched"] == ["saticoy"]
+    assert body["not_searched"] == {"soule-park": "RuntimeError: Login failed (403)"}
+
+    # Or just the courses asked for.
+    api.get("/tee-times", params={**params, "courses": ["saticoy"]})
+    assert [s.course.key for s in seen["searches"]] == ["saticoy"]
+    assert (
+        api.get("/tee-times", params={**params, "courses": ["nope"]}).status_code == 404
+    )
+
+
+def test_a_course_without_an_account_is_reported_not_searched(api, db, monkeypatch):
+    with db() as session, session.begin():
+        upsert_course(session, OLIVAS_LINKS)
+        user = get_user(session, "golfer@example.com")
+        # A second GolfNow login: which one to use is ambiguous now.
+        ensure_site_account(
+            session, user, platform="golfnow", login_email="b@x", env_prefix="GN2"
+        )
+    monkeypatch.setattr(
+        tee_times_router, "search_courses", lambda s, c, st: SearchResults()
+    )
+    params = {"user_email": "golfer@example.com", "date": "2026-11-01"}
+    body = api.get("/tee-times", params={**params, "players": 2, "holes": 18}).json()
+    assert "several golfnow accounts" in body["not_searched"]["olivas-links"]
+
+
+def test_an_auto_booked_plan_says_when_it_first_tries(api):
+    body = {
+        "user_email": "golfer@example.com",
+        "name": "soule-sunday",
+        "course": "soule-park",
+        "target_weekday": 6,
+        "weeks_ahead": 2,
+        "earliest": "07:00",
+        "latest": "10:00",
+        "holes": 18,
+        "players": 2,
+        "auto_book": True,
+    }
+    plan = api.post("/plans", json=body).json()
+    assert plan["auto_book"] is True and plan["env_prefix"] == "SOULE"
+    first = datetime.fromisoformat(plan["first_attempt_at"])
+    # Ten minutes before the midnight release 20 days ahead of the date.
+    opens = date.fromisoformat(plan["next_target_date"]) - timedelta(days=20)
+    assert (first.date(), first.hour, first.minute) == (
+        opens - timedelta(days=1),
+        23,
+        50,
+    )
+
+    # Updating it without auto_book turns it off; the switch turns it back on.
+    updated = api.post("/plans", json={**body, "auto_book": False}).json()
+    assert updated["auto_book"] is False and updated["first_attempt_at"] is None
+    on = api.post(f"/plans/{plan['id']}/auto-book", json={"enabled": True}).json()
+    assert on["auto_book"] is True
+
+
+def test_deleting_a_plan_keeps_its_bookings(api, fake_booking):
+    fake_booking(BookingResult(tee_time=SLOT, submitted=False))
+    plan_id = api.ids["soule_plan"]
+    started = api.post(
+        f"/plans/{plan_id}/book", json={"target_date": "2026-10-03"}
+    ).json()
+    wait_for(api, started["run_id"])
+
+    deleted = api.delete(f"/plans/{plan_id}")
+    assert deleted.status_code == 200 and deleted.json()["name"] == "soule-saturday"
+    assert api.get(f"/plans/{plan_id}").status_code == 404
+    request = api.get(f"/requests/{started['request_id']}").json()
+    assert request["plan_id"] is None and request["auto_book"] is False
+    assert len(api.get(f"/requests/{started['request_id']}/runs").json()) == 1
+
+
+def test_a_scheduled_one_off_needs_no_env_prefix(api):
+    created = api.post(
+        "/requests",
+        json={
+            "user_email": "golfer@example.com",
+            "course": "saticoy",
+            "target_date": "2026-11-14",
+            "earliest": "07:00",
+            "latest": "09:00",
+            "holes": 9,
+            "players": 2,
+            "auto_book": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    request = created.json()
+    assert request["auto_book"] is True
+    # GolfNow: tried each morning from 30 days out.
+    assert request["first_attempt_at"].startswith("2026-10-15T06:00:00")
 
 
 def test_unknown_ids_are_404(api):

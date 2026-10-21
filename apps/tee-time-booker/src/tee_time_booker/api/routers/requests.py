@@ -20,20 +20,29 @@ from tee_time_booker.api.schemas import (
     RunOut,
     RunStarted,
 )
-from tee_time_booker.db import RequestStatus
+from tee_time_booker.db import BookingRequest, RequestStatus
 from tee_time_booker.db.service import (
     cancel_request,
     claim_request,
+    course_config,
     create_request,
     get_course,
     get_request,
-    get_site_account,
     get_user,
     list_requests,
+    site_account_for,
 )
+from tee_time_booker.scheduler import first_attempt
 from tee_time_booker.worker import BookingWorker
 
 router = APIRouter(prefix="/requests", tags=["requests"])
+
+
+def _out(request: BookingRequest) -> RequestOut:
+    first = None
+    if request.armed:
+        first = first_attempt(course_config(request.course), request.target_date)
+    return RequestOut.from_row(request, first)
 
 
 def start_run(
@@ -69,28 +78,34 @@ def list_(
     with sessions() as session:
         user = get_user(session, user_email) if user_email else None
         rows = list_requests(session, status=status_, user=user, limit=limit)
-        return [RequestOut.from_row(r) for r in rows]
+        return [_out(r) for r in rows]
 
 
 @router.post(
     "",
     operation_id="create_request",
     summary="A one-off request: one date at one course, with no plan behind it",
+    description=(
+        "Run it now with run_request, or set auto_book to have the scheduler "
+        "book it as soon as the day can be booked."
+    ),
     status_code=status.HTTP_201_CREATED,
 )
 def create(body: RequestIn, sessions: Sessions) -> RequestOut:
     with sessions() as session, session.begin():
         user = get_user(session, body.user_email)
         course = get_course(session, body.course)
-        account = get_site_account(session, user, body.env_prefix)
-        request = create_request(session, user, course, account, body.criteria())
-        return RequestOut.from_row(request)
+        account = site_account_for(session, user, course, body.env_prefix)
+        request = create_request(
+            session, user, course, account, body.criteria(), auto_book=body.auto_book
+        )
+        return _out(request)
 
 
 @router.get("/{request_id}", operation_id="get_request", summary="One request")
 def get(request_id: uuid.UUID, sessions: Sessions) -> RequestOut:
     with sessions() as session:
-        return RequestOut.from_row(get_request(session, request_id))
+        return _out(get_request(session, request_id))
 
 
 @router.get(
@@ -119,7 +134,8 @@ def run(
     "/{request_id}/cancel",
     operation_id="cancel_request",
     summary="Cancel a request that isn't running or booked",
+    description="Also how a scheduled one-off is called off.",
 )
 def cancel(request_id: uuid.UUID, sessions: Sessions) -> RequestOut:
     with sessions() as session, session.begin():
-        return RequestOut.from_row(cancel_request(session, request_id))
+        return _out(cancel_request(session, request_id))

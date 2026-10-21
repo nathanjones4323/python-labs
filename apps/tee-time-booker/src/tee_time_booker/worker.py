@@ -18,11 +18,12 @@ from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
 
 from tee_time_booker.config import Settings
+from tee_time_booker.dates import NotYetBookable
 from tee_time_booker.db import RunStatus
 from tee_time_booker.db.service import ClaimedRun, finish_run
 from tee_time_booker.models import BookingResult
 from tee_time_booker.platforms import PaymentOutcomeUnknownError
-from tee_time_booker.runner import book_tee_time
+from tee_time_booker.runner import book_tee_time, brief
 
 # Browsers a single API process drives at once. Runs beyond this are already
 # claimed (`running`) and wait their turn in the pool's queue.
@@ -67,6 +68,11 @@ def execute(
         status = RunStatus.UNKNOWN
         detail = str(e)
         logger.exception(f"Unknown payment outcome: {detail}")
+    except NotYetBookable as e:
+        # Not a failure: the request stays pending for a later try.
+        status = RunStatus.NOT_OPEN
+        detail = brief(e)
+        logger.info(f"Not bookable yet: {e}")
     except Exception as e:
         # Error messages can embed whole server responses; keep a short
         # message in the database and the traceback in the job log.
@@ -77,13 +83,6 @@ def execute(
         with sessions() as session, session.begin():
             finish_run(session, claimed.run_id, status, result=result, detail=detail)
     return status
-
-
-def brief(e: Exception, limit: int = 200) -> str:
-    """`ExcType: first line of the message`, capped at `limit` characters."""
-    message = str(e).splitlines()[0] if str(e) else ""
-    text = f"{type(e).__name__}: {message}" if message else type(e).__name__
-    return text[:limit]
 
 
 class BookingWorker:

@@ -27,6 +27,7 @@ DRAFT_REFRESH_S = 20
 
 STEP_LABELS = {
     "find_tee_times": "Checking what's open…",
+    "search_tee_times": "Checking what's open…",
     "show_tee_times": "Laying out the times…",
     "list_plans": "Looking at your plans…",
     "get_plan": "Looking at your plans…",

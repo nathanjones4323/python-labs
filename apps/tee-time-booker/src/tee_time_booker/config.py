@@ -113,7 +113,7 @@ class Settings:
     # Where runs are recorded. None only works for commands that don't touch
     # the database; `require_database_url` names the variable otherwise.
     database_url: str | None
-    # The booking plan a scheduled run books (TEE_TIME_PLAN, or --plan).
+    # The booking plan the CLI books (TEE_TIME_PLAN, or --plan).
     plan_id: uuid.UUID | None
     # Operator kill switch: False turns every run into a dry run, whatever
     # the request asks for.
@@ -146,7 +146,7 @@ class Settings:
 class BotSettings:
     """What the Telegram bot needs on top of `Settings`.
 
-    Kept apart so the CLI and the scheduled run never need a bot token.
+    Kept apart so the CLI and the API never need a bot token.
     """
 
     telegram_token: str
