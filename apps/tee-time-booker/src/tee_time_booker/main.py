@@ -151,6 +151,7 @@ def _list_plans(sessions) -> int:
                 f"{prefs.earliest:%H:%M}-{prefs.latest:%H:%M} "
                 f"{prefs.holes}h x{prefs.players}"
                 + ("" if plan.active else "  (inactive)")
+                + ("  (auto-book)" if plan.auto_book else "")
             )
     return 0
 

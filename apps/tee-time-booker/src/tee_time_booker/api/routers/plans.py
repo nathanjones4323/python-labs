@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, status
 from tee_time_booker.api.deps import AppSettings, Sessions, Worker
 from tee_time_booker.api.routers.requests import start_run
 from tee_time_booker.api.schemas import (
+    AutoBookIn,
     BookIn,
     PlanIn,
     PlanOut,
@@ -17,23 +18,29 @@ from tee_time_booker.api.schemas import (
 from tee_time_booker.db import BookingPlan
 from tee_time_booker.db.service import (
     course_config,
+    delete_plan,
     ensure_plan,
     get_course,
     get_plan,
-    get_site_account,
     get_user,
     list_plans,
     plan_preferences,
     plan_target_date,
     request_for_plan,
+    site_account_for,
 )
 from tee_time_booker.runner import find_tee_times
+from tee_time_booker.scheduler import first_attempt
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
 
 def _out(plan: BookingPlan) -> PlanOut:
-    return PlanOut.from_row(plan, plan_target_date(plan))
+    target = plan_target_date(plan)
+    first = (
+        first_attempt(course_config(plan.course), target) if plan.auto_book else None
+    )
+    return PlanOut.from_row(plan, target, first)
 
 
 @router.get(
@@ -49,13 +56,19 @@ def list_(sessions: Sessions, user_email: str | None = None) -> list[PlanOut]:
     "",
     operation_id="create_plan",
     summary="Create a plan, or update the user's plan of that name",
+    description=(
+        "A plan is a standing wish: the Nth upcoming weekday at a course, in a "
+        "tee-off window. With auto_book it's booked automatically each week as "
+        "soon as the day can be booked; without, it's booked on request "
+        "(book_plan)."
+    ),
     status_code=status.HTTP_201_CREATED,
 )
 def create(body: PlanIn, sessions: Sessions) -> PlanOut:
     with sessions() as session, session.begin():
         user = get_user(session, body.user_email)
         course = get_course(session, body.course)
-        account = get_site_account(session, user, body.env_prefix)
+        account = site_account_for(session, user, course, body.env_prefix)
         plan = ensure_plan(
             session,
             user,
@@ -63,6 +76,7 @@ def create(body: PlanIn, sessions: Sessions) -> PlanOut:
             course=course,
             site_account=account,
             preferences=body.preferences(),
+            auto_book=body.auto_book,
         )
         session.flush()
         return _out(plan)
@@ -72,6 +86,31 @@ def create(body: PlanIn, sessions: Sessions) -> PlanOut:
 def get(plan_id: uuid.UUID, sessions: Sessions) -> PlanOut:
     with sessions() as session:
         return _out(get_plan(session, plan_id))
+
+
+@router.post(
+    "/{plan_id}/auto-book",
+    operation_id="set_plan_auto_book",
+    summary="Turn a plan's automatic booking on or off",
+)
+def set_auto_book(plan_id: uuid.UUID, body: AutoBookIn, sessions: Sessions) -> PlanOut:
+    with sessions() as session, session.begin():
+        plan = get_plan(session, plan_id)
+        plan.auto_book = body.enabled
+        return _out(plan)
+
+
+@router.delete(
+    "/{plan_id}",
+    operation_id="delete_plan",
+    summary="Delete a plan; its past requests and runs are kept",
+)
+def delete(plan_id: uuid.UUID, sessions: Sessions) -> PlanOut:
+    with sessions() as session, session.begin():
+        plan = get_plan(session, plan_id)
+        out = _out(plan)
+        delete_plan(session, plan_id)
+        return out
 
 
 @router.get(

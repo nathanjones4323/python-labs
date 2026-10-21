@@ -10,6 +10,11 @@ The API, its booking worker and the MCP tools all live in this process (see
 `agent.py` for the conversation). A run started from a chat is watched here
 and its outcome sent to that chat. The watch is in memory: a run still going
 when the bot stops isn't reported after a restart (`/runs` shows it).
+
+The scheduler runs here too: every minute it starts whatever auto-booked
+plans and requests are due (`tee_time_booker.scheduler`), and each such run's
+outcome goes to every allowed user's private chat. A day that turns out not
+to be open yet isn't reported; the scheduler simply tries again later.
 """
 
 import asyncio
@@ -58,10 +63,13 @@ from tee_time_booker.bot.tools import BookingTools
 from tee_time_booker.bot.voice import Transcriber, VoiceUnavailable
 from tee_time_booker.config import BotSettings, Settings
 from tee_time_booker.mcp import create_server
+from tee_time_booker.scheduler import Started, start_due
 
 # How often a watched run is checked. Runs take minutes, or up to 95 min
 # when waiting on a release.
 RUN_POLL_S = 30
+# How often the scheduler looks for auto-booked runs that are due.
+SCHEDULE_TICK_S = 60
 # Consecutive failed checks before a watch gives up (10 minutes' worth).
 MAX_WATCH_ERRORS = 20
 # Telegram's limits: 4096 characters per plain message, 32768 per rich one.
@@ -78,11 +86,14 @@ CLAUDE_MAX_RETRIES = 6
 HELP = """\
 **Tell me what you'd like to book**, by text or voice note. For example:
 
-- what's open at Saticoy this Saturday morning?
+- what's open at Sterling Hills this Saturday morning?
 - book my Soule plan for next Saturday, 4 players after 9
+- book Glen Annie on Nov 14, 8–10 AM, as soon as it opens
+- every Sunday, get me a 9 AM tee time at Olivas Links three weeks out
 - how did my last booking go?
 
-Real payments always wait for you to tap **Confirm**. {payment_mode}
+Real payments always wait for you to tap **Confirm**; for a booking you \
+schedule, that tap is when you schedule it. {payment_mode}
 
 - /new starts a fresh conversation
 - /runs shows recent runs"""
@@ -93,7 +104,17 @@ RUN_STATUS = {
     "dry_run": "🧪 dry run",
     "unknown": "⚠️ unconfirmed",
     "error": "❌ failed",
+    "not_open": "📭 not open yet",
 }
+WEEKDAYS = (
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+)
 
 
 class BookingBot:
@@ -114,6 +135,7 @@ class BookingBot:
         # Plain asyncio tasks, not `Application.create_task`: the Application
         # awaits its own tasks on stop, and a watch can run for 95 minutes.
         self._watches: set[asyncio.Task] = set()
+        self._scheduler: asyncio.Task | None = None
 
     def install(self, application: Application) -> None:
         # Group -1 runs before every other handler; raising stops the update.
@@ -213,9 +235,14 @@ class BookingBot:
         # A run starts in the background, so this answers at once; the card
         # then says how it went rather than a message of its own.
         result, run = await self.agent.confirm(payment)
+        if result.is_error:
+            await self._close_prompt(
+                context, query, payment, f"That didn't work: {result.text[:300]}"
+            )
+            return
         if run is None:
             await self._close_prompt(
-                context, query, payment, f"Couldn't start it: {result.text[:300]}"
+                context, query, payment, scheduled_status(result.json())
             )
             return
         kind = "Dry run" if run.dry_run else "Booking"
@@ -225,7 +252,7 @@ class BookingBot:
             payment,
             f"{kind} started. I'll message you when it finishes.",
         )
-        self._watch(context, payment.chat_id, run)
+        self._watch(context.bot, payment.chat_id, run)
 
     async def _on_book(
         self, context: ContextTypes.DEFAULT_TYPE, query: Any, data: str
@@ -306,7 +333,7 @@ class BookingBot:
         for payment in reply.payments:
             await self._ask_to_pay(context, payment)
         for run in reply.runs:
-            self._watch(context, chat_id, run)
+            self._watch(context.bot, chat_id, run)
 
     async def _show_offer(
         self, context: ContextTypes.DEFAULT_TYPE, offer: TeeTimeOffer
@@ -320,13 +347,11 @@ class BookingBot:
         keyboard = InlineKeyboardMarkup(
             [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
         )
-        plan = await self.tools.call("get_plan", {"plan_id": offer.plan_id})
-        row = None if plan.is_error else plan.json()
-        course = await self._course_name(row["course"]) if row else None
+        course = await self._course_name(str(offer.search["course"]))
         await send_with_retry(
             context.bot,
             offer.chat_id,
-            format_offer(offer, row, course),
+            format_offer(offer, offer.search, course),
             reply_markup=keyboard,
         )
 
@@ -356,25 +381,34 @@ class BookingBot:
 
     async def _describe_payment(self, payment: PendingPayment) -> str:
         """What a Confirm will book, read from the plan or request itself
-        rather than from anything the model said."""
+        rather than from anything the model said. Only a booking that doesn't
+        exist yet (a slot from a card, a new schedule) is described from the
+        call, and the call is exactly what a Confirm runs."""
         fallback = (
             f"**💳 Book and pay?**\n\n{escape(f'{payment.tool} {payment.arguments}')}"
         )
-        if payment.tool in ("book_plan", BOOK_SLOT):
-            looked_up = await self.tools.call(
-                "get_plan", {"plan_id": payment.arguments.get("plan_id")}
-            )
-        else:
-            looked_up = await self.tools.call(
-                "get_request", {"request_id": payment.arguments.get("request_id")}
-            )
-        if looked_up.is_error:
-            return fallback
         try:
+            if payment.tool == BOOK_SLOT:
+                search = payment.arguments["search"]
+                course = await self._course_name(str(search["course"]))
+                return self._slot_lines(payment.arguments["slot"], search, course)
+            if payment.tool in ("create_plan", "create_request"):
+                course = await self._course_name(str(payment.arguments["course"]))
+                return schedule_lines(payment.tool, payment.arguments, course)
+            if payment.tool in ("book_plan", "set_plan_auto_book"):
+                looked_up = await self.tools.call(
+                    "get_plan", {"plan_id": payment.arguments.get("plan_id")}
+                )
+            else:
+                looked_up = await self.tools.call(
+                    "get_request", {"request_id": payment.arguments.get("request_id")}
+                )
+            if looked_up.is_error:
+                return fallback
             row = looked_up.json()
             course = await self._course_name(row["course"])
-            if payment.tool == BOOK_SLOT:
-                return self._slot_lines(payment.arguments["slot"], row, course)
+            if payment.tool == "set_plan_auto_book":
+                return schedule_lines("create_plan", row, course)
             return self._payment_lines(payment, row, course)
         except (KeyError, TypeError, ValueError):
             # Malformed model arguments (e.g. an unparseable target_date) must
@@ -439,9 +473,9 @@ class BookingBot:
         return "\n\n".join(lines)
 
     def _watch(
-        self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
+        self, bot: Any, chat_id: int, run: StartedRun, *, scheduled: bool = False
     ) -> None:
-        task = asyncio.create_task(self._follow(context, chat_id, run))
+        task = asyncio.create_task(self._follow(bot, chat_id, run, scheduled))
         self._watches.add(task)
         task.add_done_callback(self._watch_done)
 
@@ -451,13 +485,15 @@ class BookingBot:
             logger.opt(exception=task.exception()).error("Watching a run failed")
 
     async def stop_watching(self) -> None:
-        """Drop every watch (the runs themselves carry on; `/runs` shows them)."""
-        for task in list(self._watches):
+        """Stop the scheduler and drop every watch (the runs themselves carry
+        on; `/runs` shows them)."""
+        tasks = [*self._watches, *([self._scheduler] if self._scheduler else [])]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self._watches, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _follow(
-        self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, run: StartedRun
+        self, bot: Any, chat_id: int, run: StartedRun, scheduled: bool = False
     ) -> None:
         errors = 0
         course = await self._course_name(run.course)
@@ -468,8 +504,8 @@ class BookingBot:
                 logger.warning(f"Checking run {run.run_id}: {result.text}")
                 errors += 1
                 if errors >= MAX_WATCH_ERRORS:
-                    await self._send(
-                        context,
+                    await self._say(
+                        bot,
                         chat_id,
                         f"I lost track of the run for {escape(course)}; /runs "
                         "shows it.",
@@ -478,15 +514,58 @@ class BookingBot:
                 continue
             errors = 0
             body = result.json()
-            if body["status"] != "running":
-                await self._send(context, chat_id, format_outcome(run, body, course))
-                return
+            if body["status"] == "running":
+                continue
+            if scheduled and body["status"] == "not_open":
+                return  # the scheduler tries again later
+            text = format_outcome(run, body, course)
+            if scheduled:
+                text = f"⏰ **Scheduled booking**\n\n{text}"
+            await self._say(bot, chat_id, text)
+            return
+
+    # --- scheduler ----------------------------------------------------------
+
+    def start_scheduler(self, bot: Any, tick: Callable[[], list[Started]]) -> None:
+        """Run `tick` (`scheduler.start_due`) every minute until stopped."""
+        self._scheduler = asyncio.create_task(self._schedule_forever(bot, tick))
+
+    async def _schedule_forever(
+        self, bot: Any, tick: Callable[[], list[Started]]
+    ) -> None:
+        while True:
+            await self.schedule_once(bot, tick)
+            await asyncio.sleep(SCHEDULE_TICK_S)
+
+    async def schedule_once(self, bot: Any, tick: Callable[[], list[Started]]) -> None:
+        """One tick: start what's due, and watch each run for every allowed
+        user (their private chat's id is their user id)."""
+        try:
+            # On a thread: it reads the database and may start runs.
+            started = await asyncio.to_thread(tick)
+        except Exception:
+            logger.exception("Scheduler tick failed")
+            return
+        for item in started:
+            claimed = item.claimed
+            run = StartedRun(
+                run_id=str(claimed.run_id),
+                course=claimed.course.key,
+                target_date=claimed.criteria.target_date.isoformat(),
+                dry_run=item.dry_run,
+            )
+            for chat_id in sorted(self.settings.allowed_user_ids):
+                self._watch(bot, chat_id, run, scheduled=True)
 
     async def _send(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str
     ) -> None:
+        await self._say(context.bot, chat_id, text)
+
+    @staticmethod
+    async def _say(bot: Any, chat_id: int, text: str) -> None:
         for chunk in _chunks(text, MAX_RICH_MESSAGE):
-            await send_with_retry(context.bot, chat_id, chunk)
+            await send_with_retry(bot, chat_id, chunk)
 
 
 def _chunks(text: str, size: int) -> list[str]:
@@ -551,6 +630,63 @@ def format_time(value: str) -> str:
 
 def format_money(value: float) -> str:
     return f"${value:,.2f}".removesuffix(".00")
+
+
+def format_moment(value: datetime) -> str:
+    """A moment in its own (course-local) time, e.g. 'Sat Oct 31, 11:50 PM'."""
+    return f"{value:%a %b} {value.day}, {format_time(value.time().isoformat())}"
+
+
+def _ordinal(n: int) -> str:
+    suffix = (
+        "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    )
+    return f"{n}{suffix}"
+
+
+def schedule_lines(tool: str, booking: dict[str, Any], course: str) -> str:
+    """The Confirm card for scheduling a booking: `booking` is a create_plan
+    or create_request call's arguments, or a plan the card would arm."""
+    details = {"Course": course}
+    if tool == "create_plan":
+        weekday = WEEKDAYS[int(booking["target_weekday"])]
+        details["Day"] = (
+            f"{weekday}s, the {_ordinal(int(booking['weeks_ahead']))} ahead"
+        )
+        if booking.get("next_target_date"):
+            details["Next date"] = format_date(booking["next_target_date"])
+        title = "**⏰ Book this every week, automatically?**"
+        footer = (
+            "_Books each next date as soon as it opens and pays at checkout, "
+            "without asking again. Pause it any time._"
+        )
+    else:
+        details["Date"] = format_date(str(booking["target_date"]))
+        title = "**⏰ Book this automatically?**"
+        footer = (
+            "_Books it as soon as the day opens and pays at checkout, without "
+            "asking again. Cancel it any time before then._"
+        )
+    details["Tee-off"] = (
+        f"{format_time(str(booking['earliest']))} – "
+        f"{format_time(str(booking['latest']))}"
+    )
+    details["Group"] = f"{booking['players']} players · {booking['holes']} holes"
+    return "\n\n".join([title, detail_table(details), footer])
+
+
+def scheduled_status(booking: dict[str, Any]) -> str:
+    """What a confirmed schedule card says: when it books, from the plan or
+    request the API returned."""
+    target = booking.get("next_target_date") or booking.get("target_date")
+    when = ""
+    if booking.get("first_attempt_at"):
+        first = datetime.fromisoformat(booking["first_attempt_at"])
+        if first > datetime.now(first.tzinfo):
+            when = f" First try {format_moment(first)}."
+        else:
+            when = " It's bookable already, so it tries at the next chance."
+    return f"Scheduled for {format_date(target)}.{when} I'll message you how it goes."
 
 
 def detail_table(details: dict[str, str]) -> str:
@@ -642,6 +778,11 @@ def format_outcome(
                 f"⚠️ **Payment submitted, no confirmation** for {where} {slot}.\n\n"
                 "Check your account on the booking site before trying again."
             )
+        case "not_open":
+            return (
+                f"📭 **Not open yet:** {where} isn't in the site's booking window "
+                "yet. Nothing was booked."
+            )
         case _:
             detail = html.escape(run.get("detail") or "no detail")
             return (
@@ -690,6 +831,10 @@ def build_application() -> Application:
 
     async def started(application: Application) -> None:
         await stack.enter_async_context(client)
+        bot.start_scheduler(
+            application.bot,
+            lambda: start_due(api.state.sessions, api.state.worker),
+        )
         logger.info(
             f"Bot up for {bot_settings.user_email}; payment "
             f"{'ON' if settings.submit_payment else 'OFF (dry runs)'}"

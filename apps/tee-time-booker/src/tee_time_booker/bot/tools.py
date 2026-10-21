@@ -4,11 +4,13 @@ The tools are the MCP server's (`tee_time_booker.mcp`), called in-process
 through a FastMCP client, so they are the API's routes and stay in step with
 it. The bot narrows them twice:
 
-- `ALLOWED_TOOLS`: what the model is offered at all. Everything a chat needs
-  to look and book; not `create_plan`, which edits standing plans.
-- `PAYING_TOOLS`: the calls that can spend money. One of these asking for
-  `submit_payment` is never run on the model's say-so; the bot holds it until
-  the person taps Confirm (see `agent.py`).
+- `ALLOWED_TOOLS`: what the model is offered at all: everything a chat needs
+  to look, book and schedule.
+- `PAYING_TOOLS`: the calls that can spend money, each with the argument that
+  makes it do so. Booking now (`submit_payment`) pays at checkout; scheduling
+  (`auto_book`, `enabled`) lets the scheduler pay later without asking. One of
+  these asking to pay is never run on the model's say-so; the bot holds it
+  until the person taps Confirm (see `agent.py`).
 """
 
 import json
@@ -22,8 +24,12 @@ ALLOWED_TOOLS = frozenset(
     {
         "list_courses",
         "get_course",
+        "find_course_tee_times",
         "list_plans",
         "get_plan",
+        "create_plan",
+        "set_plan_auto_book",
+        "delete_plan",
         "find_tee_times",
         "book_plan",
         "list_requests",
@@ -37,13 +43,22 @@ ALLOWED_TOOLS = frozenset(
     }
 )
 
-PAYING_TOOLS = frozenset({"book_plan", "run_request"})
+PAYING_TOOLS: dict[str, str] = {
+    "book_plan": "submit_payment",
+    "run_request": "submit_payment",
+    "create_plan": "auto_book",
+    "create_request": "auto_book",
+    "set_plan_auto_book": "enabled",
+}
+# The paying calls that start a run now; the others schedule one for later.
+RUN_TOOLS = frozenset({"book_plan", "run_request"})
 
 
 def asks_to_pay(name: str, arguments: dict[str, Any]) -> bool:
     # Anything but an absent or literal False is held: the API coerces "true"
     # or 1 to True, so an `is True` check would let those pay unconfirmed.
-    return name in PAYING_TOOLS and arguments.get("submit_payment", False) is not False
+    flag = PAYING_TOOLS.get(name)
+    return flag is not None and arguments.get(flag, False) is not False
 
 
 @dataclass(frozen=True)

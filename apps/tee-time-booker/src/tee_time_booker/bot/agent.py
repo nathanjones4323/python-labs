@@ -24,7 +24,7 @@ from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 from loguru import logger
 
 from tee_time_booker.bot.tools import (
-    PAYING_TOOLS,
+    RUN_TOOLS,
     BookingTools,
     ToolResult,
     asks_to_pay,
@@ -39,30 +39,51 @@ PAYMENT_TTL_S = 15 * 60
 SYSTEM = """\
 You book golf tee times for {email} over Telegram, using the tee-time-booker tools.
 
-How booking works here:
-- A plan is a standing wish: a course, a weekday some weeks ahead, a tee-off window, a \
-group size and holes. list_plans shows each plan with the date it would book next.
-- find_tee_times lists what's open on a plan's date (or another date) without booking.
+Booking now:
+- find_course_tee_times lists what's open at any course on a day (user_email \
+{email}, the course key, date, players, holes), without booking. list_courses has \
+the keys. For a plan's course and group, find_tee_times with the plan does the same.
 - To offer tee times, call show_tee_times with the ones that fit what the person asked \
 for (at most eight, best first) rather than listing them in your reply. It shows them \
 a card with a Book button per slot; a tap asks them to confirm and then books exactly \
 that slot, so you don't book it yourself. After it, reply with one short line or \
 nothing at all.
+- Before booking, check what's open unless the person says not to.
+
+Booking ahead:
+- A plan is a standing wish: a course, the Nth upcoming weekday, a tee-off window, a \
+group size and holes. list_plans shows each plan with the date it would book next.
+- auto_book hands a booking to the scheduler, which books it as soon as the day can \
+be booked (a course that releases days at a fixed time is tried right at the \
+release; others each morning once the day is near), and messages the person how it \
+went. create_plan with auto_book books each next date every week; create_request \
+with auto_book books one date once. set_plan_auto_book turns a plan's on or off; \
+cancel_request calls off a scheduled one-off. first_attempt_at in the result says \
+when it starts trying.
+- Without auto_book, a plan is only booked when asked (book_plan), and a one-off \
+request only when run (run_request).
+
+How runs work:
 - book_plan and run_request start a run in the background and answer at once with a \
 run id. The bot itself tells the person the run started and messages them when it \
 ends, so don't repeat either, and don't poll get_run unless they ask how a run is going.
 - A run takes the best slot inside the window; it can't be aimed at one particular \
-slot. To get a particular time, make a one-off request (create_request) with a narrow \
-window around it, then run_request. One-off requests need user_email {email} and the \
-env_prefix of the person's account on that course's site (list_plans shows it).
+slot. To get a particular time, give a narrow window around it.
+- Plans and requests need user_email {email}. env_prefix picks the site account; \
+leave it out and the person's only account on that course's site is used.
+
+Paying:
 - submit_payment=false is a dry run: it stops at checkout and pays nothing. Set \
-submit_payment=true only when the person has clearly asked to book for real. That \
-call is held: the person gets a Confirm / Cancel button and nothing is paid until they \
-tap Confirm. Don't repeat the call; point them at the button.
+submit_payment=true only when the person has clearly asked to book for real.
+- auto_book=true (and set_plan_auto_book enabled=true) pays later without asking \
+again. Set it only when the person has asked to have it booked automatically.
+- A call that pays, now or later, is held: the person gets a Confirm / Cancel button \
+and nothing happens until they tap Confirm. Don't repeat the call; point them at the \
+button.
 - {payment_switch}
-- Before booking, check what's open with find_tee_times unless the person says not to.
-- People speak in their own terms ("this Saturday", "after 9"). Work out the actual \
-date from today's date below.
+
+People speak in their own terms ("this Saturday", "after 9", "every Sunday"). Work \
+out the actual date or weekday from today's date below.
 
 Replies are read on a phone, so keep them as short as a text message: one to three \
 lines, no preamble or sign-off. Don't explain how the tools work, restate the \
@@ -74,22 +95,23 @@ Write times like 9:12 AM and dates like Sat Oct 24.
 Today is {today:%A %B %-d, %Y}."""
 
 # Answered by the bot itself, not the MCP server: the slots must come from a
-# find_tee_times result in the same chat, so the card can't show a made-up one.
+# search in the same chat, so the card can't show a made-up one.
 SHOW_TEE_TIMES = "show_tee_times"
+SEARCH_TOOLS = frozenset({"find_tee_times", "find_course_tee_times"})
 MAX_OFFERED = 8
 SHOW_TEE_TIMES_DEF = {
     "name": SHOW_TEE_TIMES,
     "description": (
-        "Show the person tee times from an earlier find_tee_times result as a card "
-        "with a Book button per slot. A tap asks them to confirm, then books that "
-        "exact slot."
+        "Show the person tee times from an earlier find_course_tee_times or "
+        "find_tee_times result as a card with a Book button per slot. A tap asks "
+        "them to confirm, then books that exact slot."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "plan_id": {
+            "course": {
                 "type": "string",
-                "description": "The plan find_tee_times was called with",
+                "description": "The key of the course searched",
             },
             "date": {
                 "type": "string",
@@ -104,7 +126,7 @@ SHOW_TEE_TIMES_DEF = {
                 "description": "The slots to offer, best first",
             },
         },
-        "required": ["plan_id", "date", "times"],
+        "required": ["course", "date", "times"],
     },
 }
 # A held booking of one slot from a card, run by `confirm` (not an MCP tool).
@@ -155,11 +177,12 @@ class StartedRun:
 @dataclass(frozen=True)
 class TeeTimeOffer:
     """Slots shown on a card, each with a Book button. `slots` are rows of a
-    find_tee_times result, as the API returned them."""
+    search result, as the API returned them; `search` is who searched where,
+    for how many (`user_email`, `course`, `env_prefix`, `holes`, `players`)."""
 
     id: str
     chat_id: int
-    plan_id: str
+    search: dict[str, Any]
     slots: tuple[dict[str, Any], ...]
     created: float = field(default_factory=time.monotonic)
 
@@ -196,8 +219,11 @@ class BookingAgent:
         self._locks: dict[int, asyncio.Lock] = {}
         self._payments: dict[str, PendingPayment] = {}
         self._offers: dict[str, TeeTimeOffer] = {}
-        # The latest find_tee_times slots per (chat, plan, day), for show_tee_times.
-        self._found: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
+        # The latest search per (chat, course, day), for show_tee_times: the
+        # search itself and the slots it found.
+        self._found: dict[
+            tuple[int, str, str], tuple[dict[str, Any], list[dict[str, Any]]]
+        ] = {}
 
     def _lock(self, chat_id: int) -> asyncio.Lock:
         return self._locks.setdefault(chat_id, asyncio.Lock())
@@ -289,10 +315,10 @@ class BookingAgent:
             return {"type": "tool_result", "tool_use_id": call.id, "content": content}
         logger.info(f"Tool {call.name} {arguments}")
         result = await self._tools.call(call.name, arguments)
-        if call.name in PAYING_TOOLS and not result.is_error:
+        if call.name in RUN_TOOLS and not result.is_error:
             reply.runs.append(StartedRun.from_result(result))
-        if call.name == "find_tee_times" and not result.is_error:
-            self._remember_found(chat_id, str(arguments.get("plan_id")), result)
+        if call.name in SEARCH_TOOLS and not result.is_error:
+            await self._remember_found(chat_id, call.name, arguments, result)
         return {
             "type": "tool_result",
             "tool_use_id": call.id,
@@ -300,35 +326,57 @@ class BookingAgent:
             "is_error": result.is_error,
         }
 
-    def _remember_found(self, chat_id: int, plan_id: str, result: ToolResult) -> None:
+    async def _remember_found(
+        self, chat_id: int, tool: str, arguments: dict[str, Any], result: ToolResult
+    ) -> None:
+        if tool == "find_tee_times":
+            # A plan's search: the plan says where and for how many.
+            plan = await self._tools.call(
+                "get_plan", {"plan_id": arguments.get("plan_id")}
+            )
+            if plan.is_error:
+                return
+            row = plan.json()
+            search = {
+                key: row[key]
+                for key in ("user_email", "course", "env_prefix", "holes", "players")
+            }
+        else:
+            search = {
+                "user_email": arguments.get("user_email"),
+                "course": arguments.get("key"),
+                "env_prefix": arguments.get("env_prefix"),
+                "holes": arguments.get("holes"),
+                "players": arguments.get("players"),
+            }
         by_day: dict[str, list[dict[str, Any]]] = {}
         for slot in result.json():
             by_day.setdefault(slot["start"][:10], []).append(slot)
         for day, slots in by_day.items():
-            self._found[(chat_id, plan_id, day)] = slots
+            self._found[(chat_id, str(search["course"]), day)] = (search, slots)
 
     def _show(
         self, chat_id: int, call: ToolUseBlock, reply: Reply
     ) -> ToolResultBlockParam:
         arguments = dict(call.input)
-        plan_id = str(arguments.get("plan_id"))
-        found = self._found.get((chat_id, plan_id, str(arguments.get("date"))))
+        course = str(arguments.get("course"))
+        found = self._found.get((chat_id, course, str(arguments.get("date"))))
         if found is None:
-            content = "Call find_tee_times for that plan and date first."
+            content = "Search that course and date first (find_course_tee_times)."
             return {
                 "type": "tool_result",
                 "tool_use_id": call.id,
                 "content": content,
                 "is_error": True,
             }
+        search, found = found
         by_time = {slot["start"][11:16]: slot for slot in found}
         times = [str(t)[:5].zfill(5) for t in arguments.get("times") or []]
         slots = [by_time[t] for t in dict.fromkeys(times) if t in by_time]
         missing = [t for t in times if t not in by_time]
         if not slots:
             content = (
-                f"None of {missing} is in the find_tee_times result. Open: "
-                f"{sorted(by_time)}"
+                f"None of {missing} is in the search result. Open: {sorted(by_time)}"
             )
             return {
                 "type": "tool_result",
@@ -339,7 +387,7 @@ class BookingAgent:
         offer = TeeTimeOffer(
             id=secrets.token_urlsafe(8),
             chat_id=chat_id,
-            plan_id=plan_id,
+            search=search,
             slots=tuple(slots[:MAX_OFFERED]),
         )
         for stale in [o.id for o in self._offers.values() if o.expired]:
@@ -365,7 +413,7 @@ class BookingAgent:
             id=secrets.token_urlsafe(8),
             chat_id=offer.chat_id,
             tool=BOOK_SLOT,
-            arguments={"plan_id": offer.plan_id, "slot": slot},
+            arguments={"search": offer.search, "slot": slot},
         )
         for stale in [p.id for p in self._payments.values() if p.expired]:
             del self._payments[stale]
@@ -374,24 +422,20 @@ class BookingAgent:
 
     async def _book_slot(self, arguments: dict[str, Any]) -> ToolResult:
         """A one-off request for exactly this slot, then a run on it."""
-        plan = await self._tools.call("get_plan", {"plan_id": arguments["plan_id"]})
-        if plan.is_error:
-            return plan
-        row = plan.json()
+        search = arguments["search"]
         start = datetime.fromisoformat(arguments["slot"]["start"])
-        created = await self._tools.call(
-            "create_request",
-            {
-                "user_email": row["user_email"],
-                "course": row["course"],
-                "env_prefix": row["env_prefix"],
-                "target_date": start.date().isoformat(),
-                "earliest": start.time().isoformat(),
-                "latest": start.time().isoformat(),
-                "holes": row["holes"],
-                "players": row["players"],
-            },
-        )
+        request = {
+            "user_email": search["user_email"] or self._settings.user_email,
+            "course": search["course"],
+            "target_date": start.date().isoformat(),
+            "earliest": start.time().isoformat(),
+            "latest": start.time().isoformat(),
+            "holes": search["holes"],
+            "players": search["players"],
+        }
+        if search.get("env_prefix"):
+            request["env_prefix"] = search["env_prefix"]
+        created = await self._tools.call("create_request", request)
         if created.is_error:
             return created
         return await self._tools.call(
@@ -413,17 +457,25 @@ class BookingAgent:
     async def confirm(
         self, payment: PendingPayment
     ) -> tuple[ToolResult, StartedRun | None]:
-        """Run a payment the person confirmed, and tell the conversation."""
+        """Run a payment the person confirmed, and tell the conversation.
+
+        The run is None when the call failed, or when it scheduled a booking
+        for later rather than starting one."""
         if payment.tool == BOOK_SLOT:
             result = await self._book_slot(payment.arguments)
             what = f"booking {payment.arguments['slot']['start']} from the card"
         else:
             result = await self._tools.call(payment.tool, payment.arguments)
             what = payment.tool
-        run = None if result.is_error else StartedRun.from_result(result)
-        outcome = (
-            f"run {run.run_id} started" if run else f"it failed: {result.text[:300]}"
-        )
+        starts_run = payment.tool == BOOK_SLOT or payment.tool in RUN_TOOLS
+        run = None
+        if result.is_error:
+            outcome = f"it failed: {result.text[:300]}"
+        elif starts_run:
+            run = StartedRun.from_result(result)
+            outcome = f"run {run.run_id} started"
+        else:
+            outcome = "it's scheduled"
         await self.note(
             payment.chat_id, f"[The person tapped Confirm on {what}; {outcome}.]"
         )

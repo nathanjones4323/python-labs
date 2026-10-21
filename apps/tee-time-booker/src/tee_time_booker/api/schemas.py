@@ -125,6 +125,22 @@ class PreferencesIn(WindowIn):
         return Preferences(**self.model_dump(include=set(PreferencesIn.model_fields)))
 
 
+ENV_PREFIX_DESCRIPTION = (
+    "Which of the user's site accounts signs in, by its env prefix (e.g. "
+    "'SOULE'). Leave it out to use the user's only account on the course's site."
+)
+AUTO_BOOK_DESCRIPTION = (
+    "Let the scheduler book this as soon as the day can be booked, paying "
+    "without asking again (payment also needs the server's "
+    "TEE_TIME_SUBMIT_PAYMENT switch on). Only set it when the person has "
+    "asked to have it booked automatically."
+)
+FIRST_ATTEMPT_DESCRIPTION = (
+    "When the scheduler starts trying to book the date (it may already have "
+    "passed); null unless auto-booked"
+)
+
+
 class PlanIn(PreferencesIn):
     user_email: str = Field(
         description="Who the plan belongs to; the user must already exist"
@@ -134,11 +150,14 @@ class PlanIn(PreferencesIn):
         description="Unique per user; posting an existing name updates that plan",
     )
     course: str = Field(description="A course key from the courses listing")
-    env_prefix: str = Field(
+    env_prefix: str | None = Field(default=None, description=ENV_PREFIX_DESCRIPTION)
+    auto_book: bool = Field(
+        default=False,
         description=(
-            "Which of the user's site accounts signs in, by its env prefix "
-            "(e.g. 'SOULE')"
-        )
+            AUTO_BOOK_DESCRIPTION
+            + " Books each next date in turn, every week. Updating a plan "
+            "without it turns auto-booking off."
+        ),
     )
 
 
@@ -149,12 +168,21 @@ class PlanOut(PreferencesIn):
     course: str = Field(description="Course key")
     env_prefix: str
     active: bool
+    auto_book: bool = Field(
+        description="Booked automatically by the scheduler, without asking"
+    )
     next_target_date: date = Field(
         description="The date this plan would book if run now, in course-local time"
     )
+    first_attempt_at: datetime | None = Field(description=FIRST_ATTEMPT_DESCRIPTION)
 
     @classmethod
-    def from_row(cls, plan: BookingPlan, next_target_date: date) -> "PlanOut":
+    def from_row(
+        cls,
+        plan: BookingPlan,
+        next_target_date: date,
+        first_attempt_at: datetime | None = None,
+    ) -> "PlanOut":
         return cls(
             id=plan.id,
             user_email=plan.user.email,
@@ -162,6 +190,7 @@ class PlanOut(PreferencesIn):
             course=plan.course.key,
             env_prefix=plan.site_account.env_prefix,
             active=plan.active,
+            auto_book=plan.auto_book,
             target_weekday=plan.target_weekday,
             weeks_ahead=plan.weeks_ahead,
             earliest=plan.earliest,
@@ -170,7 +199,17 @@ class PlanOut(PreferencesIn):
             players=plan.players,
             prefer_earlier=plan.prefer_earlier,
             next_target_date=next_target_date,
+            first_attempt_at=first_attempt_at,
         )
+
+
+class AutoBookIn(BaseModel):
+    enabled: bool = Field(
+        description=(
+            "True arms the plan: the scheduler books each next date without "
+            "asking, paying when the server's switch is on. False pauses it."
+        )
+    )
 
 
 # --- tee times -------------------------------------------------------------
@@ -211,7 +250,8 @@ class CriteriaIn(WindowIn):
 class RequestIn(CriteriaIn):
     user_email: str
     course: str = Field(description="A course key from the courses listing")
-    env_prefix: str = Field(description="Which of the user's site accounts signs in")
+    env_prefix: str | None = Field(default=None, description=ENV_PREFIX_DESCRIPTION)
+    auto_book: bool = Field(default=False, description=AUTO_BOOK_DESCRIPTION)
 
 
 class RequestOut(BaseModel):
@@ -225,6 +265,13 @@ class RequestOut(BaseModel):
     holes: int
     players: int
     prefer_earlier: bool
+    auto_book: bool = Field(
+        description=(
+            "Booked automatically by the scheduler: this one-off's own flag, or "
+            "its plan's"
+        )
+    )
+    first_attempt_at: datetime | None = Field(description=FIRST_ATTEMPT_DESCRIPTION)
     status: RequestStatus = Field(
         description=(
             "pending: waiting to be run. running: a run is on the site now. "
@@ -238,7 +285,9 @@ class RequestOut(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def from_row(cls, request: BookingRequest) -> "RequestOut":
+    def from_row(
+        cls, request: BookingRequest, first_attempt_at: datetime | None = None
+    ) -> "RequestOut":
         return cls(
             id=request.id,
             user_email=request.user.email,
@@ -250,6 +299,8 @@ class RequestOut(BaseModel):
             holes=request.holes,
             players=request.players,
             prefer_earlier=request.prefer_earlier,
+            auto_book=request.armed,
+            first_attempt_at=first_attempt_at,
             status=request.status,
             created_at=request.created_at,
             updated_at=request.updated_at,
@@ -304,9 +355,11 @@ class RunOut(BaseModel):
             "running: still on the site, poll again. success: booked and paid. "
             "dry_run: reached checkout, nothing booked. error: see detail. "
             "unknown: submit was clicked and no confirmation or error appeared — "
-            "check the booking site before retrying."
+            "check the booking site before retrying. not_open: the day isn't in "
+            "the site's booking window yet; the request stays pending."
         )
     )
+    scheduled: bool = Field(description="Started by the scheduler, not by a person")
     started_at: datetime
     finished_at: datetime | None
     detail: str | None = Field(description="Short error message, when the run failed")
@@ -324,6 +377,7 @@ class RunOut(BaseModel):
             id=run.id,
             request_id=run.request_id,
             status=run.status,
+            scheduled=run.scheduled,
             started_at=run.started_at,
             finished_at=run.finished_at,
             detail=run.detail,

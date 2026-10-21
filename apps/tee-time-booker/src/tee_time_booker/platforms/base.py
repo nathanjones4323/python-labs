@@ -50,8 +50,8 @@ class BookingPlatform(ABC):
     # is fresh but ready the moment slots appear.
     release_lead_seconds: ClassVar[float] = 45
     # CSS selector for the checkout inputs holding card or personal details.
-    # Hidden before every screenshot so none of it lands in artifacts (they're
-    # uploaded to GitHub Actions and downloadable by anyone with repo read).
+    # Hidden before every screenshot so none of it lands in artifacts, which
+    # are easily shared when debugging a selector.
     sensitive_fields: ClassVar[str] = ""
 
     def __init__(

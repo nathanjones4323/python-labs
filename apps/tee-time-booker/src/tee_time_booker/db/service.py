@@ -137,6 +137,34 @@ def get_site_account(session: Session, user: User, env_prefix: str) -> SiteAccou
     return account
 
 
+def site_account_for(
+    session: Session, user: User, course: Course, env_prefix: str | None = None
+) -> SiteAccount:
+    """The login that books `course`: the one named by `env_prefix`, or else
+    the user's only account on the course's site."""
+    if env_prefix:
+        account = get_site_account(session, user, env_prefix)
+        require_same_platform(course, account)
+        return account
+    accounts = list(
+        session.scalars(
+            select(SiteAccount).where(
+                SiteAccount.user_id == user.id,
+                SiteAccount.platform == course.platform,
+            )
+        )
+    )
+    if not accounts:
+        raise NotFound(f"{user.email} has no {course.platform} account")
+    if len(accounts) > 1:
+        prefixes = ", ".join(sorted(a.env_prefix for a in accounts))
+        raise ValueError(
+            f"{user.email} has several {course.platform} accounts ({prefixes}); "
+            "say which with env_prefix"
+        )
+    return accounts[0]
+
+
 def ensure_site_account(
     session: Session, user: User, *, platform: str, login_email: str, env_prefix: str
 ) -> SiteAccount:
@@ -171,8 +199,13 @@ def ensure_plan(
     course: Course,
     site_account: SiteAccount,
     preferences: Preferences,
+    auto_book: bool = False,
 ) -> BookingPlan:
-    """The user's plan called `name`, created or updated to `preferences`."""
+    """The user's plan called `name`, created or updated to `preferences`.
+
+    `auto_book` is set either way, so changing an auto-booked plan turns
+    auto-booking off unless the change asks for it again.
+    """
     require_same_platform(course, site_account)
     plan = session.scalar(
         select(BookingPlan).where(
@@ -191,6 +224,7 @@ def ensure_plan(
     plan.holes = preferences.holes
     plan.players = preferences.players
     plan.prefer_earlier = preferences.prefer_earlier
+    plan.auto_book = auto_book
     return plan
 
 
@@ -198,6 +232,17 @@ def get_plan(session: Session, plan_id: uuid.UUID) -> BookingPlan:
     plan = session.get(BookingPlan, plan_id)
     if plan is None:
         raise NotFound(f"No booking plan {plan_id}")
+    return plan
+
+
+def delete_plan(session: Session, plan_id: uuid.UUID) -> BookingPlan:
+    """Delete a plan. Its requests and their runs stay, as one-offs that the
+    scheduler no longer books."""
+    plan = get_plan(session, plan_id)
+    for request in plan.requests:
+        request.plan = None
+        request.auto_book = False
+    session.delete(plan)
     return plan
 
 
@@ -217,9 +262,9 @@ def list_plans(session: Session, *, user: User | None = None) -> list[BookingPla
     return list(session.scalars(query))
 
 
-def plan_target_date(plan: BookingPlan) -> date:
+def plan_target_date(plan: BookingPlan, now: datetime | None = None) -> date:
     """The date this plan books if run now, in the course's local time."""
-    return dates.target_date(course_config(plan.course), plan_preferences(plan))
+    return dates.target_date(course_config(plan.course), plan_preferences(plan), now)
 
 
 def plan_preferences(plan: BookingPlan) -> Preferences:
@@ -281,8 +326,9 @@ def create_request(
     course: Course,
     site_account: SiteAccount,
     criteria: SearchCriteria,
+    auto_book: bool = False,
 ) -> BookingRequest:
-    """A one-off request with no plan behind it."""
+    """A one-off request with no plan behind it; `auto_book` schedules it."""
     require_same_platform(course, site_account)
     request = BookingRequest(
         user_id=user.id,
@@ -294,6 +340,7 @@ def create_request(
         holes=criteria.holes,
         players=criteria.players,
         prefer_earlier=criteria.prefer_earlier,
+        auto_book=auto_book,
     )
     session.add(request)
     session.flush()
@@ -329,6 +376,22 @@ def list_requests(
     return list(session.scalars(query.limit(limit)))
 
 
+def open_requests(session: Session) -> list[BookingRequest]:
+    """Every request a run could still be started on (pending or failed),
+    with what the scheduler weighs about each loaded up front."""
+    query = (
+        select(BookingRequest)
+        .options(
+            joinedload(BookingRequest.course),
+            joinedload(BookingRequest.plan),
+            joinedload(BookingRequest.runs),
+        )
+        .where(BookingRequest.status.in_([RequestStatus.PENDING, RequestStatus.FAILED]))
+        .order_by(BookingRequest.target_date)
+    )
+    return list(session.scalars(query).unique())
+
+
 def cancel_request(session: Session, request_id: uuid.UUID) -> BookingRequest:
     """Cancel a request that isn't running; `InvalidTransition` if it can't be."""
     request = get_request(session, request_id, for_update=True)
@@ -348,15 +411,18 @@ class ClaimedRun:
     criteria: SearchCriteria
 
 
-def claim_request(session: Session, request_id: uuid.UUID) -> ClaimedRun:
+def claim_request(
+    session: Session, request_id: uuid.UUID, *, scheduled: bool = False
+) -> ClaimedRun:
     """Mark the request running and open a run for it, under a row lock.
 
     Two workers claiming the same request at once serialise on the lock; the
-    second sees `running` and `transition` refuses it.
+    second sees `running` and `transition` refuses it. `scheduled` marks a
+    run the scheduler started.
     """
     request = get_request(session, request_id, for_update=True)
     request.transition(RequestStatus.RUNNING)
-    run = Run(request=request)
+    run = Run(request=request, scheduled=scheduled)
     session.add(run)
     session.flush()
     return ClaimedRun(

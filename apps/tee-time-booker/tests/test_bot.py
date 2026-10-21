@@ -3,6 +3,7 @@ payment gate, the conversation's bookkeeping and the run messages."""
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from tee_time_booker.bot.rich import Progress, escape, escape_prices  # noqa: E4
 from tee_time_booker.bot.tools import ALLOWED_TOOLS, BookingTools, ToolResult  # noqa: E402
 from tee_time_booker.config import BotSettings, Settings  # noqa: E402
 from tee_time_booker.mcp import create_server  # noqa: E402
+from tee_time_booker.scheduler import Started  # noqa: E402
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut  # noqa: E402
 from telegram.ext import ApplicationHandlerStop  # noqa: E402
 
@@ -381,7 +383,7 @@ def test_the_models_prices_stay_out_of_formulas():
 
 
 def test_template_html_carries_no_backslashes():
-    offer = TeeTimeOffer("o", 7, "p", tuple(FOUND))
+    offer = TeeTimeOffer("o", 7, PLAN, tuple(FOUND))
     assert "\\" not in format_offer(offer, PLAN, "Soule Park").split("<table")[1]
 
 
@@ -480,8 +482,9 @@ def test_the_real_tools_are_the_allowlist_and_answer(seeded, db, tmp_path: Path)
 
     names, plans, refused = asyncio.run(go())
     assert names == sorted(ALLOWED_TOOLS)
-    assert "create_plan" not in names
+    assert {"create_plan", "find_course_tee_times"} <= set(names)
     assert {p["name"] for p in plans} == {"soule-saturday", "saticoy-saturday"}
+    # Missing its required arguments.
     assert refused.is_error
 
 
@@ -534,7 +537,7 @@ def _shown(times, tools, *, pays=True):
             [
                 _tool_use(
                     "show_tee_times",
-                    {"plan_id": "p", "date": "2026-11-01", "times": times},
+                    {"course": "soule-park", "date": "2026-11-01", "times": times},
                     "call_2",
                 )
             ],
@@ -567,7 +570,7 @@ def test_showing_tee_times_needs_a_search_first():
             [
                 _tool_use(
                     "show_tee_times",
-                    {"plan_id": "p", "date": "2026-11-01", "times": ["07:40"]},
+                    {"course": "soule-park", "date": "2026-11-01", "times": ["07:40"]},
                 )
             ],
             "tool_use",
@@ -590,8 +593,8 @@ def test_booking_from_a_card_books_exactly_that_slot(pays):
     _, run = asyncio.run(agent.confirm(agent.take_payment(payment.id)))
 
     assert run.run_id == RUN_STARTED["run_id"]
+    # The plan's search said where and for how many; nothing is looked up again.
     assert tools.calls == [
-        ("get_plan", {"plan_id": "p"}),
         (
             "create_request",
             {
@@ -613,7 +616,7 @@ def test_booking_from_a_card_books_exactly_that_slot(pays):
 
 
 def test_the_tee_time_card_is_a_table():
-    offer = TeeTimeOffer("o", 7, "p", tuple(FOUND))
+    offer = TeeTimeOffer("o", 7, PLAN, tuple(FOUND))
     text = format_offer(offer, PLAN, "Soule Park")
     assert text.startswith("📅 **Soule Park · Sun Nov 1**\n\n2 times · 2 golfers")
     assert "<td><b>7:40 AM</b></td><td>Front</td>" in text
@@ -624,7 +627,7 @@ def test_the_tee_time_card_is_a_table():
 
 def test_a_side_column_only_when_the_sides_differ():
     same = tuple({**slot, "side": "Front"} for slot in FOUND)
-    text = format_offer(TeeTimeOffer("o", 7, "p", same), PLAN, "Soule Park")
+    text = format_offer(TeeTimeOffer("o", 7, PLAN, same), PLAN, "Soule Park")
     assert "Side" not in text and "Front" not in text
 
 
@@ -632,3 +635,203 @@ def test_outcomes_name_the_course():
     started = StartedRun("r", "soule-park", "2026-10-24", dry_run=True)
     run = {"status": "dry_run", "tee_time_local": None}
     assert "at Soule Park on Sat Oct 24" in format_outcome(started, run, "Soule Park")
+
+
+# --- searching by course ---------------------------------------------------
+
+
+def test_a_course_search_needs_no_plan_and_books_with_its_own_account():
+    tools = FakeTools(
+        {
+            "find_course_tee_times": ToolResult(json.dumps({"result": FOUND})),
+            "create_request": ToolResult(json.dumps({"id": "req"})),
+        }
+    )
+    search = {
+        "key": "sterling-hills",
+        "user_email": "golfer@example.com",
+        "date": "2026-11-01",
+        "players": 3,
+        "holes": 18,
+    }
+    show = {"course": "sterling-hills", "date": "2026-11-01", "times": ["08:20"]}
+    claude = FakeClaude(
+        ([_tool_use("find_course_tee_times", search)], "tool_use"),
+        ([_tool_use("show_tee_times", show, "call_2")], "tool_use"),
+        ([], "end_turn"),
+    )
+    agent = _agent(claude, tools)
+    [offer] = _respond(agent, "what's open at Sterling Hills Sunday?").offers
+    assert offer.search["course"] == "sterling-hills" and offer.search["players"] == 3
+    tools.calls.clear()
+
+    payment = agent.hold_slot(offer, offer.slots[0])
+    asyncio.run(agent.confirm(agent.take_payment(payment.id)))
+    name, request = tools.calls[0]
+    assert name == "create_request"
+    # No env_prefix: the API picks the person's only account on that site.
+    assert "env_prefix" not in request
+    assert (request["course"], request["players"], request["earliest"]) == (
+        "sterling-hills",
+        3,
+        "08:20:00",
+    )
+
+
+# --- scheduling ------------------------------------------------------------
+
+SCHEDULE = {
+    "user_email": "golfer@example.com",
+    "course": "glen-annie",
+    "target_date": "2026-11-14",
+    "earliest": "08:00",
+    "latest": "10:00",
+    "holes": 18,
+    "players": 2,
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("create_request", {**SCHEDULE, "auto_book": True}),
+        ("create_plan", {"name": "x", "auto_book": True}),
+        ("set_plan_auto_book", {"plan_id": "p", "enabled": True}),
+    ],
+)
+def test_scheduling_to_pay_later_is_held_like_paying_now(tool, arguments):
+    claude = FakeClaude(
+        ([_tool_use(tool, arguments)], "tool_use"),
+        ([_text("Tap Confirm.")], "end_turn"),
+    )
+    tools = FakeTools()
+    reply = _respond(_agent(claude, tools), "book it when it opens")
+    assert tools.calls == []
+    assert [p.tool for p in reply.payments] == [tool]
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("create_request", SCHEDULE),
+        ("set_plan_auto_book", {"plan_id": "p", "enabled": False}),
+    ],
+)
+def test_not_scheduling_or_pausing_runs_straight_away(tool, arguments):
+    claude = FakeClaude(
+        ([_tool_use(tool, arguments)], "tool_use"),
+        ([_text("Done.")], "end_turn"),
+    )
+    tools = FakeTools({tool: ToolResult(json.dumps({"id": "x"}))})
+    reply = _respond(_agent(claude, tools), "pause it")
+    assert [name for name, _ in tools.calls] == [tool]
+    assert reply.payments == [] and reply.runs == []
+
+
+def test_confirming_a_schedule_starts_no_run():
+    scheduled = {**SCHEDULE, "id": "req", "first_attempt_at": "2026-10-15T06:00:00"}
+    claude = FakeClaude(
+        ([_tool_use("create_request", {**SCHEDULE, "auto_book": True})], "tool_use"),
+        ([_text("Tap Confirm.")], "end_turn"),
+        ([_text("ok")], "end_turn"),
+    )
+    tools = FakeTools({"create_request": ToolResult(json.dumps(scheduled))})
+    agent = _agent(claude, tools)
+    [payment] = _respond(agent, "book it when it opens").payments
+
+    result, run = asyncio.run(agent.confirm(agent.take_payment(payment.id)))
+
+    assert run is None and not result.is_error
+    assert tools.calls == [("create_request", {**SCHEDULE, "auto_book": True})]
+    _respond(agent, "thanks")
+    sent = claude.requests[-1]["messages"]
+    assert any(
+        "it's scheduled" in str(m["content"]) for m in sent if m["role"] == "user"
+    )
+
+
+def test_the_schedule_card_says_what_it_will_book():
+    one_off = app_module.schedule_lines("create_request", SCHEDULE, "Glen Annie")
+    assert one_off.startswith("**⏰ Book this automatically?**")
+    assert "<td>Sat Nov 14</td>" in one_off
+    assert "8:00 AM – 10:00 AM" in one_off and "without asking again" in one_off
+
+    plan = {
+        **SCHEDULE,
+        "target_weekday": 6,
+        "weeks_ahead": 3,
+        "next_target_date": "2026-11-08",
+    }
+    weekly = app_module.schedule_lines("create_plan", plan, "Glen Annie")
+    assert "every week" in weekly
+    assert "<td>Sundays, the 3rd ahead</td>" in weekly
+    assert "<td>Sun Nov 8</td>" in weekly
+
+
+def test_a_confirmed_schedule_says_when_it_first_tries():
+    later = {
+        "target_date": "2099-11-14",
+        "first_attempt_at": "2099-10-24T23:50:00-07:00",
+    }
+    assert app_module.scheduled_status(later) == (
+        "Scheduled for Sat Nov 14. First try Sat Oct 24, 11:50 PM. "
+        "I'll message you how it goes."
+    )
+    already = {
+        "next_target_date": "2026-10-24",
+        "first_attempt_at": "2026-10-01T06:00:00-07:00",
+    }
+    assert "bookable already" in app_module.scheduled_status(already)
+
+
+def test_a_day_not_open_yet_reads_plainly():
+    started = StartedRun("r", "saticoy", "2026-11-14", dry_run=False)
+    text = format_outcome(started, {"status": "not_open"}, "Saticoy")
+    assert text.startswith("📭 **Not open yet:** Saticoy on Sat Nov 14")
+
+
+def _scheduled(status):
+    """One scheduler tick that starts a run, followed to its `status`."""
+    claimed = SimpleNamespace(
+        run_id="run-1",
+        course=SimpleNamespace(key="soule-park"),
+        criteria=SimpleNamespace(target_date=date(2026, 11, 14)),
+    )
+    run = {"status": status, "tee_time_local": None}
+    tools = FakeTools(
+        {
+            "get_course": ToolResult(json.dumps({"name": "Soule Park"})),
+            "get_run": ToolResult(json.dumps(run)),
+        }
+    )
+    settings = replace(BOT_SETTINGS, allowed_user_ids=frozenset({42, 43}))
+    bot = BookingBot(None, tools, None, settings, pays=True)
+    telegram = FlakyTelegram()
+
+    async def go():
+        await bot.schedule_once(telegram, lambda: [Started(claimed, dry_run=False)])
+        await asyncio.gather(*bot._watches)
+
+    asyncio.run(go())
+    return telegram
+
+
+def test_a_scheduled_runs_outcome_goes_to_every_allowed_user(no_sleep):
+    telegram = _scheduled("success")
+    assert [kwargs["chat_id"] for _, kwargs in telegram.requests] == [42, 43]
+    assert all(text.startswith("⏰ **Scheduled booking**") for text in telegram.sent)
+    assert "Booked" in telegram.sent[0]
+
+
+def test_a_scheduled_try_that_finds_the_day_shut_says_nothing(no_sleep):
+    assert _scheduled("not_open").sent == []
+
+
+def test_a_failed_scheduler_tick_is_logged_not_raised():
+    bot = BookingBot(None, FakeTools(), None, BOT_SETTINGS, pays=True)
+
+    def tick():
+        raise RuntimeError("database is locked")
+
+    asyncio.run(bot.schedule_once(FlakyTelegram(), tick))  # no raise
+    assert not bot._watches

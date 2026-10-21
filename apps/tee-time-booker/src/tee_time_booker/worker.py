@@ -18,6 +18,7 @@ from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
 
 from tee_time_booker.config import Settings
+from tee_time_booker.dates import NotYetBookable
 from tee_time_booker.db import RunStatus
 from tee_time_booker.db.service import ClaimedRun, finish_run
 from tee_time_booker.models import BookingResult
@@ -67,6 +68,11 @@ def execute(
         status = RunStatus.UNKNOWN
         detail = str(e)
         logger.exception(f"Unknown payment outcome: {detail}")
+    except NotYetBookable as e:
+        # Not a failure: the request stays pending for a later try.
+        status = RunStatus.NOT_OPEN
+        detail = brief(e)
+        logger.info(f"Not bookable yet: {e}")
     except Exception as e:
         # Error messages can embed whole server responses; keep a short
         # message in the database and the traceback in the job log.
