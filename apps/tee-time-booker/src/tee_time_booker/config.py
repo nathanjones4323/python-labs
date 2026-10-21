@@ -175,7 +175,8 @@ class BotSettings:
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
             allowed_user_ids=ids,
             user_email=_required("TEE_TIME_USER_EMAIL"),
-            model=os.environ.get("TEE_TIME_BOT_MODEL", "").strip() or "claude-opus-5-5",
+            model=os.environ.get("TEE_TIME_BOT_MODEL", "").strip()
+            or "claude-sonnet-5-5",
             effort=os.environ.get("TEE_TIME_BOT_EFFORT", "").strip() or "medium",
             whisper_model=os.environ.get("TEE_TIME_WHISPER_MODEL", "").strip()
             or "base.en",
