@@ -118,6 +118,11 @@ MARKETING_POPUP_DISMISS = "[id^='aInterstitialRemindLater']"
 # OneTrust cookie banner: doesn't hide the form, but sits over the bottom of
 # the page where the second Reserve button is.
 COOKIE_BANNER_ACCEPT = "#onetrust-accept-btn-handler"
+# A "restricted rate" (e.g. a temp-greens notice) adds this checkbox above
+# Continue to Book; leaving it unchecked makes the click raise a modal
+# ("Oops, looks like you forgot to verify...") instead of continuing.
+RESTRICTED_RATE_CHECKBOX = "#restricted-rate-checkbox"
+RATE_ACKNOWLEDGMENT_MODAL_OK = "#modal-container button:has-text('Okay')"
 
 # --- Checkout ---------------------------------------------------------------------
 CHECKOUT_FORM = "#fmcheck"
@@ -457,6 +462,22 @@ class GolfNowPlatform(BookingPlatform):
         except PlaywrightTimeoutError:
             pass
 
+    def _dismiss_rate_acknowledgment_modal(self, timeout: int = 3_000) -> bool:
+        """Acknowledge a rate-specific notice if Continue to Book raised one.
+
+        A handful of facilities gate some rates behind a one-time "Okay" (a
+        temp-greens notice, a rate-eligibility check, ...) instead of going
+        straight to checkout. Dismissing it just re-enables Continue to Book,
+        so the caller needs to click it again.
+        """
+        ok = self.page.locator(RATE_ACKNOWLEDGMENT_MODAL_OK)
+        try:
+            ok.filter(visible=True).first.click(timeout=timeout)
+            logger.info("Acknowledged a rate-specific notice")
+            return True
+        except PlaywrightTimeoutError:
+            return False
+
     def _accept_cookie_banner(self) -> None:
         accept = self.page.locator(COOKIE_BANNER_ACCEPT)
         try:
@@ -558,8 +579,14 @@ class GolfNowPlatform(BookingPlatform):
         expect(radio).to_be_checked()
         pause()
 
+        checkbox = page.locator(RESTRICTED_RATE_CHECKBOX)
+        if checkbox.count():
+            checkbox.check()
+
         checkout = CHECKOUT_URL_PATTERN.format(players=criteria.players)
         page.locator(CONTINUE_TO_BOOK).click()
+        if self._dismiss_rate_acknowledgment_modal():
+            page.locator(CONTINUE_TO_BOOK).click()
         try:
             page.wait_for_url(lambda url: checkout in url)
         except PlaywrightTimeoutError:

@@ -26,6 +26,19 @@ from tee_time_booker.models import Preferences, SearchCriteria, TeeTime
 # --- courses ---------------------------------------------------------------
 
 
+class GreenFeesOut(BaseModel):
+    """A rough green-fee range read off the site's listings; not a quote."""
+
+    holes: int = Field(description="The round these fees are for: 9 or 18")
+    weekday_low: float = Field(description="Cheapest weekday rate seen, USD")
+    weekday_high: float = Field(description="Dearest weekday rate seen, USD")
+    weekend_low: float = Field(description="Cheapest weekend rate seen, USD")
+    weekend_high: float = Field(description="Dearest weekend rate seen, USD")
+    sampled_on: date = Field(
+        description="When the listings were read; treat old samples as rough"
+    )
+
+
 class CourseOut(BaseModel):
     key: str = Field(description="Stable identifier, e.g. 'soule-park'")
     name: str
@@ -43,6 +56,15 @@ class CourseOut(BaseModel):
             "null if the site is asked at run time"
         )
     )
+    description: str | None = Field(
+        description="A few sentences on the course, when known"
+    )
+    green_fees: GreenFeesOut | None = Field(
+        description=(
+            "Estimated single-player green fees before booking fees, when "
+            "known; null means no estimate, not free"
+        )
+    )
 
     @classmethod
     def from_row(cls, course: Course) -> "CourseOut":
@@ -53,6 +75,10 @@ class CourseOut(BaseModel):
             timezone=course.timezone,
             release_opens_at=course.release_opens_at,
             booking_window_days=course.booking_window_days,
+            description=course.description,
+            green_fees=(
+                GreenFeesOut(**course.green_fees) if course.green_fees else None
+            ),
         )
 
 

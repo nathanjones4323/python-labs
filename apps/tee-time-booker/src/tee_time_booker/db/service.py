@@ -5,7 +5,7 @@ so one unit of work (claim a request *and* open its run) is one transaction.
 """
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from tee_time_booker import dates
-from tee_time_booker.courses import CourseConfig, ReleaseSchedule
+from tee_time_booker.courses import CourseConfig, GreenFees, ReleaseSchedule
 from tee_time_booker.db.models import (
     REQUEST_STATUS_AFTER_RUN,
     BookingPlan,
@@ -45,6 +45,14 @@ def course_config(course: Course) -> CourseConfig:
         release = ReleaseSchedule(
             opens_at=course.release_opens_at, pre_release_start=course.release_pre_start
         )
+    green_fees = None
+    if course.green_fees is not None:
+        green_fees = GreenFees(
+            **{
+                **course.green_fees,
+                "sampled_on": date.fromisoformat(course.green_fees["sampled_on"]),
+            }
+        )
     course_type = get_platform(course.platform).course_type
     return course_type(
         key=course.key,
@@ -53,6 +61,8 @@ def course_config(course: Course) -> CourseConfig:
         timezone=ZoneInfo(course.timezone),
         release=release,
         booking_window_days=course.booking_window_days,
+        description=course.description,
+        green_fees=green_fees,
         **course.platform_config,
     )
 
@@ -71,6 +81,13 @@ def upsert_course(session: Session, config: CourseConfig) -> Course:
         config.release.pre_release_start if config.release else None
     )
     course.booking_window_days = config.booking_window_days
+    course.description = config.description
+    course.green_fees = None
+    if config.green_fees:
+        course.green_fees = {
+            **asdict(config.green_fees),
+            "sampled_on": config.green_fees.sampled_on.isoformat(),
+        }
     course.platform_config = config.platform_config()
     return course
 
