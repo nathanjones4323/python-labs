@@ -223,6 +223,40 @@ def test_sce_confirmation_for_a_different_amount_after_requesting_warns(db, sett
     assert "$90.00" in notice.text and "$45.00" in notice.text
 
 
+def test_sce_confirmation_for_a_different_bill_amount_still_replaces_the_assumed(
+    db, settings
+):
+    poll(db, settings, FakeMailbox(sce_bill()), "2026-10-24 00:05")
+    send_all(db, settings, "2026-10-24 00:05")
+
+    # $90.00 taken against an $86.96 bill: no bill matches by amount, but
+    # it's the autopay that was assumed, not a second payment.
+    message, event = _sce_confirmation(9000)
+    with db.begin() as session:
+        record(session, message, event, settings, at("2026-10-24 07:00"))
+
+    assert count(db, Payment) == 1
+    [request] = requests(db)
+    assert request.payment.source == FROM_EMAIL
+    assert request.share_cents == 4500
+
+
+def test_a_failure_after_scheduled_says_a_request_was_made(db, settings):
+    failed = email(
+        "w-failed",
+        water_paid().sender,
+        water_paid().subject,
+        "2026-10-11 21:33",
+        water_paid().text.replace("SCHEDULED", "FAILED"),
+    )
+    poll(db, settings, FakeMailbox(water_bill(), water_paid()), "2026-10-11 08:00")
+    send_all(db, settings, "2026-10-11 08:00")
+    poll(db, settings, FakeMailbox(failed), "2026-10-12 08:00")
+    items = send_all(db, settings, "2026-10-12 08:00")
+    [notice] = [i for i in items if i.kind == "notice"]
+    assert "already made" in notice.text
+
+
 def test_roommate_paying_settles_the_request(db, settings):
     mailbox = FakeMailbox(water_bill(), water_paid())
     poll(db, settings, mailbox, "2026-10-11 08:00")

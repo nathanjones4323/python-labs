@@ -12,7 +12,7 @@ from pay_my_bills.db import (
     Bill,
     SplitRequest,
 )
-from pay_my_bills.pipeline import autopay_date, rent_month
+from pay_my_bills.pipeline import autopay_date, billed_on, rent_month
 from pay_my_bills.split import dollars, venmo_request_url
 
 ICONS = {ELECTRIC: "⚡", RENT: "🏠"}
@@ -34,7 +34,7 @@ def venmo_url(request: SplitRequest, settings: Settings) -> str:
 def request_text(request: SplitRequest, settings: Settings, *, reminder: bool) -> str:
     payment = request.payment
     name = UTILITY_NAMES[payment.utility]
-    billed = payment.bill.statement_date if payment.bill else payment.paid_on
+    billed = billed_on(payment)
     if payment.utility == RENT:
         # The note names the month the rent is for: "Rent November 2026".
         headline = f"<b>{escape(request.note)}</b>: ${dollars(payment.total_cents)}"
@@ -70,7 +70,7 @@ def short_label(request: SplitRequest) -> str:
     if payment.utility == RENT:
         month = rent_month(payment.paid_on)
     else:
-        month = payment.bill.statement_date if payment.bill else payment.paid_on
+        month = billed_on(payment)
     return f"{_icon(payment.utility)} {month:%b} ${dollars(request.share_cents)}"
 
 
