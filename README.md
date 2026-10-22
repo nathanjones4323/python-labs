@@ -16,3 +16,4 @@ The `.env` file is git-ignored and never committed.
 - `apps/meal-planner` — Expo frontend + FastAPI backend (see its README)
 - `apps/tee-time-booker` — scheduled Playwright job that books a tee time, with one adapter per booking site (foreUP, GolfNow) behind a shared interface (see its README)
 - `apps/garmin-mcp` — local MCP server for a personal Garmin Connect account: training data, strength/running workouts, calendar scheduling and pushing to a watch, with previewed, approved and verified writes (see its README)
+- `apps/pay-my-bills` — Telegram bot that watches Gmail for Ventura Water and SCE autopay emails and hands you a prefilled Venmo request for your roommate's share (see its README)

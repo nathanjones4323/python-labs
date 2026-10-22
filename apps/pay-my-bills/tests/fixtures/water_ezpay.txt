@@ -1,0 +1,17 @@
+| |
+| KUBRA EZ-PAY | |
+| Your payment processed successfully! |
+| |
+| Thank you for using KUBRA EZ-PAY to make a payment for City of Ventura. Please save this email for your records. |
+
+| |
+| Biller: | City of Ventura |
+| Account Number: | 1****5678 |
+| Payment Amount: | $45.00 |
+| Service Fee: | $2.95 |
+| Total paid: | $47.95 |
+| Paid on: | Sep 20, 2026 |
+| Status: | PAID |
+| Confirmation #: | 020848 |
+
+| Take care, KUBRA EZ-PAY |

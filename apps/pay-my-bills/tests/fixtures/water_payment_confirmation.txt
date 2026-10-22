@@ -1,0 +1,17 @@
+ #
+Payment Confirmation Hello NathanJones,
+
+The payment for Account Number: 12345678 is *SCHEDULED*
+
+Here are your payment details:
+
+*Invoice number:* 05566066
+*Payment id:* 00021898101126
+*Payment date:* 10/12/2026 00:00:00
+*Confirmation code:* 28419413415
+*Payment amount: $* 54.24
+*Service fee amount: $ *2.95
+*Total amount: $ *57.19
+*Payment account:* ************0000
+
+*Please do not reply directly to this email. If you have questions or would prefer to speak with someone, please call Customer Care at (805) 667-6500.*
