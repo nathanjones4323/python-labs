@@ -54,6 +54,9 @@ It shows them one card with a Book button per slot; a tap asks them to confirm a
 then books exactly that slot, so you don't book it yourself. After it, reply with one \
 short line or nothing at all; mention courses that couldn't be searched only if the \
 person asked about them.
+- A card books the group size and holes it was searched with. If the person changes \
+either, search again with the new ones and show a new card; never point them back \
+at an older card.
 - Before booking, check what's open unless the person says not to.
 
 Booking ahead:
@@ -425,7 +428,14 @@ class BookingAgent:
         self._offers[offer.id] = offer
         reply.offers.append(offer)
         shown = [f"{s['course']} {s['start']}" for s in offer.slots]
-        content = f"Shown as a card with Book buttons: {shown}."
+        # Said back so the model knows what a tap books: the group is fixed
+        # by the search, whatever the person says after the card is shown.
+        groups = sorted(
+            {f"{s['players']} players, {s['holes']} holes" for s in searches.values()}
+        )
+        content = (
+            f"Shown as a card for {' / '.join(groups)} with Book buttons: {shown}."
+        )
         if missing:
             content += f" Not in the results, so left out: {missing}."
         return {"type": "tool_result", "tool_use_id": call.id, "content": content}

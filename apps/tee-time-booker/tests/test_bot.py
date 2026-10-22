@@ -627,6 +627,8 @@ def test_shown_tee_times_come_only_from_the_search():
     assert reply.text == ""
     tool_result = claude.requests[2]["messages"][-1]["content"][0]
     assert "10:00" in tool_result["content"]
+    # The model hears what a tap books, so a later "make it four" means a new search.
+    assert "for 2 players, 18 holes" in tool_result["content"]
     assert agent.offer(offer.id) is offer
     assert "show_tee_times" in [t["name"] for t in claude.requests[0]["tools"]]
 
