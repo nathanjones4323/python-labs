@@ -603,6 +603,8 @@ def _shown(times, tools, *, pays=True):
                     "show_tee_times",
                     {
                         "date": "2026-11-01",
+                        "players": 2,
+                        "holes": 18,
                         "slots": [{"course": "soule-park", "time": t} for t in times],
                     },
                     "call_2",
@@ -641,6 +643,8 @@ def test_showing_tee_times_needs_a_search_first():
                     "show_tee_times",
                     {
                         "date": "2026-11-01",
+                        "players": 2,
+                        "holes": 18,
                         "slots": [{"course": "soule-park", "time": "07:40"}],
                     },
                 )
@@ -757,6 +761,8 @@ def test_one_search_across_courses_makes_one_card_that_books_any_of_them():
     }
     show = {
         "date": "2026-11-01",
+        "players": 3,
+        "holes": 18,
         "slots": [
             {"course": "sterling-hills", "time": "08:20"},
             {"course": "olivas-links", "time": "07:40"},
@@ -790,6 +796,59 @@ def test_one_search_across_courses_makes_one_card_that_books_any_of_them():
         3,
         "07:40:00",
     )
+
+
+def test_a_card_leaves_out_slots_searched_for_another_group():
+    """ "Make it four", searched again at one course only: the other course's
+    slots are from the 2-player search, and a tap there would book 2."""
+    two = {**SEARCHED, "tee_times": SEARCHED["tee_times"][:2]}
+    four = {**SEARCHED, "tee_times": SEARCHED["tee_times"][2:]}
+    results = iter([two, four])
+
+    class Searches(FakeTools):
+        async def call(self, name, arguments):
+            if name == "search_tee_times":
+                self.calls.append((name, arguments))
+                return ToolResult(json.dumps(next(results)))
+            return await super().call(name, arguments)
+
+    search = {"user_email": "golfer@example.com", "date": "2026-11-01", "holes": 18}
+    show = {
+        "date": "2026-11-01",
+        "players": 4,
+        "holes": 18,
+        "slots": [
+            {"course": "sterling-hills", "time": "08:20"},
+            {"course": "olivas-links", "time": "08:20"},
+        ],
+    }
+    claude = FakeClaude(
+        ([_tool_use("search_tee_times", {**search, "players": 2})], "tool_use"),
+        (
+            [_tool_use("search_tee_times", {**search, "players": 4}, "call_2")],
+            "tool_use",
+        ),
+        ([_tool_use("show_tee_times", show, "call_3")], "tool_use"),
+        (
+            [
+                _tool_use(
+                    "show_tee_times", {**show, "slots": show["slots"][:1]}, "call_4"
+                )
+            ],
+            "tool_use",
+        ),
+        ([], "end_turn"),
+    )
+    [offer] = _respond(_agent(claude, Searches()), "make it four").offers
+    assert [(s["course"], s["start"][11:16]) for s in offer.slots] == [
+        ("olivas-links", "08:20")
+    ]
+    shown = claude.requests[3]["messages"][-1]["content"][0]["content"]
+    assert "for 4 players, 18 holes" in shown
+    assert "sterling-hills 08:20 (2 players, 18 holes)" in shown
+    refused = claude.requests[4]["messages"][-1]["content"][0]
+    assert refused["is_error"]
+    assert "different group" in refused["content"]
 
 
 # --- scheduling ------------------------------------------------------------

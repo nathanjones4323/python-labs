@@ -54,9 +54,10 @@ It shows them one card with a Book button per slot; a tap asks them to confirm a
 then books exactly that slot, so you don't book it yourself. After it, reply with one \
 short line or nothing at all; mention courses that couldn't be searched only if the \
 person asked about them.
-- A card books the group size and holes it was searched with. If the person changes \
-either, search again with the new ones and show a new card; never point them back \
-at an older card.
+- A card books the group size and holes it was searched with. Pass the ones the \
+person wants to show_tee_times: it leaves out slots searched for any other group. If \
+the person changes either, search again with the new ones and show a new card; never \
+point them back at an older card.
 - Before booking, check what's open unless the person says not to.
 
 Booking ahead:
@@ -124,7 +125,8 @@ SHOW_TEE_TIMES_DEF = {
         "Show the person tee times from an earlier search_tee_times or "
         "find_tee_times result as one card with a Book button per slot, from any "
         "of the courses searched. A tap asks them to confirm, then books that "
-        "exact slot."
+        "exact slot, for the group size and holes it was searched with: slots "
+        "searched for other than `players` and `holes` are left out."
     ),
     "input_schema": {
         "type": "object",
@@ -133,6 +135,14 @@ SHOW_TEE_TIMES_DEF = {
                 "type": "string",
                 "format": "date",
                 "description": "The day searched, YYYY-MM-DD",
+            },
+            "players": {
+                "type": "integer",
+                "description": "The group size the person wants booked",
+            },
+            "holes": {
+                "type": "integer",
+                "description": "The holes the person wants booked",
             },
             "slots": {
                 "type": "array",
@@ -152,7 +162,7 @@ SHOW_TEE_TIMES_DEF = {
                 "description": "The slots to offer, best first",
             },
         },
-        "required": ["date", "slots"],
+        "required": ["date", "players", "holes", "slots"],
     },
 }
 # A held booking of one slot from a card, run by `confirm` (not an MCP tool).
@@ -226,6 +236,12 @@ class Reply:
     offers: list[TeeTimeOffer] = field(default_factory=list)
     # The model couldn't be reached; `text` says so.
     failed: bool = False
+
+
+def _group(search: dict[str, Any]) -> str:
+    """'2 players, 18 holes': what a card's Book button books."""
+    players = str(search["players"])
+    return f"{players} player{'' if players == '1' else 's'}, {search['holes']} holes"
 
 
 class BookingAgent:
@@ -393,9 +409,13 @@ class BookingAgent:
     ) -> ToolResultBlockParam:
         arguments = dict(call.input)
         day = str(arguments.get("date"))
+        # Compared as text: the model and the API may send either 2 or "2".
+        group = (str(arguments.get("players")), str(arguments.get("holes")))
         slots: list[dict[str, Any]] = []
         searches: dict[str, dict[str, Any]] = {}
         missing: list[str] = []
+        # Slots a tap would book for some other group, from an older search.
+        other_group: list[str] = []
         for wanted in arguments.get("slots") or []:
             course = str(wanted.get("course"))
             at = str(wanted.get("time"))[:5].zfill(5)
@@ -403,14 +423,23 @@ class BookingAgent:
             slot = next((s for s in found if s["start"][11:16] == at), None)
             if slot is None:
                 missing.append(f"{course} {at}")
+            elif (str(search["players"]), str(search["holes"])) != group:
+                other_group.append(f"{course} {at} ({_group(search)})")
             elif slot not in slots:
                 slots.append(slot)
                 searches[course] = search
         if not slots:
-            content = (
-                f"None of {missing} is in a search result for {day}; search first "
-                "(search_tee_times) and offer only slots it found."
-            )
+            content = f"Nothing to show for {day}."
+            if missing:
+                content += (
+                    f" Not in a search result: {missing}; search first "
+                    "(search_tee_times) and offer only slots it found."
+                )
+            if other_group:
+                content += (
+                    f" Searched for a different group: {other_group}; search again "
+                    "for the group the person wants."
+                )
             return {
                 "type": "tool_result",
                 "tool_use_id": call.id,
@@ -430,14 +459,15 @@ class BookingAgent:
         shown = [f"{s['course']} {s['start']}" for s in offer.slots]
         # Said back so the model knows what a tap books: the group is fixed
         # by the search, whatever the person says after the card is shown.
-        groups = sorted(
-            {f"{s['players']} players, {s['holes']} holes" for s in searches.values()}
-        )
-        content = (
-            f"Shown as a card for {' / '.join(groups)} with Book buttons: {shown}."
-        )
+        group_shown = _group(searches[offer.slots[0]["course"]])
+        content = f"Shown as a card for {group_shown} with Book buttons: {shown}."
         if missing:
             content += f" Not in the results, so left out: {missing}."
+        if other_group:
+            content += (
+                f" Searched for a different group, so left out: {other_group}; "
+                "search those courses again to offer them."
+            )
         return {"type": "tool_result", "tool_use_id": call.id, "content": content}
 
     def offer(self, offer_id: str) -> TeeTimeOffer | None:
