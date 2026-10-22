@@ -23,6 +23,7 @@ mcp = ["fastmcp>=2.0"]
 bot = [
     "anthropic>=0.95.0",
     "fastmcp>=2.0",
+    "openai>=3.26.0",
     "python-telegram-bot>=21",
 ]
 # Voice notes to the bot, transcribed on this machine.

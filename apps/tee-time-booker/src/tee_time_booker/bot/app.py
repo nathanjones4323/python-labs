@@ -28,7 +28,6 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
-import anthropic
 from fastmcp import Client
 from loguru import logger
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -54,6 +53,7 @@ from tee_time_booker.bot.agent import (
     StartedRun,
     TeeTimeOffer,
 )
+from tee_time_booker.bot.llm import make_model
 from tee_time_booker.bot.rich import (
     Progress,
     edit_rich,
@@ -81,8 +81,6 @@ MAX_RICH_MESSAGE = 30000
 # before it's given up on, and the longest wait between tries.
 SEND_RETRY_S = 15 * 60
 SEND_BACKOFF_MAX_S = 30
-# Claude calls retry with backoff on connection errors, timeouts and 5xx.
-CLAUDE_MAX_RETRIES = 6
 
 # Rich Markdown: a single newline doesn't break a line, a blank one does.
 HELP = """\
@@ -854,7 +852,7 @@ def build_application() -> Application:
     client = Client(create_server(api))
     tools = BookingTools(client)
     agent = BookingAgent(
-        anthropic.AsyncAnthropic(max_retries=CLAUDE_MAX_RETRIES),
+        make_model(bot_settings),
         tools,
         bot_settings,
         pays=settings.submit_payment,
@@ -875,7 +873,8 @@ def build_application() -> Application:
             lambda: start_due(api.state.sessions, api.state.worker),
         )
         logger.info(
-            f"Bot up for {bot_settings.user_email}; payment "
+            f"Bot up for {bot_settings.user_email} on {bot_settings.provider} "
+            f"model {bot_settings.model}; payment "
             f"{'ON' if settings.submit_payment else 'OFF (dry runs)'}"
         )
 

@@ -142,6 +142,13 @@ class Settings:
         return self.database_url
 
 
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5-5"
+# Ollama's OpenAI-compatible API, and the model setup creates there: the
+# picked model with a context window big enough for the booking tools.
+OLLAMA_URL = "http://localhost:11434/v1"
+LOCAL_MODEL_ALIAS = "tee-time-booker"
+
+
 @dataclass(frozen=True)
 class BotSettings:
     """What the Telegram bot needs on top of `Settings`.
@@ -157,6 +164,11 @@ class BotSettings:
     model: str
     effort: str
     whisper_model: str
+    # Who runs the model: "anthropic" (Claude), "local" (Ollama on this
+    # machine) or "openai" (any OpenAI-compatible API, e.g. a free one).
+    provider: str = "anthropic"
+    base_url: str | None = None
+    api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> "BotSettings":
@@ -168,16 +180,43 @@ class BotSettings:
                 "TELEGRAM_ALLOWED_USER_IDS must be numeric Telegram user ids, "
                 "comma-separated (ask @userinfobot for yours)"
             ) from None
-        # The Anthropic SDK reads ANTHROPIC_API_KEY itself; fail here, at
-        # start-up, rather than on the first message.
-        _required("ANTHROPIC_API_KEY")
+        provider = os.environ.get("TEE_TIME_BOT_PROVIDER", "").strip().lower()
+        if not provider:
+            # Installs from before the choice existed used Claude.
+            if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+                raise RuntimeError(
+                    "No model chosen: set TEE_TIME_BOT_PROVIDER, or run "
+                    "`python -m tee_time_booker.setup --model`"
+                )
+            provider = "anthropic"
+        model = os.environ.get("TEE_TIME_BOT_MODEL", "").strip()
+        base_url = api_key = None
+        if provider == "anthropic":
+            # The Anthropic SDK reads ANTHROPIC_API_KEY itself; fail here, at
+            # start-up, rather than on the first message.
+            _required("ANTHROPIC_API_KEY")
+            model = model or DEFAULT_CLAUDE_MODEL
+        elif provider == "local":
+            base_url = OLLAMA_URL
+            model = model or LOCAL_MODEL_ALIAS
+        elif provider == "openai":
+            base_url = _required("TEE_TIME_BOT_BASE_URL")
+            api_key = _required("TEE_TIME_BOT_API_KEY")
+            model = _required("TEE_TIME_BOT_MODEL")
+        else:
+            raise RuntimeError(
+                "TEE_TIME_BOT_PROVIDER must be anthropic, local or openai, "
+                f"not {provider!r}"
+            )
         return cls(
             telegram_token=_required("TELEGRAM_BOT_TOKEN"),
             allowed_user_ids=ids,
             user_email=_required("TEE_TIME_USER_EMAIL"),
-            model=os.environ.get("TEE_TIME_BOT_MODEL", "").strip()
-            or "claude-sonnet-5-5",
+            model=model,
             effort=os.environ.get("TEE_TIME_BOT_EFFORT", "").strip() or "medium",
             whisper_model=os.environ.get("TEE_TIME_WHISPER_MODEL", "").strip()
             or "base.en",
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
         )
