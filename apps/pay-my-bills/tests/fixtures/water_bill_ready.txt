@@ -1,0 +1,14 @@
+ # Billing Statement Hello NathanJones,
+
+*Your Ventura ebill is ready to view online.*
+
+Here's your billing summary:
+
+Account number: 12345678
+Amount due: $ $54.24
+Due date: 10/27/2026 00:00:00
+Service Address: 123 MAIN ST
+
+To view your bill, please log in to [webconnect](https://water.cityofventura.net).
+
+*Please do not reply directly to this email. If you have questions or would prefer to speak with someone, please call Customer Care at (805) 667-6500.*
