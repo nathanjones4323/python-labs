@@ -50,9 +50,8 @@ def poll(
     gmail = mailbox()
     ids = gmail.recent_ids(days)
     with sessions() as session:
-        new = [
-            gmail_id for gmail_id in ids if gmail_id not in pipeline.seen(session, ids)
-        ]
+        already = pipeline.seen(session, ids)
+    new = [gmail_id for gmail_id in ids if gmail_id not in already]
     # Oldest first: a bill before its payment, a request before it's paid.
     emails = sorted(
         (gmail.fetch(gmail_id) for gmail_id in new), key=lambda e: e.received_at

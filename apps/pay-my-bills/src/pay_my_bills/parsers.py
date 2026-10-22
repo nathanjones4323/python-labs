@@ -108,7 +108,7 @@ def parse(email: Email, tz: ZoneInfo) -> Event | None:
     try:
         if domain == "kubra.com":
             return _kubra(email, subject, tz)
-        if domain.endswith("sce.com"):
+        if domain == "sce.com" or domain.endswith(".sce.com"):
             return _sce(email, subject)
         if domain == "venmo.com":
             return _venmo(email)

@@ -130,17 +130,29 @@ def _record_payment(
     session: Session, email: Email, event: PaymentMade, settings: Settings
 ) -> tuple[str, str | None]:
     name = UTILITY_NAMES[event.utility]
-    if event.status not in PAID_STATUSES:
+    earlier = _same_payment(session, event)
+    if event.status.upper() not in PAID_STATUSES:
+        # KUBRA sends SCHEDULED first; a failure after that comes too late
+        # to stop the request the SCHEDULED email already made.
+        asked = earlier is not None and earlier.request is not None
         return "payment_problem", (
             f"⚠️ {name} says a ${dollars(event.amount_cents)} payment is "
-            f"<b>{escape(event.status)}</b>. No request was made.\n"
-            f"{gmail_link(email.gmail_id)}"
+            f"<b>{escape(event.status)}</b>. "
+            + (
+                "A request for it was already made: skip it if the money didn't go out."
+                if asked
+                else "No request was made."
+            )
+            + f"\n{gmail_link(email.gmail_id)}"
         )
-    if _same_payment_seen(session, event):
+    if earlier is not None:
         return "duplicate_payment", None
 
     bill = _matching_bill(session, event)
     assumed = bill.payment if bill is not None else None
+    if assumed is None:
+        # Charged a different amount from the bill: still the assumed one.
+        assumed = _nearby_assumed(session, event)
     if assumed is not None:
         return "payment", _confirm_assumed(assumed, email, event, settings)
 
@@ -160,18 +172,19 @@ def _record_payment(
     return "payment", None
 
 
-def _same_payment_seen(session: Session, event: PaymentMade) -> bool:
+def _same_payment(session: Session, event: PaymentMade) -> Payment | None:
+    """A payment already recorded from another email about this one."""
     if event.confirmation:
         by_code = session.scalar(
-            select(Payment.id).where(
+            select(Payment).where(
                 Payment.utility == event.utility,
                 Payment.confirmation == event.confirmation,
             )
         )
         if by_code is not None:
-            return True
-    nearby = session.scalar(
-        select(Payment.id).where(
+            return by_code
+    return session.scalar(
+        select(Payment).where(
             Payment.utility == event.utility,
             Payment.source == FROM_EMAIL,
             Payment.total_cents == event.total_cents,
@@ -179,7 +192,20 @@ def _same_payment_seen(session: Session, event: PaymentMade) -> bool:
             Payment.paid_on <= event.paid_on + SAME_PAYMENT_WINDOW,
         )
     )
-    return nearby is not None
+
+
+def _nearby_assumed(session: Session, event: PaymentMade) -> Payment | None:
+    """An assumed payment around this date, whatever its amount."""
+    return session.scalar(
+        select(Payment)
+        .where(
+            Payment.utility == event.utility,
+            Payment.source == ASSUMED,
+            Payment.paid_on >= event.paid_on - SAME_PAYMENT_WINDOW,
+            Payment.paid_on <= event.paid_on + SAME_PAYMENT_WINDOW,
+        )
+        .order_by(Payment.paid_on.desc())
+    )
 
 
 def _matching_bill(session: Session, event: PaymentMade) -> Bill | None:
@@ -231,11 +257,18 @@ def _confirm_assumed(
     )
 
 
+def billed_on(payment: Payment) -> date:
+    """The date a payment is labelled by: its bill's statement date, else the
+    day it was paid."""
+    return payment.bill.statement_date if payment.bill else payment.paid_on
+
+
 def _note(payment: Payment) -> str:
     if payment.utility == RENT:
         return f"Rent {rent_month(payment.paid_on):%B %Y}"
-    billed = payment.bill.statement_date if payment.bill else payment.paid_on
-    return request_note(UTILITY_NAMES[payment.utility], billed, payment.total_cents)
+    return request_note(
+        UTILITY_NAMES[payment.utility], billed_on(payment), payment.total_cents
+    )
 
 
 def _ask_for_share(session: Session, payment: Payment, settings: Settings) -> None:
@@ -415,18 +448,17 @@ def pending_notices(session: Session) -> list[ProcessedEmail]:
 def overdue_bills(session: Session, settings: Settings, now: datetime) -> list[Bill]:
     """Past the due date with no payment seen, and not yet alerted on."""
     today = local_today(settings, now)
-    return [
-        bill
-        for bill in session.scalars(
+    return list(
+        session.scalars(
             select(Bill)
             .where(
                 Bill.due_date < today,
                 Bill.overdue_alerted_at.is_(None),
+                ~Bill.payment.has(),
             )
             .order_by(Bill.due_date)
         )
-        if bill.payment is None
-    ]
+    )
 
 
 def open_requests(session: Session) -> list[SplitRequest]:
@@ -440,8 +472,8 @@ def open_requests(session: Session) -> list[SplitRequest]:
 
 
 def unpaid_bills(session: Session) -> list[Bill]:
-    return [
-        bill
-        for bill in session.scalars(select(Bill).order_by(Bill.statement_date))
-        if bill.payment is None
-    ]
+    return list(
+        session.scalars(
+            select(Bill).where(~Bill.payment.has()).order_by(Bill.statement_date)
+        )
+    )

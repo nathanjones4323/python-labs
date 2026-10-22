@@ -64,6 +64,8 @@ class BillsBot:
         # /check and the timer mustn't poll at once and fetch the same mail.
         self._lock = asyncio.Lock()
         self._last_error: str | None = None
+        # The last problem the person was actually told about.
+        self._reported_error: str | None = None
         self._poller: asyncio.Task | None = None
 
     def install(self, application: Application) -> None:
@@ -223,7 +225,7 @@ class BillsBot:
                     self.clock(),
                     days,
                 )
-                self._last_error = None
+                self._last_error = self._reported_error = None
             except Exception as exc:
                 found = None
                 await self._problem(bot, exc)
@@ -243,10 +245,17 @@ class BillsBot:
         else:
             logger.exception("Gmail poll failed")
             error = f"{type(exc).__name__}: {exc}"
-        if error == self._last_error:
-            return
         self._last_error = error
-        await self._broadcast(bot, f"⚠️ Couldn't check Gmail: {error}")
+        if error == self._reported_error:
+            return
+        try:
+            await self._broadcast(bot, f"⚠️ Couldn't check Gmail: {error}")
+        except Exception:
+            # Telegram down too: still schedule and deliver what's due, and
+            # tell the person on a later poll.
+            logger.exception("Reporting the Gmail problem failed")
+            return
+        self._reported_error = error
 
     async def _deliver(self, bot: Any) -> None:
         try:
