@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
+from tee_time_booker.courses import HOME, miles_between
 from tee_time_booker.db import (
     BookingPlan,
     BookingRequest,
@@ -100,9 +101,18 @@ class CourseOut(BaseModel):
     tee_rating: TeeRatingOut | None = Field(
         description="USGA course rating and slope, when known"
     )
+    miles_from_home: float | None = Field(
+        description=(
+            "Straight-line miles from Ventura, CA, where searches are centered; "
+            "null if the course's location isn't known"
+        )
+    )
 
     @classmethod
     def from_row(cls, course: Course) -> "CourseOut":
+        miles = None
+        if course.latitude is not None and course.longitude is not None:
+            miles = round(miles_between((course.latitude, course.longitude), HOME), 1)
         return cls(
             key=course.key,
             name=course.name,
@@ -118,6 +128,7 @@ class CourseOut(BaseModel):
             tee_rating=(
                 TeeRatingOut(**course.tee_rating) if course.tee_rating else None
             ),
+            miles_from_home=miles,
         )
 
 

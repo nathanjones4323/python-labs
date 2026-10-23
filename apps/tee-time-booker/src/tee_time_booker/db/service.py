@@ -80,6 +80,8 @@ def course_config(course: Course) -> CourseConfig:
         green_fees=green_fees,
         reviews=reviews,
         tee_rating=tee_rating,
+        latitude=course.latitude,
+        longitude=course.longitude,
         **course.platform_config,
     )
 
@@ -112,6 +114,8 @@ def upsert_course(session: Session, config: CourseConfig) -> Course:
             "sampled_on": config.reviews.sampled_on.isoformat(),
         }
     course.tee_rating = asdict(config.tee_rating) if config.tee_rating else None
+    course.latitude = config.latitude
+    course.longitude = config.longitude
     course.platform_config = config.platform_config()
     return course
 
