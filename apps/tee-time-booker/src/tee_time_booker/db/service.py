@@ -80,6 +80,8 @@ def course_config(course: Course) -> CourseConfig:
         green_fees=green_fees,
         reviews=reviews,
         tee_rating=tee_rating,
+        latitude=course.latitude,
+        longitude=course.longitude,
         **course.platform_config,
     )
 
@@ -112,6 +114,8 @@ def upsert_course(session: Session, config: CourseConfig) -> Course:
             "sampled_on": config.reviews.sampled_on.isoformat(),
         }
     course.tee_rating = asdict(config.tee_rating) if config.tee_rating else None
+    course.latitude = config.latitude
+    course.longitude = config.longitude
     course.platform_config = config.platform_config()
     return course
 
@@ -436,17 +440,24 @@ class ClaimedRun:
 
 
 def claim_request(
-    session: Session, request_id: uuid.UUID, *, scheduled: bool = False
+    session: Session,
+    request_id: uuid.UUID,
+    *,
+    scheduled: bool = False,
+    started_at: datetime | None = None,
 ) -> ClaimedRun:
     """Mark the request running and open a run for it, under a row lock.
 
     Two workers claiming the same request at once serialise on the lock; the
     second sees `running` and `transition` refuses it. `scheduled` marks a
-    run the scheduler started.
+    run the scheduler started; it passes its own `started_at`, the clock its
+    once-a-day check reads, rather than the database's.
     """
     request = get_request(session, request_id, for_update=True)
     request.transition(RequestStatus.RUNNING)
     run = Run(request=request, scheduled=scheduled)
+    if started_at is not None:
+        run.started_at = started_at
     session.add(run)
     session.flush()
     return ClaimedRun(

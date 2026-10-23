@@ -4,7 +4,14 @@ from datetime import date, time
 
 import pytest
 from tee_time_booker.config import Account, Credentials, PaymentDetails
-from tee_time_booker.courses import SATICOY, SEED_COURSES, SOULE_PARK
+from tee_time_booker.courses import (
+    DEFAULT_SEARCH_MILES,
+    GLEN_ANNIE,
+    MAX_SEARCH_MILES,
+    SATICOY,
+    SEED_COURSES,
+    SOULE_PARK,
+)
 from tee_time_booker.models import Preferences
 from tee_time_booker.platforms import PLATFORMS, build_platform, get_platform
 from tee_time_booker.platforms.base import BookingPlatform
@@ -48,9 +55,12 @@ def test_seeded_ratings_are_plausible(course):
     if course.platform != "golfnow":
         assert reviews is None and tee is None
         return
-    assert reviews is not None and tee is not None, "every GolfNow seed is rated"
+    assert reviews is not None, "every GolfNow seed has its review summary"
     assert 1 <= reviews.average <= 5
     assert 0 <= reviews.recommended <= reviews.count
+    if tee is None:
+        # Some par-3 and short courses have no USGA rating on GolfNow.
+        return
     assert tee.holes in (9, 18)
     assert 55 <= tee.slope <= 155
     # A course rating sits within a few strokes of par.
@@ -110,3 +120,12 @@ def test_platform_config_is_only_the_adapters_identifiers():
         "booking_class_name": "Regular",
         "schedule_id": "1945",
     }
+
+
+def test_the_default_search_radius_keeps_to_the_ventura_courses():
+    assert all(c.miles_from_home() is not None for c in SEED_COURSES)
+    near = [c for c in SEED_COURSES if c.miles_from_home() <= DEFAULT_SEARCH_MILES]
+    # Ventura County, Ojai, the Conejo Valley and Santa Barbara: the seeds up
+    # to Glen Annie. The Valley, Los Angeles and beyond take a wider search.
+    assert near == list(SEED_COURSES[: SEED_COURSES.index(GLEN_ANNIE) + 1])
+    assert max(c.miles_from_home() for c in SEED_COURSES) <= MAX_SEARCH_MILES

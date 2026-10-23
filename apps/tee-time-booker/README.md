@@ -11,7 +11,7 @@ Two booking sites are supported today, behind one interface:
 | Platform | Adapter | Courses configured |
 | --- | --- | --- |
 | foreUP | `platforms/foreup.py` | Soule Park (`soule-park`) |
-| GolfNow | `platforms/golfnow.py` | Saticoy Regional (`saticoy`), Olivas Links (`olivas-links`), Buenaventura (`buenaventura`), River Ridge Vineyard (`river-ridge-vineyard`), River Ridge Victoria Lakes (`river-ridge-victoria-lakes`), Sterling Hills (`sterling-hills`), Ojai Valley Inn (`ojai-valley-inn`), Camarillo Springs (`camarillo-springs`), Los Robles Greens (`los-robles-greens`), Tierra Rejada (`tierra-rejada`), Lake Lindero (`lake-lindero`), Santa Barbara Golf Club (`santa-barbara-gc`), Glen Annie (`glen-annie`) |
+| GolfNow | `platforms/golfnow.py` | Saticoy Regional (`saticoy`), Olivas Links (`olivas-links`), Buenaventura (`buenaventura`), River Ridge Vineyard (`river-ridge-vineyard`), River Ridge Victoria Lakes (`river-ridge-victoria-lakes`), Sterling Hills (`sterling-hills`), Ojai Valley Inn (`ojai-valley-inn`), Camarillo Springs (`camarillo-springs`), Los Robles Greens (`los-robles-greens`), Tierra Rejada (`tierra-rejada`), Lake Lindero (`lake-lindero`), Santa Barbara Golf Club (`santa-barbara-gc`), Glen Annie (`glen-annie`), and the 55 other GolfNow facilities within 75 miles of Ventura (Los Angeles, the San Fernando Valley, Pasadena, the South Bay, Long Beach, Santa Clarita, the Antelope Valley and Solvang; keys in `courses.py`) |
 
 ## How it's put together
 
@@ -85,7 +85,7 @@ site's listings were sampled). Both come back on `GET /courses` so a client
 can pick a course without opening the site. The GolfNow seeds have both,
 read from each facility's GolfNow page and two weeks of its listed rates;
 they're estimates to set expectations with, not quotes, so refresh them
-(and `SAMPLED_ON`) when they drift.
+(and `SAMPLED_ON` / `WIDER_SAMPLED_ON`) when they drift.
 
 ## Database
 
@@ -184,8 +184,8 @@ open http://localhost:8000/docs
 
 | Route | Does |
 | --- | --- |
-| `GET /courses`, `GET /courses/{key}` | The bookable courses |
-| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=` | What's open on a day in a tee-off window across every course (or just `courses`), no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
+| `GET /courses`, `GET /courses/{key}` | The bookable courses, each with its `miles_from_home` (from Ventura) |
+| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=&within_miles=` | What's open on a day in a tee-off window across the courses within `within_miles` of Ventura (default `DEFAULT_SEARCH_MILES`, 40: Ventura County, Ojai, the Conejo Valley and Santa Barbara; up to `MAX_SEARCH_MILES`, 75, reaches Los Angeles), or just `courses` wherever they are, no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
 | `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now (and `first_attempt_at` when auto-booked) |
 | `POST /plans` | Create a plan, or update the user's plan of that name (the user must exist — see the seed). `auto_book: true` schedules it |
 | `POST /plans/{id}/auto-book` | Turn a plan's automatic booking on or off |

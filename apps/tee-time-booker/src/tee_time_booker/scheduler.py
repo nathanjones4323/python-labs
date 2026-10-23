@@ -127,7 +127,9 @@ def start_due(
     for item in due:
         try:
             with sessions() as session, session.begin():
-                claimed = claim_request(session, item.request_id, scheduled=True)
+                claimed = claim_request(
+                    session, item.request_id, scheduled=True, started_at=now
+                )
         except InvalidTransition:
             continue  # started some other way since it was looked at
         try:

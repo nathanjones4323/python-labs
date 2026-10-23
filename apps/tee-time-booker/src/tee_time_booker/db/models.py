@@ -164,6 +164,9 @@ class Course(Base):
     reviews: Mapped[dict[str, Any] | None]
     # `courses.TeeRating` as a dict, or null.
     tee_rating: Mapped[dict[str, Any] | None]
+    # Where the course is (`CourseConfig.latitude` / `longitude`), or null.
+    latitude: Mapped[float | None]
+    longitude: Mapped[float | None]
     # The adapter's own identifiers (`CourseConfig.platform_config()`).
     platform_config: Mapped[dict[str, Any]] = mapped_column(default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

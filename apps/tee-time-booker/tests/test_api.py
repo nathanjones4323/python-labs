@@ -15,7 +15,7 @@ from tee_time_booker.api import create_app
 from tee_time_booker.api.routers import plans as plans_router
 from tee_time_booker.api.routers import tee_times as tee_times_router
 from tee_time_booker.config import Settings
-from tee_time_booker.courses import OLIVAS_LINKS
+from tee_time_booker.courses import KNOLLWOOD, OLIVAS_LINKS
 from tee_time_booker.db.service import ensure_site_account, get_user, upsert_course
 from tee_time_booker.models import BookingResult, TeeTime
 from tee_time_booker.runner import SearchResults
@@ -73,6 +73,7 @@ def test_courses_are_listed_and_fetched_by_key(api):
     assert 1 <= saticoy["reviews"]["average"] <= 5
     assert saticoy["reviews"]["sampled_on"] == "2026-10-22"
     assert saticoy["tee_rating"]["slope"] == 106
+    assert 5 < saticoy["miles_from_home"] < 10
     assert api.get("/courses/nope").status_code == 404
 
 
@@ -239,18 +240,19 @@ def test_payment_needs_both_the_operator_switch_and_the_caller(
     paid = BookingResult(tee_time=SLOT, submitted=True, confirmation="R1")
     fake_booking(paid, seen)
     with TestClient(create_app(settings, sessions=db, worker=worker)) as api:
+        api.worker = worker
         url = f"/plans/{seeded['soule_plan']}/book"
         # Caller opted out: dry run even though the operator switch is on.
         started = api.post(url, json={"target_date": "2026-10-03"}).json()
         assert started["dry_run"] is True
-        worker.futures[uuid.UUID(started["run_id"])].result(timeout=10)
+        wait_for(api, started["run_id"])
         assert seen["settings"].submit_payment is False
 
         started = api.post(
             url, json={"target_date": "2026-10-10", "submit_payment": True}
         ).json()
         assert started["dry_run"] is False
-        worker.futures[uuid.UUID(started["run_id"])].result(timeout=10)
+        wait_for(api, started["run_id"])
         assert seen["settings"].submit_payment is True
         run = api.get(f"/runs/{started['run_id']}").json()
         assert run["status"] == "success" and run["confirmation"] == "R1"
@@ -381,6 +383,37 @@ def test_one_search_covers_every_course_in_the_window(api, monkeypatch):
     assert [s.course.key for s in seen["searches"]] == ["saticoy"]
     assert (
         api.get("/tee-times", params={**params, "courses": ["nope"]}).status_code == 404
+    )
+
+
+def test_a_search_keeps_near_ventura_unless_asked_to_reach_farther(
+    api, db, monkeypatch
+):
+    with db() as session, session.begin():
+        upsert_course(session, KNOLLWOOD)  # Granada Hills, ~45 miles out
+    seen = {}
+
+    def search_courses(searches, criteria, settings):
+        seen["keys"] = {s.course.key for s in searches}
+        return SearchResults()
+
+    monkeypatch.setattr(tee_times_router, "search_courses", search_courses)
+    params = {
+        "user_email": "golfer@example.com",
+        "date": "2026-11-01",
+        "players": 2,
+        "holes": 18,
+    }
+    api.get("/tee-times", params=params)
+    assert seen["keys"] == {"saticoy", "soule-park"}
+    api.get("/tee-times", params={**params, "within_miles": 75})
+    assert seen["keys"] == {"saticoy", "soule-park", "knollwood"}
+    # A course asked for by name is searched however far it is.
+    api.get("/tee-times", params={**params, "courses": ["knollwood"]})
+    assert seen["keys"] == {"knollwood"}
+    # Past the widest radius is refused rather than quietly searching it all.
+    assert (
+        api.get("/tee-times", params={**params, "within_miles": 200}).status_code == 422
     )
 
 
