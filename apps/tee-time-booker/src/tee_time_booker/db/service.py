@@ -14,7 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from tee_time_booker import dates
-from tee_time_booker.courses import CourseConfig, GreenFees, ReleaseSchedule
+from tee_time_booker.courses import (
+    CourseConfig,
+    GreenFees,
+    ReleaseSchedule,
+    Reviews,
+    TeeRating,
+)
 from tee_time_booker.db.models import (
     REQUEST_STATUS_AFTER_RUN,
     BookingPlan,
@@ -53,6 +59,15 @@ def course_config(course: Course) -> CourseConfig:
                 "sampled_on": date.fromisoformat(course.green_fees["sampled_on"]),
             }
         )
+    reviews = None
+    if course.reviews is not None:
+        reviews = Reviews(
+            **{
+                **course.reviews,
+                "sampled_on": date.fromisoformat(course.reviews["sampled_on"]),
+            }
+        )
+    tee_rating = TeeRating(**course.tee_rating) if course.tee_rating else None
     course_type = get_platform(course.platform).course_type
     return course_type(
         key=course.key,
@@ -63,6 +78,8 @@ def course_config(course: Course) -> CourseConfig:
         booking_window_days=course.booking_window_days,
         description=course.description,
         green_fees=green_fees,
+        reviews=reviews,
+        tee_rating=tee_rating,
         **course.platform_config,
     )
 
@@ -88,6 +105,13 @@ def upsert_course(session: Session, config: CourseConfig) -> Course:
             **asdict(config.green_fees),
             "sampled_on": config.green_fees.sampled_on.isoformat(),
         }
+    course.reviews = None
+    if config.reviews:
+        course.reviews = {
+            **asdict(config.reviews),
+            "sampled_on": config.reviews.sampled_on.isoformat(),
+        }
+    course.tee_rating = asdict(config.tee_rating) if config.tee_rating else None
     course.platform_config = config.platform_config()
     return course
 
