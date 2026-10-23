@@ -240,18 +240,19 @@ def test_payment_needs_both_the_operator_switch_and_the_caller(
     paid = BookingResult(tee_time=SLOT, submitted=True, confirmation="R1")
     fake_booking(paid, seen)
     with TestClient(create_app(settings, sessions=db, worker=worker)) as api:
+        api.worker = worker
         url = f"/plans/{seeded['soule_plan']}/book"
         # Caller opted out: dry run even though the operator switch is on.
         started = api.post(url, json={"target_date": "2026-10-03"}).json()
         assert started["dry_run"] is True
-        worker.futures[uuid.UUID(started["run_id"])].result(timeout=10)
+        wait_for(api, started["run_id"])
         assert seen["settings"].submit_payment is False
 
         started = api.post(
             url, json={"target_date": "2026-10-10", "submit_payment": True}
         ).json()
         assert started["dry_run"] is False
-        worker.futures[uuid.UUID(started["run_id"])].result(timeout=10)
+        wait_for(api, started["run_id"])
         assert seen["settings"].submit_payment is True
         run = api.get(f"/runs/{started['run_id']}").json()
         assert run["status"] == "success" and run["confirmation"] == "R1"
@@ -410,6 +411,10 @@ def test_a_search_keeps_near_ventura_unless_asked_to_reach_farther(
     # A course asked for by name is searched however far it is.
     api.get("/tee-times", params={**params, "courses": ["knollwood"]})
     assert seen["keys"] == {"knollwood"}
+    # Past the widest radius is refused rather than quietly searching it all.
+    assert (
+        api.get("/tee-times", params={**params, "within_miles": 200}).status_code == 422
+    )
 
 
 def test_a_course_without_an_account_is_reported_not_searched(api, db, monkeypatch):

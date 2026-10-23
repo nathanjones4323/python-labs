@@ -114,9 +114,7 @@ class CourseConfig:
 
     def miles_from_home(self) -> float | None:
         """How far the course is from `HOME`, if its location is known."""
-        if self.latitude is None or self.longitude is None:
-            return None
-        return miles_between((self.latitude, self.longitude), HOME)
+        return miles_from_home(self.latitude, self.longitude)
 
     def platform_config(self) -> dict[str, Any]:
         """The adapter-specific identifiers: every field a subclass adds.
@@ -170,10 +168,22 @@ def miles_between(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 # Ventura, CA: where a search is centered unless it asks to reach farther.
 HOME = (34.2805, -119.2945)
+
+
+def miles_from_home(latitude: float | None, longitude: float | None) -> float | None:
+    """How far a point is from `HOME`, or None when it isn't known."""
+    if latitude is None or longitude is None:
+        return None
+    return miles_between((latitude, longitude), HOME)
+
+
 # A search with no radius of its own covers this far from `HOME`: Ventura
 # County, Ojai, the Conejo Valley and Santa Barbara (out to Glen Annie, 35
 # miles), but not the San Fernando Valley and Los Angeles (45 miles and up).
 DEFAULT_SEARCH_MILES = 40
+# The widest search: every seeded course, out to Los Angeles, Pasadena, Long
+# Beach and Solvang.
+MAX_SEARCH_MILES = 75
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
 

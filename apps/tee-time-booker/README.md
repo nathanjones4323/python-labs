@@ -185,7 +185,7 @@ open http://localhost:8000/docs
 | Route | Does |
 | --- | --- |
 | `GET /courses`, `GET /courses/{key}` | The bookable courses, each with its `miles_from_home` (from Ventura) |
-| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=&within_miles=` | What's open on a day in a tee-off window across the courses within `within_miles` of Ventura (default 40: Ventura County, Ojai, the Conejo Valley and Santa Barbara; 75 reaches Los Angeles), or just `courses` wherever they are, no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
+| `GET /tee-times?user_email=&date=&players=&holes=&earliest=&latest=&courses=&within_miles=` | What's open on a day in a tee-off window across the courses within `within_miles` of Ventura (default `DEFAULT_SEARCH_MILES`, 40: Ventura County, Ojai, the Conejo Valley and Santa Barbara; up to `MAX_SEARCH_MILES`, 75, reaches Los Angeles), or just `courses` wherever they are, no plan needed. One sign-in per site, the sites in parallel, so all courses take about as long as one |
 | `GET /plans?user_email=`, `GET /plans/{id}` | Booking plans, each with the `next_target_date` it would book now (and `first_attempt_at` when auto-booked) |
 | `POST /plans` | Create a plan, or update the user's plan of that name (the user must exist — see the seed). `auto_book: true` schedules it |
 | `POST /plans/{id}/auto-book` | Turn a plan's automatic booking on or off |

@@ -7,6 +7,7 @@ from tee_time_booker.config import Account, Credentials, PaymentDetails
 from tee_time_booker.courses import (
     DEFAULT_SEARCH_MILES,
     GLEN_ANNIE,
+    MAX_SEARCH_MILES,
     SATICOY,
     SEED_COURSES,
     SOULE_PARK,
@@ -127,4 +128,4 @@ def test_the_default_search_radius_keeps_to_the_ventura_courses():
     # Ventura County, Ojai, the Conejo Valley and Santa Barbara: the seeds up
     # to Glen Annie. The Valley, Los Angeles and beyond take a wider search.
     assert near == list(SEED_COURSES[: SEED_COURSES.index(GLEN_ANNIE) + 1])
-    assert max(c.miles_from_home() for c in SEED_COURSES) < 76
+    assert max(c.miles_from_home() for c in SEED_COURSES) <= MAX_SEARCH_MILES

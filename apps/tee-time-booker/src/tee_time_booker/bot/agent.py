@@ -31,6 +31,7 @@ from tee_time_booker.bot.tools import (
     asks_to_pay,
 )
 from tee_time_booker.config import BotSettings
+from tee_time_booker.courses import DEFAULT_SEARCH_MILES, MAX_SEARCH_MILES
 
 # Tool-use rounds per message before giving up on a runaway loop.
 MAX_STEPS = 12
@@ -41,16 +42,16 @@ SYSTEM = """\
 You book golf tee times for {email} over Telegram, using the tee-time-booker tools.
 
 Booking now:
-- search_tee_times looks for what's open on a day across every course at once \
+- search_tee_times looks for what's open on a day across many courses at once \
 (user_email {email}, date, players, holes, and an earliest-latest tee-off window), \
-without booking. By default it covers the courses around Ventura (within_miles 40: \
-Ventura County, Ojai, the Conejo Valley and Santa Barbara); leave it there unless the \
-person asks to look farther out (Los Angeles, the Valley, Pasadena, "anywhere"), then \
-raise within_miles to reach it, up to 75 (list_courses gives each course's \
-miles_from_home). If the person names one or more courses, pass just those keys in \
-courses instead, wherever they are. For a time like "around 9", \
-search an hour either side; for "morning" or "after 2", the obvious window. A plan's \
-own course and group can also be searched with find_tee_times.
+without booking. By default it covers the courses around Ventura (within_miles \
+{default_miles:g}: Ventura County, Ojai, the Conejo Valley and Santa Barbara); leave \
+it there unless the person asks to look farther out (Los Angeles, the Valley, \
+Pasadena, "anywhere"), then raise within_miles to reach it, up to {max_miles:g} \
+(list_courses gives each course's miles_from_home). If the person names one or more \
+courses, pass just those keys in courses instead, wherever they are. For a time \
+like "around 9", search an hour either side; for "morning" or "after 2", the obvious \
+window. A plan's own course and group can also be searched with find_tee_times.
 - To offer tee times, call show_tee_times with the ones that best fit what the person \
 asked for (at most twelve, best first: closest to the time they asked, spread over \
 a few courses rather than every slot at one) rather than listing them in your reply. \
@@ -261,6 +262,8 @@ class BookingAgent:
     def _system(self) -> str:
         return SYSTEM.format(
             email=self._settings.user_email,
+            default_miles=DEFAULT_SEARCH_MILES,
+            max_miles=MAX_SEARCH_MILES,
             payment_switch=PAYMENT_ON if self._pays else PAYMENT_OFF,
             today=self._today(),
         )

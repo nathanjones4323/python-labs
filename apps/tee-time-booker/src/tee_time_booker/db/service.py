@@ -440,17 +440,24 @@ class ClaimedRun:
 
 
 def claim_request(
-    session: Session, request_id: uuid.UUID, *, scheduled: bool = False
+    session: Session,
+    request_id: uuid.UUID,
+    *,
+    scheduled: bool = False,
+    started_at: datetime | None = None,
 ) -> ClaimedRun:
     """Mark the request running and open a run for it, under a row lock.
 
     Two workers claiming the same request at once serialise on the lock; the
     second sees `running` and `transition` refuses it. `scheduled` marks a
-    run the scheduler started.
+    run the scheduler started; it passes its own `started_at`, the clock its
+    once-a-day check reads, rather than the database's.
     """
     request = get_request(session, request_id, for_update=True)
     request.transition(RequestStatus.RUNNING)
     run = Run(request=request, scheduled=scheduled)
+    if started_at is not None:
+        run.started_at = started_at
     session.add(run)
     session.flush()
     return ClaimedRun(

@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
-from tee_time_booker.courses import HOME, miles_between
+from tee_time_booker.courses import miles_from_home
 from tee_time_booker.db import (
     BookingPlan,
     BookingRequest,
@@ -110,9 +110,7 @@ class CourseOut(BaseModel):
 
     @classmethod
     def from_row(cls, course: Course) -> "CourseOut":
-        miles = None
-        if course.latitude is not None and course.longitude is not None:
-            miles = round(miles_between((course.latitude, course.longitude), HOME), 1)
+        miles = miles_from_home(course.latitude, course.longitude)
         return cls(
             key=course.key,
             name=course.name,
@@ -128,7 +126,7 @@ class CourseOut(BaseModel):
             tee_rating=(
                 TeeRatingOut(**course.tee_rating) if course.tee_rating else None
             ),
-            miles_from_home=miles,
+            miles_from_home=None if miles is None else round(miles, 1),
         )
 
 
