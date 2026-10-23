@@ -3,6 +3,7 @@ payment gate, the conversation's bookkeeping and the run messages."""
 
 import asyncio
 import json
+from concurrent.futures import Future
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -1059,3 +1060,52 @@ def test_a_failed_scheduler_tick_is_logged_not_raised():
 
     asyncio.run(bot.schedule_once(FlakyTelegram(), tick))  # no raise
     assert not bot._watches
+
+
+DRY_RUN = StartedRun(RUN_STARTED["run_id"], "soule-park", "2026-11-01", True)
+
+
+def _watching(future):
+    """A bot whose worker is running a dry run, and the Telegram it reports to."""
+    run = {"status": "dry_run", "tee_time_local": None}
+    tools = FakeTools(
+        {
+            "get_course": ToolResult(json.dumps({"name": "Soule Park"})),
+            "get_run": ToolResult(json.dumps(run)),
+        }
+    )
+    bot = BookingBot(
+        None, tools, None, BOT_SETTINGS, pays=False, running=lambda _: future
+    )
+    return bot, FlakyTelegram()
+
+
+def test_a_watch_reports_as_soon_as_the_worker_finishes(no_sleep):
+    future = Future()
+    bot, telegram = _watching(future)
+
+    async def go():
+        bot._watch(telegram, 42, DRY_RUN)
+        await asyncio.wait(bot._watches, timeout=0.05)
+        assert telegram.sent == []  # still running
+        future.set_result(None)
+        await asyncio.gather(*bot._watches)
+
+    asyncio.run(go())
+    [text] = telegram.sent
+    assert text.startswith("🧪 **Dry run done:**")
+    assert no_sleep == []  # no poll interval waited out
+
+
+def test_dropping_a_watch_leaves_the_run_alone():
+    future = Future()
+    bot, telegram = _watching(future)
+
+    async def go():
+        bot._watch(telegram, 42, DRY_RUN)
+        await asyncio.wait(bot._watches, timeout=0.05)
+        await bot.stop_watching()
+
+    asyncio.run(go())
+    assert not future.cancelled()
+    assert telegram.sent == []

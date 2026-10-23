@@ -8,9 +8,10 @@ dropped before any handler sees it.
 
 The API, its booking worker and the MCP tools all live in this process (see
 `agent.py` for the conversation). A run started from a chat is watched here
-and its outcome sent to that chat; a run that failed is handed to the model
-instead, to explain and offer what's open. The watch is in memory: a run still going
-when the bot stops isn't reported after a restart (`/runs` shows it).
+and its outcome sent to that chat the moment the worker finishes it; a run
+that failed is handed to the model instead, to explain and offer what's open.
+The watch is in memory: a run still going when the bot stops isn't reported
+after a restart (`/runs` shows it).
 
 The scheduler runs here too: every minute it starts whatever auto-booked
 plans and requests are due (`tee_time_booker.scheduler`), and each such run's
@@ -22,7 +23,9 @@ import asyncio
 import html
 import sys
 import tempfile
+import uuid
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 from contextlib import AsyncExitStack, suppress
 from datetime import date, datetime, time
 from pathlib import Path
@@ -67,7 +70,8 @@ from tee_time_booker.config import BotSettings, Settings
 from tee_time_booker.mcp import create_server
 from tee_time_booker.scheduler import Started, start_due
 
-# How often a watched run is checked. Runs take minutes, or up to 95 min
+# How often a watched run is checked when this process isn't the one running
+# it (so there's no future to wait on). Runs take minutes, or up to 95 min
 # when waiting on a release.
 RUN_POLL_S = 30
 # How often the scheduler looks for auto-booked runs that are due.
@@ -126,12 +130,15 @@ class BookingBot:
         settings: BotSettings,
         *,
         pays: bool,
+        running: Callable[[str], Future | None] = lambda run_id: None,
     ) -> None:
         self.agent = agent
         self.tools = tools
         self.transcriber = transcriber
         self.settings = settings
         self.pays = pays
+        # The worker's future for a run still going in this process, if any.
+        self.running = running
         # Plain asyncio tasks, not `Application.create_task`: the Application
         # awaits its own tasks on stop, and a watch can run for 95 minutes.
         self._watches: set[asyncio.Task] = set()
@@ -507,7 +514,7 @@ class BookingBot:
         errors = 0
         course = await self._course_name(run.course)
         while True:
-            await asyncio.sleep(RUN_POLL_S)
+            await self._until_done(run.run_id)
             result = await self.tools.call("get_run", {"run_id": run.run_id})
             if result.is_error:
                 logger.warning(f"Checking run {run.run_id}: {result.text}")
@@ -536,6 +543,18 @@ class BookingBot:
                 text = f"⏰ **Scheduled booking**\n\n{text}"
             await self._say(bot, chat_id, text)
             return
+
+    async def _until_done(self, run_id: str) -> None:
+        """Wait for the worker to finish `run_id`, or one poll interval when
+        it isn't running here (or is already done and forgotten)."""
+        future = self.running(run_id)
+        if future is None:
+            await asyncio.sleep(RUN_POLL_S)
+            return
+        # Shielded: dropping a watch must not cancel a run still queued.
+        # `execute` records every outcome itself, so its result isn't needed.
+        with suppress(Exception):
+            await asyncio.shield(asyncio.wrap_future(future))
 
     async def _explain(
         self, bot: Any, chat_id: int, run: StartedRun, body: dict[str, Any], course: str
@@ -863,6 +882,7 @@ def build_application() -> Application:
         Transcriber(bot_settings.whisper_model),
         bot_settings,
         pays=settings.submit_payment,
+        running=lambda run_id: api.state.worker.futures.get(uuid.UUID(run_id)),
     )
     stack = AsyncExitStack()
 
