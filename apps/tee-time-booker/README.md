@@ -99,7 +99,7 @@ claimed:
 | Table | Row |
 | --- | --- |
 | `users` | Someone with plans |
-| `courses` | A bookable course: platform, timezone, release schedule, adapter identifiers, and optionally a description and green-fee estimate |
+| `courses` | A bookable course: platform, timezone, release schedule, adapter identifiers, and optionally a description, green-fee estimate, review summary and USGA tee rating |
 | `site_accounts` | A user's login on one booking site. The secret stays in the environment: the row names an `env_prefix`, and the login is read from `<PREFIX>_EMAIL` / `<PREFIX>_PASSWORD` |
 | `booking_plans` | A standing wish: this course, with this account, the Nth upcoming weekday, this tee-off window, this group size |
 | `booking_requests` | A plan pinned to one date (one per plan per date), with the plan's search copied in so editing the plan doesn't change a request in flight |

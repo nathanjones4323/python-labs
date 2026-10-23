@@ -57,6 +57,37 @@ class GreenFees:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Reviews:
+    """What golfers who played it thought, as the site's review summary.
+
+    Reviews keep arriving, so `sampled_on` marks when the summary was read.
+    """
+
+    average: float  # stars out of 5
+    count: int
+    # Reviewers who said they'd recommend the course.
+    recommended: int
+    sampled_on: date
+
+
+@dataclass(frozen=True, kw_only=True)
+class TeeRating:
+    """The USGA course rating and slope from one set of tees.
+
+    Seeds use the longest men's tee, the figure usually quoted as "the"
+    course rating. `holes` is the round the rating is for: a 9-hole course
+    may be rated as a 9-hole round (half-scale numbers) or as its 18-hole loop.
+    """
+
+    tee: str
+    holes: int
+    par: int
+    yardage: int
+    rating: float
+    slope: int
+
+
+@dataclass(frozen=True, kw_only=True)
 class CourseConfig:
     """A bookable course: where it is and who runs its booking."""
 
@@ -73,6 +104,8 @@ class CourseConfig:
     # A few sentences on the course, condensed from the site's facility page.
     description: str | None = None
     green_fees: GreenFees | None = None
+    reviews: Reviews | None = None
+    tee_rating: TeeRating | None = None
 
     def platform_config(self) -> dict[str, Any]:
         """The adapter-specific identifiers: every field a subclass adds.
@@ -118,6 +151,13 @@ PACIFIC = ZoneInfo("America/Los_Angeles")
 # and moving this date.
 SAMPLED_ON = date(2026, 9, 17)
 
+# When the GolfNow review summaries and tee ratings below were read, off each
+# facility page's embedded model (`averageRating`, `reviewCount`,
+# `totalRecommended`, and the `tees` list). The page's headline
+# `courseStatistics` is not used: it is missing for some facilities and
+# matches none of the current tees for others.
+REVIEWS_SAMPLED_ON = date(2026, 10, 22)
+
 SOULE_PARK = ForeUpCourse(
     key="soule-park",
     name="Soule Park",
@@ -159,6 +199,20 @@ SATICOY = GolfNowCourse(
         weekend_high=20.75,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=3.86,
+        count=117,
+        recommended=99,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="White/Blue (18-hole)",
+        holes=18,
+        par=68,
+        yardage=5400,
+        rating=65.8,
+        slope=106,
+    ),
     facility_id=1226,
     seo_name="1226-saticoy-regional-golf-course",
     latitude=34.283855,
@@ -190,6 +244,20 @@ OLIVAS_LINKS = GolfNowCourse(
         weekend_high=37.00,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=4.34,
+        count=819,
+        recommended=782,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Tour",
+        holes=18,
+        par=72,
+        yardage=6818,
+        rating=72.7,
+        slope=126,
+    ),
     facility_id=3585,
     seo_name="3585-olivas-links",
     latitude=34.24058,
@@ -217,6 +285,20 @@ BUENAVENTURA = GolfNowCourse(
         weekend_high=51.00,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=4.04,
+        count=479,
+        recommended=450,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Black",
+        holes=18,
+        par=70,
+        yardage=5942,
+        rating=69.1,
+        slope=119,
+    ),
     facility_id=3586,
     seo_name="3586-buenaventura-golf-course",
     latitude=34.27116,
@@ -242,6 +324,20 @@ RIVER_RIDGE_VINEYARD = GolfNowCourse(
         weekend_low=31.00,
         weekend_high=68.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=3.81,
+        count=723,
+        recommended=602,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Blue",
+        holes=18,
+        par=72,
+        yardage=6730,
+        rating=72.6,
+        slope=129,
     ),
     facility_id=4419,
     seo_name="4419-river-ridge-golf-club-vineyard-course",
@@ -270,6 +366,20 @@ RIVER_RIDGE_VICTORIA_LAKES = GolfNowCourse(
         weekend_high=73.00,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=3.71,
+        count=114,
+        recommended=97,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Black",
+        holes=18,
+        par=72,
+        yardage=7081,
+        rating=74.0,
+        slope=134,
+    ),
     facility_id=17149,
     seo_name="17149-river-ridge-golf-club-victoria-lakes",
     latitude=34.22997,
@@ -296,6 +406,20 @@ STERLING_HILLS = GolfNowCourse(
         weekend_low=53.00,
         weekend_high=86.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=4.35,
+        count=1733,
+        recommended=1496,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Gold",
+        holes=18,
+        par=71,
+        yardage=6820,
+        rating=73.3,
+        slope=133,
     ),
     facility_id=5302,
     seo_name="5302-sterling-hills-golf-club",
@@ -326,6 +450,20 @@ OJAI_VALLEY_INN = GolfNowCourse(
         weekend_high=144.46,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=4.39,
+        count=1002,
+        recommended=924,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Blue",
+        holes=18,
+        par=70,
+        yardage=6252,
+        rating=71.0,
+        slope=131,
+    ),
     facility_id=6632,
     seo_name="6632-ojai-valley-inn",
     latitude=34.44584,
@@ -352,6 +490,20 @@ CAMARILLO_SPRINGS = GolfNowCourse(
         weekend_low=53.99,
         weekend_high=67.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=3.01,
+        count=1007,
+        recommended=637,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Black",
+        holes=18,
+        par=72,
+        yardage=6921,
+        rating=73.2,
+        slope=132,
     ),
     facility_id=4796,
     seo_name="4796-camarillo-springs-golf-course",
@@ -382,6 +534,20 @@ LOS_ROBLES_GREENS = GolfNowCourse(
         weekend_high=45.00,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=4.30,
+        count=788,
+        recommended=713,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Black",
+        holes=18,
+        par=70,
+        yardage=6304,
+        rating=70.3,
+        slope=126,
+    ),
     facility_id=3565,
     seo_name="3565-los-robles-greens-golf-course",
     latitude=34.17520,
@@ -407,6 +573,20 @@ TIERRA_REJADA = GolfNowCourse(
         weekend_low=60.00,
         weekend_high=132.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=4.40,
+        count=930,
+        recommended=818,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Professional",
+        holes=18,
+        par=72,
+        yardage=7017,
+        rating=73.4,
+        slope=132,
     ),
     facility_id=3582,
     seo_name="3582-tierra-rejada-golf-club",
@@ -434,6 +614,20 @@ LAKE_LINDERO = GolfNowCourse(
         weekend_high=22.00,
         sampled_on=SAMPLED_ON,
     ),
+    reviews=Reviews(
+        average=4.03,
+        count=115,
+        recommended=95,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Blue",
+        holes=9,
+        par=29,
+        yardage=1695,
+        rating=29.7,
+        slope=96,
+    ),
     facility_id=8487,
     seo_name="8487-lake-lindero-golf-course",
     latitude=34.15608,
@@ -459,6 +653,20 @@ SANTA_BARBARA_GC = GolfNowCourse(
         weekend_low=84.99,
         weekend_high=106.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=4.28,
+        count=401,
+        recommended=358,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Blue",
+        holes=18,
+        par=70,
+        yardage=6022,
+        rating=69.4,
+        slope=123,
     ),
     facility_id=6252,
     seo_name="6252-santa-barbara-golf-club",
@@ -487,6 +695,20 @@ GLEN_ANNIE = GolfNowCourse(
         weekend_low=60.00,
         weekend_high=113.00,
         sampled_on=SAMPLED_ON,
+    ),
+    reviews=Reviews(
+        average=4.39,
+        count=295,
+        recommended=249,
+        sampled_on=REVIEWS_SAMPLED_ON,
+    ),
+    tee_rating=TeeRating(
+        tee="Green",
+        holes=18,
+        par=71,
+        yardage=6417,
+        rating=71.2,
+        slope=129,
     ),
     facility_id=15877,
     seo_name="15877-glen-annie-golf-club",

@@ -42,6 +42,21 @@ def test_seeded_green_fees_are_sane_ranges(course):
     assert course.description
 
 
+@pytest.mark.parametrize("course", SEED_COURSES, ids=[c.key for c in SEED_COURSES])
+def test_seeded_ratings_are_plausible(course):
+    reviews, tee = course.reviews, course.tee_rating
+    if course.platform != "golfnow":
+        assert reviews is None and tee is None
+        return
+    assert reviews is not None and tee is not None, "every GolfNow seed is rated"
+    assert 1 <= reviews.average <= 5
+    assert 0 <= reviews.recommended <= reviews.count
+    assert tee.holes in (9, 18)
+    assert 55 <= tee.slope <= 155
+    # A course rating sits within a few strokes of par.
+    assert abs(tee.rating - tee.par) < 8
+
+
 @pytest.mark.parametrize("platform", list(PLATFORMS.values()), ids=list(PLATFORMS))
 def test_adapters_declare_the_payment_fields_their_checkout_needs(platform):
     assert set(platform.required_payment_fields) <= set(PaymentDetails.ENV_VARS)

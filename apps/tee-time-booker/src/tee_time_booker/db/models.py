@@ -160,6 +160,10 @@ class Course(Base):
     description: Mapped[str | None] = mapped_column(Text)
     # `courses.GreenFees` as a dict (`sampled_on` as an ISO date), or null.
     green_fees: Mapped[dict[str, Any] | None]
+    # `courses.Reviews` as a dict (`sampled_on` as an ISO date), or null.
+    reviews: Mapped[dict[str, Any] | None]
+    # `courses.TeeRating` as a dict, or null.
+    tee_rating: Mapped[dict[str, Any] | None]
     # The adapter's own identifiers (`CourseConfig.platform_config()`).
     platform_config: Mapped[dict[str, Any]] = mapped_column(default=dict)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

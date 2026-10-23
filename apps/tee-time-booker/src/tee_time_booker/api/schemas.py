@@ -39,6 +39,35 @@ class GreenFeesOut(BaseModel):
     )
 
 
+class ReviewsOut(BaseModel):
+    """The site's summary of golfer reviews."""
+
+    average: float = Field(description="Average review, stars out of 5")
+    count: int = Field(description="How many reviews the average is over")
+    recommended: int = Field(description="Reviewers who'd recommend the course")
+    sampled_on: date = Field(description="When the summary was read")
+
+
+class TeeRatingOut(BaseModel):
+    """USGA course rating and slope from the longest men's tee."""
+
+    tee: str = Field(description="The tee set rated, as the site names it")
+    holes: int = Field(
+        description="The round rated: 9-hole ratings are roughly half-scale"
+    )
+    par: int
+    yardage: int
+    rating: float = Field(
+        description="USGA course rating: a scratch golfer's expected score"
+    )
+    slope: int = Field(
+        description=(
+            "USGA slope, 55-155: how much harder it plays for a bogey golfer; "
+            "113 is average"
+        )
+    )
+
+
 class CourseOut(BaseModel):
     key: str = Field(description="Stable identifier, e.g. 'soule-park'")
     name: str
@@ -65,6 +94,12 @@ class CourseOut(BaseModel):
             "known; null means no estimate, not free"
         )
     )
+    reviews: ReviewsOut | None = Field(
+        description="Golfer review summary from the booking site, when known"
+    )
+    tee_rating: TeeRatingOut | None = Field(
+        description="USGA course rating and slope, when known"
+    )
 
     @classmethod
     def from_row(cls, course: Course) -> "CourseOut":
@@ -78,6 +113,10 @@ class CourseOut(BaseModel):
             description=course.description,
             green_fees=(
                 GreenFeesOut(**course.green_fees) if course.green_fees else None
+            ),
+            reviews=ReviewsOut(**course.reviews) if course.reviews else None,
+            tee_rating=(
+                TeeRatingOut(**course.tee_rating) if course.tee_rating else None
             ),
         )
 

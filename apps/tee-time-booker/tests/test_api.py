@@ -69,6 +69,10 @@ def test_courses_are_listed_and_fetched_by_key(api):
     assert saticoy["green_fees"]["holes"] == 9
     assert saticoy["green_fees"]["weekday_low"] < saticoy["green_fees"]["weekend_high"]
     assert saticoy["green_fees"]["sampled_on"] == "2026-09-17"
+    assert soule["reviews"] is None and soule["tee_rating"] is None
+    assert 1 <= saticoy["reviews"]["average"] <= 5
+    assert saticoy["reviews"]["sampled_on"] == "2026-10-22"
+    assert saticoy["tee_rating"]["slope"] == 106
     assert api.get("/courses/nope").status_code == 404
 
 

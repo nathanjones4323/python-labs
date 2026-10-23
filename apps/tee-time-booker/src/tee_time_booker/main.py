@@ -129,14 +129,20 @@ def main(argv: list[str] | None = None) -> int:
 def _list_courses(sessions) -> int:
     with sessions() as session:
         for course in list_courses(session):
-            fees = ""
+            details = ""
             if course.green_fees:
                 f = course.green_fees
-                fees = (
+                details = (
                     f"  {f['holes']}h ${f['weekday_low']:.0f}-{f['weekday_high']:.0f} "
                     f"wkday, ${f['weekend_low']:.0f}-{f['weekend_high']:.0f} wkend"
                 )
-            print(f"{course.key:<28} {course.name} ({course.platform}){fees}")
+            if course.reviews:
+                r = course.reviews
+                details += f"  {r['average']:.1f}* ({r['count']})"
+            if course.tee_rating:
+                t = course.tee_rating
+                details += f"  {t['rating']}/{t['slope']}"
+            print(f"{course.key:<28} {course.name} ({course.platform}){details}")
     return 0
 
 
