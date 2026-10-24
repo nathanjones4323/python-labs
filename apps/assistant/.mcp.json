@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "date-planner": {
+      "command": "uv",
+      "args": ["run", "--directory", "../date-planner", "date-planner-mcp"]
+    },
+    "garmin": {
+      "command": "uvx",
+      "args": [
+        "--python", "3.12",
+        "--from", "git+https://github.com/nathanjones4323/garmin_mcp@local/combined",
+        "garmin-mcp"
+      ],
+      "env": {
+        "GARMINTOKENS": "~/.config/garmin-mcp/tokens"
+      }
+    },
+    "tee-time-booker": {
+      "command": "uv",
+      "args": [
+        "run", "--directory", "../tee-time-booker",
+        "--package", "tee-time-booker", "--extra", "mcp",
+        "python", "-m", "tee_time_booker.mcp"
+      ]
+    }
+  }
+}
