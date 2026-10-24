@@ -335,6 +335,11 @@ uv run --package tee-time-booker python -m tee_time_booker.setup
 uv run --package tee-time-booker python -m tee_time_booker.bot
 ```
 
+On Windows, install [Git](https://git-scm.com/download/win) and uv first
+(`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`,
+then reopen PowerShell); the same commands work there, with
+`cd apps\tee-time-booker`.
+
 `setup` walks through making the bot with @BotFather, finding your Telegram
 user id, choosing the model (a local one by default: it checks the machine's
 memory, and needs [Ollama](https://ollama.com/download) installed and

@@ -75,7 +75,32 @@ def _ram_gb() -> float:
             ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=True
         )
         return int(out.stdout) / 2**30
+    if platform.system() == "Windows":
+        return _windows_ram_bytes() / 2**30
     return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+
+
+def _windows_ram_bytes() -> int:
+    # GlobalMemoryStatusEx: Windows has no sysconf.
+    import ctypes
+
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatus(dwLength=ctypes.sizeof(MemoryStatus))
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise ctypes.WinError()
+    return status.ullTotalPhys
 
 
 def _nvidia_vram_gb() -> float | None:

@@ -27,6 +27,14 @@ def test_written_values_read_back_exactly_and_only_the_owner_can_read(tmp_path):
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
 
 
+def test_env_is_written_where_there_is_no_fchmod(tmp_path, monkeypatch):
+    # Windows: os.fchmod doesn't exist.
+    monkeypatch.delattr("os.fchmod")
+    env = tmp_path / ".env"
+    write_env(env, {"GOLFNOW_PASSWORD": "pässword"})
+    assert dotenv_values(env) == {"GOLFNOW_PASSWORD": "pässword"}
+
+
 def test_only_unanswered_questions_are_asked(monkeypatch):
     asked = []
     monkeypatch.setattr(

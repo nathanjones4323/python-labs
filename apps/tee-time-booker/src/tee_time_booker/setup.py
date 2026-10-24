@@ -299,15 +299,19 @@ def ask_missing(questions: list[Question], known: dict[str, str]) -> dict[str, s
 def write_env(path: Path, values: dict[str, str]) -> None:
     """Append `values` to the env file, leaving what's there alone, and make
     it readable by its owner only: it holds logins and maybe a card."""
-    existing = path.read_text() if path.exists() else ""
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
     lines = [] if not existing or existing.endswith("\n") else [""]
     lines += [f"{name}={_quote(value)}" for name, value in values.items()]
     # Created 0600 (and tightened if it already existed) before any secret
     # is written, so it is never readable by others even briefly.
     mode = stat.S_IRUSR | stat.S_IWUSR
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
-    os.fchmod(fd, mode)
-    with os.fdopen(fd, "a") as f:
+    # Windows has no fchmod and no owner/other bits: the file is private to
+    # the user through their profile folder's permissions instead.
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, mode)
+    # UTF-8, as python-dotenv reads it, not Windows' default code page.
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
 
