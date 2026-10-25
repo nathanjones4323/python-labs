@@ -167,6 +167,7 @@ def _exact(text: str) -> re.Pattern[str]:
 
 class ForeUpPlatform(BookingPlatform):
     name = "foreup"
+    display_name = "foreUP"
     course_type = ForeUpCourse
     required_payment_fields = (
         "number",

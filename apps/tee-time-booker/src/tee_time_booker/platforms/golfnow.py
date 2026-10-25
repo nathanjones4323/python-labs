@@ -345,6 +345,7 @@ def parse_tee_times(
 
 class GolfNowPlatform(BookingPlatform):
     name = "golfnow"
+    display_name = "GolfNow"
     course_type = GolfNowCourse
     # The card itself is the one saved on the GolfNow account.
     required_payment_fields = ("state", "postal_code")

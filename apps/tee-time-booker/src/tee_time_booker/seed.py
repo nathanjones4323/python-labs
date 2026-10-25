@@ -24,15 +24,27 @@ from tee_time_booker.db.service import (
     upsert_course,
 )
 from tee_time_booker.models import Preferences
+from tee_time_booker.platforms import get_platform
 
 SATURDAY = 5
 
-# The env-var prefix each seeded course's login is read from (`<PREFIX>_EMAIL`,
-# `<PREFIX>_PASSWORD`), i.e. the variables in `.env.example`.
-ACCOUNT_ENV_PREFIXES: dict[str, str] = {
-    SOULE_PARK.key: "SOULE",
-    SATICOY.key: "GOLFNOW",
-}
+# The env-var prefix each login is read from (`<PREFIX>_EMAIL`,
+# `<PREFIX>_PASSWORD`), i.e. the variables in `.env.example`. A site that signs
+# in to each course separately (foreUP) has a login per course, keyed by the
+# course; one that signs in site-wide (GolfNow) has one login for all of its
+# courses, keyed by the site.
+ACCOUNT_ENV_PREFIXES: dict[str, str] = {SOULE_PARK.key: "SOULE", "golfnow": "GOLFNOW"}
+
+
+def account_env_prefix(course: CourseConfig) -> str:
+    """The env-var prefix of the login that books `course`; one added since is
+    its course key or site name in capitals."""
+    if get_platform(course.platform).signs_in_per_course:
+        key = course.key
+    else:
+        key = course.platform
+    return ACCOUNT_ENV_PREFIXES.get(key, key.upper().replace("-", "_"))
+
 
 DEFAULT_PLANS: dict[str, Preferences] = {
     SOULE_PARK.key: Preferences(
@@ -59,24 +71,31 @@ def seed_user(
     email: str,
     name: str | None,
     courses: dict[str, CourseConfig],
-    keys: set[str] | None = None,
+    prefixes: set[str] | None = None,
 ):
-    """The user, a site account and the default plan for each course in `keys`
-    (default: every course with a default plan)."""
+    """The user, an account for each login in `prefixes` (default: the logins
+    the default plans use) and the default plans that sign in with one."""
+    if prefixes is None:
+        prefixes = {account_env_prefix(courses[key]) for key in DEFAULT_PLANS}
     user = ensure_user(session, email, name)
-    plans = []
-    for key, prefs in DEFAULT_PLANS.items():
-        if keys is not None and key not in keys:
+    accounts = {}
+    for config in courses.values():
+        prefix = account_env_prefix(config)
+        if prefix not in prefixes or prefix in accounts:
             continue
-        course = upsert_course(session, courses[key])
-        prefix = ACCOUNT_ENV_PREFIXES[key]
-        account = ensure_site_account(
+        accounts[prefix] = ensure_site_account(
             session,
             user,
-            platform=course.platform,
+            platform=config.platform,
             login_email=os.environ.get(f"{prefix}_EMAIL", "").strip() or email,
             env_prefix=prefix,
         )
+    plans = []
+    for key, prefs in DEFAULT_PLANS.items():
+        account = accounts.get(account_env_prefix(courses[key]))
+        if account is None:
+            continue
+        course = upsert_course(session, courses[key])
         plans.append(
             ensure_plan(
                 session,

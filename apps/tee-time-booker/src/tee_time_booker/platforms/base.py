@@ -42,6 +42,8 @@ class BookingPlatform(ABC):
 
     # Name used in `CourseConfig.platform` and the registry.
     name: ClassVar[str]
+    # The site as people write it, e.g. "foreUP", for setup's questions.
+    display_name: ClassVar[str]
     # Course dataclass this adapter needs (e.g. ForeUpCourse), checked on init.
     course_type: ClassVar[type[CourseConfig]]
     # `PaymentDetails` fields this site's checkout asks for.
