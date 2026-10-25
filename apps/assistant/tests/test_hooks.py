@@ -89,8 +89,6 @@ def test_unreadable_payload_is_denied(payload: Any) -> None:
 @pytest.mark.parametrize(
     "tool",
     [
-        "mcp__tee-time-booker__book_plan",
-        "mcp__tee-time-booker__run_request",
         "mcp__tee-time-booker__delete_plan",
         "mcp__claude_ai_Gmail__send_message",
         "mcp__claude_ai_Gmail__reply",
@@ -101,6 +99,16 @@ def test_unreadable_payload_is_denied(payload: Any) -> None:
 def test_high_impact_tools_are_denied(tool: str) -> None:
     assert tool in SETTINGS["permissions"]["deny"]
     assert tool not in SETTINGS["permissions"]["allow"]
+
+
+@pytest.mark.parametrize(
+    "tool", ["mcp__tee-time-booker__book_plan", "mcp__tee-time-booker__run_request"]
+)
+def test_booking_always_asks(tool: str) -> None:
+    # `ask` beats an `allow` rule, so a wildcard allow can't skip the prompt.
+    assert tool in SETTINGS["permissions"]["ask"]
+    assert tool not in SETTINGS["permissions"]["allow"]
+    assert tool not in SETTINGS["permissions"]["deny"]
 
 
 def test_every_allowed_mcp_tool_names_a_configured_server() -> None:
@@ -323,6 +331,16 @@ def test_target_needs_a_telegram_turn() -> None:
     assert progress.target(call, transcript(TERMINAL_PROMPT), [CHAT]) is None
     assert progress.target(call, transcript(channel_prompt()), []) is None
     assert progress.target({}, transcript(channel_prompt()), [CHAT]) is None
+
+
+def test_button_tap_turn_targets_its_chat() -> None:
+    # The forked plugin delivers a tap as a channel message with `button`.
+    tap = channel_prompt()
+    tap["message"]["content"] = tap["message"]["content"].replace(
+        'message_id="8"', 'message_id="8" button="tee:soule-park:2026-11-01T07:10:4:18"'
+    )
+    found = progress.target({"tool_name": "mcp__tee-time-booker__run_request"}, transcript(tap), [CHAT])
+    assert found == (CHAT, "Starting the run…")
 
 
 def test_progress_hook_runs_on_every_tool() -> None:

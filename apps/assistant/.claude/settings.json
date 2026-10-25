@@ -61,10 +61,12 @@
       "mcp__claude_ai_Gmail__search_threads",
       "mcp__claude_ai_Gmail__get_thread"
     ],
+    "ask": [
+      "mcp__tee-time-booker__book_plan",
+      "mcp__tee-time-booker__run_request"
+    ],
     "deny": [
       "Bash",
-      "mcp__tee-time-booker__book_plan",
-      "mcp__tee-time-booker__run_request",
       "mcp__tee-time-booker__delete_plan",
       "mcp__claude_ai_Gmail__send_message",
       "mcp__claude_ai_Gmail__reply",
