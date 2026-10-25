@@ -27,7 +27,7 @@ from dotenv import dotenv_values
 from sqlalchemy.engine import make_url
 
 from tee_time_booker.config import DEFAULT_CLAUDE_MODEL, OLLAMA_URL
-from tee_time_booker.courses import SEED_COURSES
+from tee_time_booker.courses import SEED_COURSES, CourseConfig
 from tee_time_booker.db import make_session_factory
 from tee_time_booker.db.service import upsert_course
 from tee_time_booker.seed import ACCOUNT_ENV_PREFIXES, DEFAULT_PLANS, seed_user
@@ -296,6 +296,20 @@ def ask_missing(questions: list[Question], known: dict[str, str]) -> dict[str, s
     return answers
 
 
+SITE_NAMES = {"foreup": "foreUP", "golfnow": "GolfNow"}
+
+
+def site_prompt(course: CourseConfig, all_courses: tuple[CourseConfig, ...]) -> str:
+    """Asks about the site `course` books on, not just `course`: one login
+    there books all of its courses. Saying yes also adds `course`'s default
+    plan, listed at the end (it books only once auto-booking is turned on)."""
+    others = [c for c in all_courses if c.platform == course.platform and c != course]
+    site = SITE_NAMES[course.platform]
+    if not others:
+        return f"{site} ({course.name})?"
+    return f"{site} ({course.name} and {len(others)} other courses)?"
+
+
 def write_env(path: Path, values: dict[str, str]) -> None:
     """Append `values` to the env file, leaving what's there alone, and make
     it readable by its owner only: it holds logins and maybe a card."""
@@ -386,23 +400,22 @@ def main(argv: list[str] | None = None) -> int:
     new |= choose_model(known)
 
     courses = {c.key: c for c in SEED_COURSES}
-    print("\nWhich courses do you book?")
+    print("\nWhich booking sites do you use?")
     chosen = {
         key
-        for key, course in courses.items()
-        if key in DEFAULT_PLANS and yes(f"  {course.name} ({course.platform})?")
+        for key in DEFAULT_PLANS
+        if yes(f"  {site_prompt(courses[key], SEED_COURSES)}")
     }
     for key in sorted(chosen):
         prefix = ACCOUNT_ENV_PREFIXES[key]
+        site = SITE_NAMES[courses[key].platform]
         login = [
             Question(
                 f"{prefix}_EMAIL",
-                f"{courses[key].name} login email",
-                help=f"Your {courses[key].platform} account for {courses[key].name}.",
+                f"{site} login email",
+                help=f"Your {site} account: it books every {site} course.",
             ),
-            Question(
-                f"{prefix}_PASSWORD", f"{courses[key].name} password", secret=True
-            ),
+            Question(f"{prefix}_PASSWORD", f"{site} password", secret=True),
         ]
         new |= ask_missing(login, {**known, **new})
     platforms = {courses[k].platform for k in chosen}

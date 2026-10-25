@@ -134,3 +134,12 @@ def test_choosing_claude_resets_the_model(monkeypatch):
         "ANTHROPIC_API_KEY": "sk-ant",
         "TEE_TIME_BOT_MODEL": "claude-sonnet-5-5",
     }
+
+
+def test_golfnow_is_asked_about_as_a_site_not_just_saticoy():
+    from tee_time_booker.courses import SEED_COURSES, SATICOY, SOULE_PARK
+
+    golfnow = setup.site_prompt(SATICOY, SEED_COURSES)
+    assert golfnow.startswith(f"GolfNow ({SATICOY.name} and ")
+    assert golfnow.endswith(" other courses)?")
+    assert setup.site_prompt(SOULE_PARK, SEED_COURSES) == "foreUP (Soule Park)?"
