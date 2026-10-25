@@ -61,6 +61,13 @@ adds an optional `buttons` arg to `reply` and `edit_message`: rows of
   edited to show the choice (its buttons go, so it can't be answered twice),
   and Claude gets a `notifications/claude/channel` event with `meta.button`
   and `meta.message_id`. Others get "Not authorized." `perm:*` is unchanged.
+- `reply` and `edit_message` default to `format: rich` (`sendRichMessage`,
+  as the tee-time bot sends): Markdown plus `<table>`, `<footer>` and
+  `<blockquote expandable>`, with `$`-prices escaped outside HTML blocks.
+  A rich message comes back in a tap without its content, so the plugin
+  keeps the Markdown of rich cards with buttons in memory and redraws the
+  card with the choice in a `<footer>`; after a restart a tap only drops
+  the buttons.
 - A tap is a choice, not an approval: it starts a turn like any message, and
   the tools it leads to are still gated by the tiers above.
 - Tee times: search results go out as slot buttons

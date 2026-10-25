@@ -24,11 +24,33 @@ claude.ai connectors: training (garmin), tee times (tee-time-booker), dates
 
 ## Tee times
 
-- Over Telegram, send search results as one `reply` with slot buttons: up
-  to 3 per row, labelled with time and price per player (`7:10 · $42`), and
-  a last row `[None of these]` with data `none`. Data for a slot is
+Look like the tee-time bot: `reply` sends rich Markdown (its default
+format), so use **bold** for the key fact, leave a blank line between
+lines, and write times like 9:12 AM, dates like Sat Oct 24, prices like
+$20.75 (drop `.00`).
+
+- Send search results as one `reply` card with slot buttons. For one
+  course:
+
+  ```
+  📅 **Soule Park · Sat Nov 1**
+
+  3 times · 4 golfers · 18 holes
+
+  <table striped compact><tr><th align="left">Time</th><th align="right">Per player</th></tr><tr><td><b>7:10 AM</b></td><td align="right"><b>$42</b></td></tr>…</table>
+
+  _Tap a time to book it._
+  ```
+
+  Over several courses the title is just the date, the line after it adds
+  `· N courses`, and the table starts with `#` and `Course` columns. Add a
+  `Side` column only when slots differ by side. No price: `–`. At most 12
+  slots, best first (closest to the asked time, spread over courses).
+- Buttons: 3 per row, labelled with the time only (`7:10 AM`; `#2 7:10 AM`
+  when the card spans courses, matching the `#` column), then a last row
+  `[None of these]` with data `none`. Data for a slot is
   `tee:<course>:<YYYY-MM-DDTHH:MM>:<players>:<holes>`, course-local, from
-  the search result. The text above says course, date, players and holes.
+  the search result.
 - A tap arrives as a channel message with `button` set. For `tee:…`, book
   exactly that slot: `create_request` with `earliest` = `latest` = its
   time, then `run_request` on it with `submit_payment: true` and
@@ -37,8 +59,21 @@ claude.ai connectors: training (garmin), tee times (tee-time-booker), dates
 - After starting a run, `sleep 5` then `get_run` until it isn't running,
   then reply once. A run waiting on a course's release is the exception:
   say it's queued and when it releases.
-- Report the run's outcome as the app gives it: `dry_run` and `not_open`
-  mean nothing was booked, `unknown` means check the site before retrying.
+- Report the run's outcome in one `reply`, as the app words it (`<where>`
+  is `Course on Sat Nov 1`; add `Green fee $42 per player.` as its own line
+  when the run has one):
+  - success: `✅ **Booked** <where> at **7:10 AM**.` then
+    ``Confirmation: `ABC123` `` on its own line
+  - dry_run: `🧪 **Dry run done:** reached checkout for 7:10 AM at <where>. Nothing was paid.`
+  - unknown: `⚠️ **Payment submitted, no confirmation** for <where> 7:10 AM.`
+    then `Check your account on the booking site before trying again.`
+  - not_open: `📭 **Not open yet:** <where> isn't in the site's booking window yet. Nothing was booked.`
+  - error: `❌ **The run failed** for <where>.` then the detail in
+    `<blockquote expandable>…</blockquote>`, and a short line on what they
+    could do instead.
+- Other details (a plan, a request) go in a label/value table without a
+  header: `<table compact><tr><td><b>Course</b></td><td>Soule Park</td></tr>…</table>`.
+  Run lists are a Markdown table: `| Started | Status | Slot |`.
 
 ## Memory
 
