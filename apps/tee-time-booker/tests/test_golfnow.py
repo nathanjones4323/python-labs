@@ -1,11 +1,12 @@
 from datetime import date, datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 from loguru import logger
 from tee_time_booker.config import Account, Credentials
 from tee_time_booker.courses import SATICOY
 from tee_time_booker.models import SearchCriteria
-from tee_time_booker.platforms import golfnow
+from tee_time_booker.platforms import PaymentOutcomeUnknownError, golfnow
 from tee_time_booker.platforms.golfnow import (
     WINDOW_PROBE_EMPTY_DAYS,
     WINDOW_PROBE_MAX_DAYS,
@@ -204,3 +205,99 @@ def test_window_wider_than_the_probe_cap_is_left_open(monkeypatch):
     platform, searched = _probing_platform(monkeypatch, set(range(400)))
     assert platform.last_bookable_day() is None
     assert len(searched) == WINDOW_PROBE_MAX_DAYS + 1
+
+
+# --- Checkout, against stand-in pages in a real browser ------------------------
+
+
+@pytest.fixture(scope="module")
+def browser():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    with sync_api.sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except sync_api.Error:
+            pytest.skip("Chromium isn't installed (playwright install chromium)")
+        yield browser
+        browser.close()
+
+
+@pytest.fixture
+def platform(browser, monkeypatch):
+    """A GolfNowPlatform on a blank page, with no waiting between steps."""
+    page = browser.new_page()
+    page.set_default_timeout(2_000)
+    monkeypatch.setattr(golfnow, "pause", lambda *a, **k: None)
+    monkeypatch.setattr(golfnow, "CONFIRMATION_TIMEOUT_SECONDS", 2)
+    session = SimpleNamespace(page=page)
+    yield GolfNowPlatform(
+        SATICOY, Credentials(account=Account("a@example.com", "pw")), session
+    )
+    page.close()
+
+
+OFFLINE_HTML = "<h1>You appear to be offline</h1><button>Retry</button>"
+
+
+def _checkout_html(name: str = "Pat Golfer", address: str = "1 Main St") -> str:
+    return f"""
+        <form id="fmcheck">
+          <input id="billingname" value="{name}">
+          <input id="billingaddress" value="{address}">
+          <input id="billingpostalcode" value="">
+        </form>
+    """
+
+
+def test_billing_check_passes_with_a_name_and_address(platform):
+    platform.page.set_content(_checkout_html())
+    platform._check_billing_profile()
+
+
+@pytest.mark.parametrize(
+    ("name", "address", "missing"),
+    [
+        ("Pat Golfer", "", "street address"),
+        ("", "1 Main St", "name"),
+        (" ", " ", "name or street address"),
+    ],
+)
+def test_billing_check_stops_without_a_name_or_address(
+    platform, name, address, missing
+):
+    platform.page.set_content(_checkout_html(name, address))
+    with pytest.raises(RuntimeError, match=f"no billing {missing},"):
+        platform._check_billing_profile()
+
+
+def test_checkout_offline_page_is_reloaded(platform, monkeypatch):
+    page = platform.page
+    page.set_content(OFFLINE_HTML)
+    reloads = []
+
+    def reload(**kwargs):
+        reloads.append(kwargs)
+        page.set_content(_checkout_html())
+
+    monkeypatch.setattr(page, "reload", reload)
+    platform._open_checkout_form()
+    assert len(reloads) == 1
+
+
+def test_checkout_offline_twice_gives_up(platform, monkeypatch):
+    page = platform.page
+    page.set_content(OFFLINE_HTML)
+    monkeypatch.setattr(page, "reload", lambda **kwargs: None)
+    with pytest.raises(RuntimeError, match="offline"):
+        platform._open_checkout_form()
+
+
+def test_offline_page_after_reserve_is_an_unknown_outcome(platform):
+    page = platform.page
+    page.set_content(
+        """<button id="reservation-button-top"
+             onclick="document.body.innerHTML = '<h1>You appear to be offline</h1>'">
+           Reserve</button>"""
+    )
+    with pytest.raises(PaymentOutcomeUnknownError, match="offline' page after Reserve"):
+        platform._reserve()
