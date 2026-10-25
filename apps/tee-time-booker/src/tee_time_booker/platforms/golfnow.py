@@ -7,8 +7,9 @@ Flow (mirrors what a person does on the site):
      browser's session so member pricing and cookies apply
   3. open the chosen rate's detail page, pick the number of golfers and
      "Continue to Book", which lands on that rate's checkout
-  4. confirm the card saved on the account is selected, fill the billing
-     state and postal code, tick the terms
+  4. confirm the card saved on the account is selected and the profile
+     supplied a billing name and street address, fill the billing state and
+     postal code, tick the terms
   5. optionally click Reserve
 
 Why the API and not the results grid: GolfNow renders the grid client-side and
@@ -51,7 +52,14 @@ GolfNow quirks the code works around:
   signing in instead of the page it asked for. The search API, the tee time
   page and checkout all still work from there, so the adapter reports which
   fields GolfNow wants and carries on rather than filling in personal details
-  it doesn't have.
+  it doesn't have. Checkout then has no billing name or street address, and
+  GolfNow sends the charge without them, which the card issuer declines
+  ("provided payment method not authorized"); so checkout stops, dry run or
+  not, until the profile has them.
+- Now and then GolfNow swaps the page for its own "You appear to be offline"
+  page, at the same URL, though the connection is fine. Before Reserve a
+  reload brings checkout back; after it, whether the booking went through is
+  unknown, so the run stops at once rather than waiting out the timeout.
 """
 
 import re
@@ -152,6 +160,9 @@ RESERVE_BUTTON = "#reservation-button-top, #reservation-button-bottom"
 # form is filled.
 RESERVE_ENABLE_TIMEOUT_MS = 10_000
 CONFIRMATION_URL = re.compile(r"/(confirmation|reservation-confirmed)", re.IGNORECASE)
+# GolfNow's stand-in for any page whose loading failed: served at the page's
+# own URL, with no form and no error message for the checks above to find.
+OFFLINE_PAGE = "h1:has-text('You appear to be offline')"
 # Field-level validation messages are `label.text-problem`; page-level ones
 # come in an alert.
 CHECKOUT_ERROR = (
@@ -428,7 +439,7 @@ class GolfNowPlatform(BookingPlatform):
     def _report_incomplete_profile(self) -> None:
         """Say so if GolfNow parked the signed-in session on "Edit Profile".
 
-        Booking works from there, so this only warns — with the fields GolfNow
+        Searching works from there, so this only warns — with the fields GolfNow
         is after, so the account holder can fill them in by hand and stop the
         detour. The adapter doesn't fill them: they're personal details (last
         name, home address, average score) it has no business inventing.
@@ -448,8 +459,8 @@ class GolfNowPlatform(BookingPlatform):
             empty.append((name or "?").strip(" *"))
         logger.warning(
             "GolfNow wants this account's profile completed (it redirected to "
-            f"{page.url}); booking continues, but fill in "
-            f"{', '.join(empty) or 'the required fields'} on the site to clear it"
+            f"{page.url}); searching continues, but checkout needs the name and "
+            f"address: fill in {', '.join(empty) or 'the required fields'} on the site"
         )
 
     def _dismiss_marketing_popup(self, timeout: int = 2_000) -> None:
@@ -615,6 +626,7 @@ class GolfNowPlatform(BookingPlatform):
     ) -> BookingResult:
         self._open_checkout_form()
         self._check_saved_card()
+        self._check_billing_profile()
         if not submit_payment:
             logger.warning(
                 "Payment submission is off — stopping at the checkout form (dry run)"
@@ -630,11 +642,52 @@ class GolfNowPlatform(BookingPlatform):
         )
 
     def _open_checkout_form(self) -> None:
-        """Get the checkout form on screen: past the interstitial and cookie bar."""
-        # The interstitial hides the whole form; give it a moment to appear.
-        self._dismiss_marketing_popup(timeout=5_000)
-        self._accept_cookie_banner()
-        self.page.locator(CHECKOUT_FORM).wait_for(state="visible")
+        """Get the checkout form on screen: past the interstitial and cookie bar.
+
+        Nothing has been paid yet, so GolfNow's offline page here gets one reload.
+        """
+        page = self.page
+        for attempt in (1, 2):
+            # The interstitial hides the whole form; give it a moment to appear.
+            self._dismiss_marketing_popup(timeout=5_000)
+            self._accept_cookie_banner()
+            form = page.locator(CHECKOUT_FORM)
+            form.or_(page.locator(OFFLINE_PAGE)).first.wait_for(state="visible")
+            if form.is_visible():
+                return
+            if attempt == 2:
+                raise RuntimeError(
+                    "GolfNow showed its 'You appear to be offline' page instead "
+                    "of checkout, twice"
+                )
+            logger.warning("GolfNow showed its offline page at checkout; reloading")
+            page.reload(wait_until="domcontentloaded")
+
+    def _check_billing_profile(self) -> None:
+        """Stop if checkout has no billing name or street address to send.
+
+        GolfNow fills both from the account profile and the adapter leaves
+        them alone (it only fills state and postal code). Blank, the charge
+        goes out without them and the card issuer declines it, so this stops
+        first, on dry runs too, with what to fix.
+        """
+        page = self.page
+        missing = [
+            label
+            for label, selector in (
+                ("name", CARD_NAME_INPUT),
+                ("street address", BILLING_ADDRESS_INPUT),
+            )
+            if page.locator(selector).count()
+            and not page.locator(selector).first.input_value().strip()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"GolfNow's checkout has no billing {' or '.join(missing)}, so "
+                "the card would be declined. Fill in your full name and billing "
+                "address (as on the card) under My Account > Profile on "
+                "golfnow.com, then try again"
+            )
 
     def _check_saved_card(self) -> None:
         """Confirm GolfNow has the account's saved card selected to pay with.
@@ -752,6 +805,7 @@ class GolfNowPlatform(BookingPlatform):
         page = self.page
         page.locator(RESERVE_BUTTON).first.click()
         error = page.locator(CHECKOUT_ERROR).filter(visible=True)
+        offline = page.locator(OFFLINE_PAGE)
         for _ in range(CONFIRMATION_TIMEOUT_SECONDS * 2):
             if CONFIRMATION_URL.search(page.url):
                 logger.info(f"Reservation confirmed at {page.url}")
@@ -759,6 +813,13 @@ class GolfNowPlatform(BookingPlatform):
             if error.count():
                 raise RuntimeError(
                     f"GolfNow rejected the booking: {error.first.inner_text().strip()}"
+                )
+            if offline.count():
+                # Not reloaded: that could submit the booking a second time.
+                raise PaymentOutcomeUnknownError(
+                    "GolfNow showed its 'You appear to be offline' page after "
+                    "Reserve, so the booking may or may not have gone through; "
+                    "check your GolfNow reservations and card before retrying"
                 )
             page.wait_for_timeout(500)
         raise PaymentOutcomeUnknownError(
