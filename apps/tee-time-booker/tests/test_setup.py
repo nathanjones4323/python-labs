@@ -1,8 +1,14 @@
+import os
 import stat
+from dataclasses import replace
 
 from dotenv import dotenv_values
-from tee_time_booker import setup
+from sqlalchemy import select
+from tee_time_booker import seed, setup
 from tee_time_booker.bot import local_model
+from tee_time_booker.courses import OLIVAS_LINKS, SATICOY, SEED_COURSES, SOULE_PARK
+from tee_time_booker.db import make_session_factory
+from tee_time_booker.db.models import BookingPlan, SiteAccount
 from tee_time_booker.setup import (
     Question,
     absolute_sqlite_url,
@@ -136,10 +142,79 @@ def test_choosing_claude_resets_the_model(monkeypatch):
     }
 
 
-def test_golfnow_is_asked_about_as_a_site_not_just_saticoy():
-    from tee_time_booker.courses import SEED_COURSES, SATICOY, SOULE_PARK
+def test_golfnow_is_one_login_and_each_foreup_course_its_own(monkeypatch):
+    other_foreup = replace(SOULE_PARK, key="other-park", name="Other Park")
+    monkeypatch.setattr(
+        setup, "SEED_COURSES", (SOULE_PARK, SATICOY, other_foreup, OLIVAS_LINKS)
+    )
+    groups = setup.logins()
+    assert {prefix: [c.key for c in cs] for prefix, cs in groups.items()} == {
+        "SOULE": ["soule-park"],
+        "GOLFNOW": ["saticoy", OLIVAS_LINKS.key],
+        "OTHER_PARK": ["other-park"],
+    }
+    assert setup.login_prompt(groups["SOULE"]) == "foreUP (Soule Park)?"
+    assert setup.login_prompt(groups["OTHER_PARK"]) == "foreUP (Other Park)?"
+    assert setup.login_prompt(groups["GOLFNOW"]) == (
+        f"GolfNow ({SATICOY.name} and 1 other course)?"
+    )
+    soule = setup.login_questions("SOULE", groups["SOULE"])
+    assert [q.prompt for q in soule] == [
+        "Soule Park login email",
+        "Soule Park password",
+    ]
+    golfnow = setup.login_questions("GOLFNOW", groups["GOLFNOW"])
+    assert [q.prompt for q in golfnow] == ["GolfNow login email", "GolfNow password"]
 
-    golfnow = setup.site_prompt(SATICOY, SEED_COURSES)
-    assert golfnow.startswith(f"GolfNow ({SATICOY.name} and ")
-    assert golfnow.endswith(" other courses)?")
-    assert setup.site_prompt(SOULE_PARK, SEED_COURSES) == "foreUP (Soule Park)?"
+
+def test_the_seeded_golfnow_courses_are_counted():
+    golfnow = sum(c.platform == "golfnow" for c in SEED_COURSES)
+    assert setup.login_prompt(setup.logins()["GOLFNOW"]) == (
+        f"GolfNow ({SATICOY.name} and {golfnow - 1} other courses)?"
+    )
+
+
+def _run_setup(tmp_path, monkeypatch, *answers):
+    """Run setup with the bot and model already in `.env`, so only the site
+    questions are asked, and return the `.env` it leaves and the database."""
+    env = tmp_path / ".env"
+    database_url = f"sqlite:///{tmp_path / 'tee.db'}"
+    env.write_text(
+        f"DATABASE_URL={database_url}\n"
+        "TEE_TIME_USER_EMAIL=me@example.com\n"
+        "TELEGRAM_BOT_TOKEN=t\n"
+        "TELEGRAM_ALLOWED_USER_IDS=1\n"
+        "ANTHROPIC_API_KEY=k\n"
+    )
+    # main() exports the values; keep them out of the other tests.
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    _answers(monkeypatch, *answers)
+    assert setup.main(["--env-file", str(env)]) == 0
+    return dotenv_values(env), make_session_factory(database_url)
+
+
+def test_golfnow_alone_gets_one_login_and_only_golfnow_plans(tmp_path, monkeypatch):
+    # No to foreUP; yes to GolfNow, its login, then its billing state and zip.
+    env, sessions = _run_setup(
+        tmp_path, monkeypatch, "n", "y", "gn@example.com", "pw", "CA", "93001"
+    )
+    assert env["GOLFNOW_EMAIL"] == "gn@example.com"
+    assert env["GOLFNOW_PASSWORD"] == "pw"
+    assert "SOULE_EMAIL" not in env and "CREDIT_CARD_NUMBER" not in env
+    with sessions() as session:
+        accounts = session.scalars(select(SiteAccount)).all()
+        assert [(a.platform, a.env_prefix, a.login_email) for a in accounts] == [
+            ("golfnow", "GOLFNOW", "gn@example.com")
+        ]
+        plans = session.scalars(select(BookingPlan)).all()
+        assert {p.course.platform for p in plans} == {"golfnow"}
+
+
+def test_a_site_without_a_default_plan_still_gets_its_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(seed, "DEFAULT_PLANS", {})
+    _, sessions = _run_setup(
+        tmp_path, monkeypatch, "n", "y", "gn@example.com", "pw", "CA", "93001"
+    )
+    with sessions() as session:
+        assert [a.platform for a in session.scalars(select(SiteAccount))] == ["golfnow"]
+        assert session.scalars(select(BookingPlan)).all() == []

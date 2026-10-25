@@ -4,10 +4,10 @@
     uv run --package tee-time-booker python -m tee_time_booker.setup
 
 Asks for what the bot and your courses need, writes it to `.env` (readable
-only by you), creates a local SQLite database, and loads the courses and a
-default plan for each course you book. Rerunning it is safe: values already
-in `.env` are kept, never asked for again, so it also fills in whatever a
-first run skipped.
+only by you), creates a local SQLite database, and loads the courses, your
+login on each booking site you use, and the default plans on those sites.
+Rerunning it is safe: values already in `.env` are kept, never asked for
+again, so it also fills in whatever a first run skipped.
 
 Nothing you type here leaves this machine. The logins and card stay in
 `.env`, where the booker reads them when it signs in or pays.
@@ -30,7 +30,8 @@ from tee_time_booker.config import DEFAULT_CLAUDE_MODEL, OLLAMA_URL
 from tee_time_booker.courses import SEED_COURSES, CourseConfig
 from tee_time_booker.db import make_session_factory
 from tee_time_booker.db.service import upsert_course
-from tee_time_booker.seed import ACCOUNT_ENV_PREFIXES, DEFAULT_PLANS, seed_user
+from tee_time_booker.platforms import PLATFORMS
+from tee_time_booker.seed import account_env_prefix, seed_user
 
 APP_DIR = Path(__file__).resolve().parents[2]
 
@@ -296,18 +297,38 @@ def ask_missing(questions: list[Question], known: dict[str, str]) -> dict[str, s
     return answers
 
 
-SITE_NAMES = {"foreup": "foreUP", "golfnow": "GolfNow"}
+def logins() -> dict[str, list[CourseConfig]]:
+    """The seeded courses by the login that books them (its env prefix): all
+    of a site's courses when it signs in site-wide, else one course each."""
+    groups: dict[str, list[CourseConfig]] = {}
+    for course in SEED_COURSES:
+        groups.setdefault(account_env_prefix(course), []).append(course)
+    return groups
 
 
-def site_prompt(course: CourseConfig, all_courses: tuple[CourseConfig, ...]) -> str:
-    """Asks about the site `course` books on, not just `course`: one login
-    there books all of its courses. Saying yes also adds `course`'s default
-    plan, listed at the end (it books only once auto-booking is turned on)."""
-    others = [c for c in all_courses if c.platform == course.platform and c != course]
-    site = SITE_NAMES[course.platform]
+def login_prompt(courses: list[CourseConfig]) -> str:
+    """The question about the login that books `courses`, naming the first
+    and counting the rest."""
+    site = PLATFORMS[courses[0].platform].display_name
+    others = len(courses) - 1
     if not others:
-        return f"{site} ({course.name})?"
-    return f"{site} ({course.name} and {len(others)} other courses)?"
+        return f"{site} ({courses[0].name})?"
+    return f"{site} ({courses[0].name} and {others} other course{'s' * (others > 1)})?"
+
+
+def login_questions(prefix: str, courses: list[CourseConfig]) -> list[Question]:
+    platform = PLATFORMS[courses[0].platform]
+    site = platform.display_name
+    if platform.signs_in_per_course:
+        name = courses[0].name
+        about = f"Your {name} account on {site}: each {site} course has its own."
+    else:
+        name = site
+        about = f"Your {site} account: it books every {site} course."
+    return [
+        Question(f"{prefix}_EMAIL", f"{name} login email", help=about),
+        Question(f"{prefix}_PASSWORD", f"{name} password", secret=True),
+    ]
 
 
 def write_env(path: Path, values: dict[str, str]) -> None:
@@ -399,26 +420,16 @@ def main(argv: list[str] | None = None) -> int:
     new |= ask_missing(BOT_QUESTIONS, known)
     new |= choose_model(known)
 
-    courses = {c.key: c for c in SEED_COURSES}
     print("\nWhich booking sites do you use?")
+    groups = logins()
     chosen = {
-        key
-        for key in DEFAULT_PLANS
-        if yes(f"  {site_prompt(courses[key], SEED_COURSES)}")
+        prefix
+        for prefix, courses in groups.items()
+        if yes(f"  {login_prompt(courses)}")
     }
-    for key in sorted(chosen):
-        prefix = ACCOUNT_ENV_PREFIXES[key]
-        site = SITE_NAMES[courses[key].platform]
-        login = [
-            Question(
-                f"{prefix}_EMAIL",
-                f"{site} login email",
-                help=f"Your {site} account: it books every {site} course.",
-            ),
-            Question(f"{prefix}_PASSWORD", f"{site} password", secret=True),
-        ]
-        new |= ask_missing(login, {**known, **new})
-    platforms = {courses[k].platform for k in chosen}
+    for prefix in (p for p in groups if p in chosen):
+        new |= ask_missing(login_questions(prefix, groups[prefix]), {**known, **new})
+    platforms = {groups[prefix][0].platform for prefix in chosen}
     if "foreup" in platforms:
         new |= ask_missing(FOREUP_CARD, {**known, **new})
     if "golfnow" in platforms:
@@ -439,12 +450,13 @@ def main(argv: list[str] | None = None) -> int:
     with sessions() as session, session.begin():
         for config in SEED_COURSES:
             upsert_course(session, config)
+        courses = {c.key: c for c in SEED_COURSES}
         plans = seed_user(session, values["TEE_TIME_USER_EMAIL"], None, courses, chosen)
         session.flush()
         names = [f"  {p.name}" for p in plans]
 
     print("Your plans (the bot books these, or any one-off day you ask for):")
-    print("\n".join(names) or "  none: no course chosen")
+    print("\n".join(names) or "  none: no site chosen")
     print(
         "\nStart the bot:\n"
         "  uv run --package tee-time-booker python -m tee_time_booker.bot\n\n"
