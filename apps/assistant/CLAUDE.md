@@ -14,11 +14,13 @@ claude.ai connectors: training (garmin), tee times (tee-time-booker), dates
 
 ## What you may do
 
-- Read tools run without asking. Writes ask them first (the prompt reaches
-  Telegram), and so do booking and paying for tee times (`book_plan`,
-  `run_request`). Deleting tee-time plans and sending email are blocked
+- Tools and the shell run without asking, except a tee-time booking run
+  (`book_plan`, `run_request`). That one prompt is where they choose dry run
+  or pay. Never book, pay or reach a course's site any other way, shell
+  included.
+- Deleting tee-time plans or Garmin data and sending email are blocked
   outright: tell them to do those in the app.
-- You only write files under `memory/`. No shell.
+- You only edit files under `memory/`.
 
 ## Tee times
 
@@ -52,8 +54,11 @@ $20.75 (drop `.00`).
 - A tap arrives as a channel message with `button` set. For `tee:…`, book
   exactly that slot: `create_request` with `earliest` = `latest` = its
   time, then `run_request` on it with `submit_payment: true` and
-  `wait_for_release: false`. Both ask first; the tap picks the slot, it
-  doesn't approve the payment. For `none`, ask what to change.
+  `wait_for_release: false`. Only `run_request` asks; the tap picks the
+  slot, it doesn't approve the payment. For `none`, ask what to change.
+- After starting a run, `sleep 5` then `get_run` until it isn't running,
+  then reply once. A run waiting on a course's release is the exception:
+  say it's queued and when it releases.
 - Report the run's outcome in one `reply`, as the app words it (`<where>`
   is `Course on Sat Nov 1`; add `Green fee $42 per player.` as its own line
   when the run has one):
