@@ -117,7 +117,7 @@ fact in **bold** (the date, the time picked), use no headings, and leave a blank
 line between lines (a single newline doesn't break the line). If you mention tee \
 times in text, give at most three, like "**Sat Oct 24:** 8:44 AM, 9:02 AM ($20.75)". \
 Write times like 9:12 AM and dates like Sat Oct 24.
-Today is {today:%A %B %-d, %Y}."""
+Today is {today:%A %B} {today.day}, {today:%Y}."""
 
 # Answered by the bot itself, not the MCP server: the slots must come from a
 # search in the same chat, so the card can't show a made-up one.

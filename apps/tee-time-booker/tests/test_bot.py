@@ -118,6 +118,19 @@ def _respond(agent, text, chat_id=7):
     return asyncio.run(agent.respond(chat_id, text))
 
 
+def test_the_system_prompt_dates_today_without_platform_only_codes():
+    # %-d is glibc/macOS only; Windows' strftime rejects it.
+    assert "%-" not in agent_module.SYSTEM
+    agent = BookingAgent(
+        AnthropicModel(FakeClaude()),
+        FakeTools(),
+        BOT_SETTINGS,
+        pays=True,
+        today=lambda: date(2026, 10, 5),
+    )
+    assert "Today is Monday October 5, 2026." in agent._system()
+
+
 def test_a_paying_call_is_held_not_run():
     claude = FakeClaude(
         (
