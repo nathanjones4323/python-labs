@@ -5,7 +5,8 @@
 
 Asks for what the bot and your courses need, writes it to `.env` (readable
 only by you), creates a local SQLite database, and loads the courses, your
-login on each booking site you use, and the default plans on those sites.
+login on each booking site you use. It makes no plans: the bot sets up a
+weekly booking only when you ask for one.
 Rerunning it is safe: values already in `.env` are kept, never asked for
 again, so it also fills in whatever a first run skipped.
 
@@ -451,12 +452,8 @@ def main(argv: list[str] | None = None) -> int:
         for config in SEED_COURSES:
             upsert_course(session, config)
         courses = {c.key: c for c in SEED_COURSES}
-        plans = seed_user(session, values["TEE_TIME_USER_EMAIL"], None, courses, chosen)
-        session.flush()
-        names = [f"  {p.name}" for p in plans]
+        seed_user(session, values["TEE_TIME_USER_EMAIL"], None, courses, chosen)
 
-    print("Your plans (the bot books these, or any one-off day you ask for):")
-    print("\n".join(names) or "  none: no site chosen")
     print(
         "\nStart the bot:\n"
         "  uv run --package tee-time-booker python -m tee_time_booker.bot\n\n"

@@ -345,7 +345,8 @@ user id, choosing the model (a local one by default: it checks the machine's
 memory, and needs [Ollama](https://ollama.com/download) installed and
 running; or a free hosted API, or Claude with an Anthropic key), and the logins (and, for foreUP, the card) for the courses you book.
 It writes them to `.env` (mode 600), creates a SQLite database next to it
-and loads the courses with a default plan for each course you chose.
+and loads the courses and your logins. It makes no plans: ask the bot for a
+weekly booking when you want one.
 Rerunning it keeps what's already in `.env` and asks only for what's missing;
 `setup --model` asks only for the model again, to switch. Whichever model you
 pick gets one test message first, so a bad key, or a free model that's
@@ -465,7 +466,7 @@ uv run --package tee-time-booker playwright install chromium
 Create `apps/tee-time-booker/.env` from `.env.example` and fill in the login
 and payment details for the site you're booking (or run the setup wizard,
 see "Run it yourself"). Then, from `apps/tee-time-booker`, migrate the
-database and seed it with the known courses plus your own accounts and plans.
+database and seed it with the known courses plus your own user and accounts.
 `.env.example` points at a SQLite file; for Postgres, start the compose one
 and point `DATABASE_URL` at it first:
 
@@ -475,8 +476,8 @@ uv run --package tee-time-booker alembic upgrade head
 uv run --package tee-time-booker python -m tee_time_booker.seed --user you@example.com
 ```
 
-The seed prints a plan id per course; put the one you want scheduled in
-`TEE_TIME_PLAN`. Then:
+The seed makes no plans. Create one when you want it (`POST /plans`, or ask
+the bot), then put its id (`--list-plans`) in `TEE_TIME_PLAN`. Then:
 
 ```bash
 # book the plan in TEE_TIME_PLAN

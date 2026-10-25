@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "python-labs",
+  "description": "Local plugins for this monorepo.",
+  "owner": { "name": "Nathan Jones" },
+  "plugins": [
+    {
+      "name": "telegram",
+      "description": "Fork of the official Telegram channel plugin (v0.0.7) with inline buttons on reply/edit_message.",
+      "category": "productivity",
+      "source": "./plugins/telegram"
+    }
+  ]
+}

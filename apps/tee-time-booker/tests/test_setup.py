@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from dotenv import dotenv_values
 from sqlalchemy import select
-from tee_time_booker import seed, setup
+from tee_time_booker import setup
 from tee_time_booker.bot import local_model
 from tee_time_booker.courses import OLIVAS_LINKS, SATICOY, SEED_COURSES, SOULE_PARK
 from tee_time_booker.db import make_session_factory
@@ -193,7 +193,7 @@ def _run_setup(tmp_path, monkeypatch, *answers):
     return dotenv_values(env), make_session_factory(database_url)
 
 
-def test_golfnow_alone_gets_one_login_and_only_golfnow_plans(tmp_path, monkeypatch):
+def test_golfnow_alone_gets_one_login_and_no_plans(tmp_path, monkeypatch):
     # No to foreUP; yes to GolfNow, its login, then its billing state and zip.
     env, sessions = _run_setup(
         tmp_path, monkeypatch, "n", "y", "gn@example.com", "pw", "CA", "93001"
@@ -206,15 +206,5 @@ def test_golfnow_alone_gets_one_login_and_only_golfnow_plans(tmp_path, monkeypat
         assert [(a.platform, a.env_prefix, a.login_email) for a in accounts] == [
             ("golfnow", "GOLFNOW", "gn@example.com")
         ]
-        plans = session.scalars(select(BookingPlan)).all()
-        assert {p.course.platform for p in plans} == {"golfnow"}
-
-
-def test_a_site_without_a_default_plan_still_gets_its_login(tmp_path, monkeypatch):
-    monkeypatch.setattr(seed, "DEFAULT_PLANS", {})
-    _, sessions = _run_setup(
-        tmp_path, monkeypatch, "n", "y", "gn@example.com", "pw", "CA", "93001"
-    )
-    with sessions() as session:
-        assert [a.platform for a in session.scalars(select(SiteAccount))] == ["golfnow"]
+        # A weekly booking is only made when the person asks for one.
         assert session.scalars(select(BookingPlan)).all() == []
