@@ -3,6 +3,7 @@ payment gate, the conversation's bookkeeping and the run messages."""
 
 import asyncio
 import json
+import re
 from concurrent.futures import Future
 from dataclasses import replace
 from datetime import date
@@ -557,6 +558,69 @@ def test_the_real_tools_are_the_allowlist_and_answer(seeded, db, tmp_path: Path)
     assert {p["name"] for p in plans} == {"soule-saturday", "saticoy-saturday"}
     # Missing its required arguments.
     assert refused.is_error
+
+
+WALL_CLOCK_FIELDS = {
+    "start",
+    "tee_time_local",
+    "earliest",
+    "latest",
+    "release_opens_at",
+}
+
+
+def _property_schemas(schema, name):
+    """Every schema declared for property `name` anywhere in `schema`."""
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            if key == "properties" and isinstance(value, dict) and name in value:
+                yield value[name]
+            yield from _property_schemas(value, name)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from _property_schemas(value, name)
+
+
+def test_wall_clock_fields_claim_no_offset_format(seeded, db, tmp_path: Path):
+    """Course-local times carry no offset, so an output schema mustn't call them
+    `time` / `date-time`: JSON Schema's formats need one, and a client that
+    checks results (Claude Code) throws the whole result away."""
+    settings = Settings(
+        database_url=None,
+        plan_id=None,
+        submit_payment=False,
+        headless=True,
+        artifacts_dir=tmp_path,
+        target_date_override=None,
+    )
+
+    async def go():
+        async with fastmcp.Client(
+            create_server(create_app(settings, sessions=db))
+        ) as client:
+            tools = await client.list_tools()
+            plans = await client.call_tool("list_plans", {})
+            return {t.name: t.output_schema for t in tools}, plans.structured_content
+
+    schemas, plans = asyncio.run(go())
+    declared = {
+        name: [
+            branch
+            for s in _property_schemas(schemas, name)
+            for branch in s.get("anyOf", [s])
+            if branch.get("type") != "null"
+        ]
+        for name in WALL_CLOCK_FIELDS
+    }
+    assert all(declared.values()), "every wall-clock field is in some tool's output"
+    for name, branches in declared.items():
+        for branch in branches:
+            assert "format" not in branch, name
+    pattern = declared["earliest"][0]["pattern"]
+    assert plans["result"]
+    for plan in plans["result"]:
+        assert re.match(pattern, plan["earliest"]) and re.match(pattern, plan["latest"])
+    assert re.match(declared["start"][0]["pattern"], "2026-11-01T07:40:00")
 
 
 FOUND = [

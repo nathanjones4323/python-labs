@@ -10,8 +10,9 @@ they say what a caller needs to decide, not what the column is.
 import uuid
 from datetime import date, datetime, time
 from decimal import Decimal
+from typing import Annotated
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, WithJsonSchema, model_validator
 
 from tee_time_booker.courses import miles_from_home
 from tee_time_booker.db import (
@@ -23,6 +24,25 @@ from tee_time_booker.db import (
     RunStatus,
 )
 from tee_time_booker.models import Preferences, SearchCriteria, TeeTime
+
+# Course-local wall-clock values carry no UTC offset, but JSON Schema's `time`
+# and `date-time` formats require one, and an MCP client that checks a tool's
+# result against its output schema (Claude Code does) drops the whole result
+# over one such value. So these are declared as patterned strings; Pydantic
+# parses and sends them exactly as before.
+LocalTime = Annotated[
+    time,
+    WithJsonSchema({"type": "string", "pattern": r"^\d{2}:\d{2}(:\d{2}(\.\d+)?)?$"}),
+]
+LocalDateTime = Annotated[
+    datetime,
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$",
+        }
+    ),
+]
 
 # --- courses ---------------------------------------------------------------
 
@@ -74,7 +94,7 @@ class CourseOut(BaseModel):
     name: str
     platform: str = Field(description="Booking site: 'foreup' or 'golfnow'")
     timezone: str
-    release_opens_at: time | None = Field(
+    release_opens_at: LocalTime | None = Field(
         description=(
             "Course-local time a new day's tee sheet opens; "
             "null for rolling availability"
@@ -136,10 +156,10 @@ class CourseOut(BaseModel):
 class WindowIn(BaseModel):
     """A time window and a group size: what a search and a plan have in common."""
 
-    earliest: time = Field(
+    earliest: LocalTime = Field(
         description="Earliest acceptable tee-off, course-local, inclusive"
     )
-    latest: time = Field(
+    latest: LocalTime = Field(
         description="Latest acceptable tee-off, course-local, inclusive"
     )
     holes: int = Field(ge=1)
@@ -264,7 +284,9 @@ class AutoBookIn(BaseModel):
 
 
 class TeeTimeOut(BaseModel):
-    start: datetime = Field(description="Tee-off, course-local wall time (no offset)")
+    start: LocalDateTime = Field(
+        description="Tee-off, course-local wall time (no offset)"
+    )
     holes: int | None
     players: int | None = Field(description="Most players this slot can seat")
     green_fee: float | None = Field(description="Per player, before fees")
@@ -326,8 +348,8 @@ class RequestOut(BaseModel):
     course: str = Field(description="Course key")
     plan_id: uuid.UUID | None
     target_date: date
-    earliest: time
-    latest: time
+    earliest: LocalTime
+    latest: LocalTime
     holes: int
     players: int
     prefer_earlier: bool
@@ -429,7 +451,9 @@ class RunOut(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     detail: str | None = Field(description="Short error message, when the run failed")
-    tee_time_local: datetime | None = Field(description="The slot held, course-local")
+    tee_time_local: LocalDateTime | None = Field(
+        description="The slot held, course-local"
+    )
     side: str | None
     green_fee: Decimal | None
     service_fee: Decimal | None
