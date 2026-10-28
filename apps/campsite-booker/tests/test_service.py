@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from campsite_booker import service
 from campsite_booker.availability import StayCriteria
 from campsite_booker.checkout import CartItem, CheckoutResult
@@ -261,3 +262,21 @@ def test_watches_waiting_on_a_release_are_found_and_cached(db, recgov):
     # Stale after six hours.
     service.waiting_on_releases(db, recgov, NOW + timedelta(hours=7), TODAY, cache)
     assert recgov.release_calls == [PINES.id, PINES.id]
+
+
+BIG_SUR = Campground(id="rc-1001-2001", name="Pfeiffer Big Sur Campground")
+
+
+def test_a_state_park_watch_alerts_but_cant_auto_hold(db, recgov):
+    with pytest.raises(ValueError, match="ReserveCalifornia"):
+        watch(db, campground=BIG_SUR, auto_hold=True)
+    w = watch(db, campground=BIG_SUR)
+    with pytest.raises(ValueError, match="ReserveCalifornia"):
+        service.set_auto_pay(db, w.id, True)
+
+    recgov.sites[BIG_SUR.id] = [site("50001", [FRI, FRI + timedelta(days=1)])]
+    alerts = check(db, recgov)
+    assert [a.watch_id for a in alerts] == [w.id]
+    stay = alerts[0].stays[0].stay
+    assert stay.url == "https://www.reservecalifornia.com/park/1001/2001"
+    assert alerts[0].auto_hold is False

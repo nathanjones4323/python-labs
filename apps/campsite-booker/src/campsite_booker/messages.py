@@ -16,7 +16,7 @@ from campsite_booker.db import (
     Watch,
     utcnow,
 )
-from campsite_booker.recgov import Stay
+from campsite_booker.recgov import Stay, is_state_park
 from campsite_booker.service import Alert, TimingSummary, Waiting
 
 # Stays listed in one alert; the rest are counted.
@@ -47,10 +47,11 @@ def site_kind(campsite_type: str) -> str:
 def stay_line(stay: Stay) -> str:
     nights = f"{stay.nights} night{'s' if stay.nights != 1 else ''}"
     loop = f", {escape(stay.loop)}" if stay.loop else ""
+    # ReserveCalifornia doesn't say how many a site holds.
+    people = f", up to {stay.max_people}" if stay.max_people else ""
     return (
-        f"Site {escape(stay.site)}{loop} ({escape(site_kind(stay.campsite_type))}, "
-        f"up to {stay.max_people}): {day(stay.check_in)} → {day(stay.check_out)}, "
-        f"{nights}"
+        f"Site {escape(stay.site)}{loop} ({escape(site_kind(stay.campsite_type))}"
+        f"{people}): {day(stay.check_in)} → {day(stay.check_out)}, {nights}"
     )
 
 
@@ -71,7 +72,9 @@ def alert(item: Alert, held: Collection[int] = ()) -> str:
         lines.append(f"…and {count - ALERT_LIST_MAX} more")
     if item.found_by == BY_EMAIL:
         lines += ["", "📧 Found checking right after recreation.gov's alert email."]
-    if any(s.opening_id not in held for s in item.stays):
+    if item.stays and is_state_park(item.stays[0].stay.campground_id):
+        lines += ["", "Open one to book it on ReserveCalifornia."]
+    elif any(s.opening_id not in held for s in item.stays):
         lines += [
             "",
             "Open one to add it to your cart on recreation.gov, or tap 🤖 Hold "

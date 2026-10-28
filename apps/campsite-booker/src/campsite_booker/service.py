@@ -1,10 +1,12 @@
 """The app's operations, shared by the watcher, the MCP tools and the CLI.
 
-Searching (`find_open`) needs only recreation.gov's public API. Watches are
+Searching (`find_open`) needs only the sites' public APIs (recreation.gov's
+and ReserveCalifornia's, through `campgrounds.Campgrounds`). Watches are
 rows; `check_watches` fetches each watched campground once, records what's
 newly free as `Opening`s and returns them, and the watcher sends them on.
 Holding goes through `booker.hold` (a real browser, signed in) and is
-recorded with `record_hold`.
+recorded with `record_hold`; it's recreation.gov only, so a state park
+watch alerts but can't auto-hold.
 """
 
 from collections import defaultdict
@@ -22,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from campsite_booker.alerts import parse_alert
 from campsite_booker.availability import StayCriteria, find_stays
+from campsite_booker.campgrounds import Campgrounds
 from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.db import (
     BY_EMAIL,
@@ -43,7 +46,13 @@ from campsite_booker.db import (
     Watch,
     utcnow,
 )
-from campsite_booker.recgov import Campground, Campsite, RecGov, RecGovError, Stay
+from campsite_booker.recgov import (
+    Campground,
+    Campsite,
+    RecGovError,
+    Stay,
+    is_state_park,
+)
 from campsite_booker.releases import Release, parse_releases, waiting_on
 
 # recreation.gov's cart keeps a site for 15 minutes after "Add to Cart".
@@ -54,6 +63,12 @@ SEARCH_WORKERS = 4
 
 class NotFound(LookupError):
     pass
+
+
+NO_STATE_PARK_HOLDS = (
+    "State park (ReserveCalifornia) sites can't be held from here: the watch "
+    "alerts with a link to book it on reservecalifornia.com"
+)
 
 
 # --- searching ------------------------------------------------------------------
@@ -68,7 +83,7 @@ class CampgroundStays:
 
 
 def find_open(
-    recgov: RecGov,
+    recgov: Campgrounds,
     campgrounds: Iterable[Campground],
     criteria: StayCriteria,
     today: date,
@@ -108,6 +123,8 @@ def create_watch(
     name: str | None = None,
     auto_hold: bool = False,
 ) -> Watch:
+    if auto_hold and is_state_park(campground.id):
+        raise ValueError(NO_STATE_PARK_HOLDS)
     with sessions.begin() as session:
         watch = Watch(
             name=name or default_name(campground, criteria),
@@ -214,7 +231,7 @@ class Check:
 
 def check_watches(
     sessions: sessionmaker[Session],
-    recgov: RecGov,
+    recgov: Campgrounds,
     now: datetime,
     today: date,
 ) -> list[Alert]:
@@ -231,7 +248,7 @@ def check_watches(
 
 def check_campgrounds(
     sessions: sessionmaker[Session],
-    recgov: RecGov,
+    recgov: Campgrounds,
     now: datetime,
     today: date,
     only: Collection[str] | None = None,
@@ -422,7 +439,11 @@ def hold_target(sessions: sessionmaker[Session], opening_id: int) -> HoldTarget:
 
 
 def stay_at(
-    recgov: RecGov, campground_id: str, campsite_id: str, check_in: date, nights: int
+    recgov: Campgrounds,
+    campground_id: str,
+    campsite_id: str,
+    check_in: date,
+    nights: int,
 ) -> Stay:
     """The `Stay` for one site and dates, with the site's details filled in
     from recreation.gov. Doesn't check it's free: the hold finds that out."""
@@ -603,6 +624,8 @@ def set_auto_pay(sessions: sessionmaker[Session], watch_id: int, on: bool) -> Wa
         watch = session.get(Watch, watch_id)
         if watch is None:
             raise NotFound(f"No watch {watch_id}")
+        if on and is_state_park(watch.campground_id):
+            raise ValueError(NO_STATE_PARK_HOLDS)
         watch.auto_pay = on
         if on:
             watch.auto_hold = True
@@ -627,7 +650,7 @@ class Waiting:
 
 def waiting_on_releases(
     sessions: sessionmaker[Session],
-    recgov: RecGov,
+    recgov: Campgrounds,
     now: datetime,
     today: date,
     cache: dict[str, tuple[datetime, Release]],
@@ -711,7 +734,7 @@ class Mailbox(Protocol):
 def record_alert_emails(
     sessions: sessionmaker[Session],
     mailbox: Mailbox,
-    recgov: RecGov,
+    recgov: Campgrounds,
     tz: ZoneInfo,
     now: datetime,
 ) -> list[AlertEmail]:

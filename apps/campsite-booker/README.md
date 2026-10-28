@@ -1,6 +1,7 @@
 # Campsite Booker
 
-Finds open campsites on recreation.gov and helps you grab them. Use it to
+Finds open campsites on recreation.gov and California's state parks
+(ReserveCalifornia) and helps you grab them. Use it to
 book a site that's open now, or to watch a full campground for
 cancellations: it checks every minute and messages you on Telegram the moment
 a site opens up. Each site in an alert has an **Open** link (you add it to
@@ -25,15 +26,18 @@ the release that puts them on sale (Upper Pines: the 15th of the month, 7 AM
 Pacific). From just before then it checks every 2 seconds, since popular
 parks sell out in under a minute.
 
-Only recreation.gov campgrounds are covered: national parks and forests,
-Army Corps lakes and BLM. State parks (ReserveCalifornia) are a different
-site.
+recreation.gov covers national parks and forests, Army Corps lakes and
+BLM. California's state parks and beaches (Pfeiffer Big Sur, Limekiln,
+Doheny…) book on ReserveCalifornia, which is searched and watched too, but
+not held or paid for: see [State parks](#state-parks). Other states' parks
+aren't covered.
 
 ## How it works
 
 ```
-recreation.gov JSON API ──every 60 s──▶ watcher ──▶ SQLite (watches, openings, holds)
-                                           │
+recreation.gov JSON API ──┐
+                          ├──every 60 s──▶ watcher ──▶ SQLite (watches, openings, holds)
+ReserveCalifornia API ────┘                  │
               Telegram ◀── alert + Hold ───┤
                                            └──▶ Playwright: Add to Cart (signed in)
 ```
@@ -41,6 +45,8 @@ recreation.gov JSON API ──every 60 s──▶ watcher ──▶ SQLite (watc
 | Module | Holds |
 | --- | --- |
 | `recgov.py` | recreation.gov's public JSON API: search, campground, month availability (no login) |
+| `reservecalifornia.py` | ReserveCalifornia's (state parks): the park and facility lists, searched here, and each site's nights |
+| `campgrounds.py` | `Campgrounds`: both sites behind one client, by campground id |
 | `availability.py` | `StayCriteria` and `find_stays`: which sites are free for a whole stay |
 | `service.py` | The operations: search what's open, watches, checking watches, recording holds |
 | `releases.py` | Release schedules: which watches wait on the next release, and whether it's out |
@@ -157,6 +163,47 @@ A watch only pays with `auto_pay` on (`set_watch_auto_pay`, or `watch
 --auto-pay`), **and** with `CAMPSITE_SUBMIT_PAYMENT=true` in `.env`. Either
 off means no payment. The assistant asks before turning `auto_pay` on, as it
 does before any hold or payment.
+
+## State parks
+
+ReserveCalifornia (California State Parks) is read the same way as
+recreation.gov: the JSON its own pages load, no login. It's UseDirect's
+system, at `calirdr.usedirect.com/rdr/rdr/`:
+
+- `fd/places` and `fd/facilities`: every park, and every facility (a
+  campground, or a loop of one) in it. There's no search worth the name, so
+  both lists are fetched once (kept 12 hours) and searched here. "big sur"
+  finds Pfeiffer Big Sur by name, then parks whose descriptions say "Big
+  Sur"; `--near` finds them by distance. Facilities named day use, parking,
+  tour or picnic are left out.
+- `POST search/grid`: each site ("unit") at a facility, with a "slice" per
+  night, asked for 30 nights at a time. A night is `Available` when it's
+  free, not locked in someone's cart, not walk-in only, and booked online.
+  A slice's `MinStay` (2 on many weekends) is kept, and a shorter stay
+  arriving that night doesn't match.
+
+A state park's campground id is `rc-{park}-{facility}`, so it can't be
+confused with a recreation.gov id and its link
+(`reservecalifornia.com/park/{park}/{facility}`) comes from the id. Every
+search asks both sites (state parks first, then recreation.gov), and one
+being down leaves the other's results.
+
+Watches work the same, but alerts only have **Open** links (the
+campground's page on ReserveCalifornia; it has none per site). Nothing
+holds or pays there: `auto_hold`, `auto_pay` and `hold` are refused for an
+`rc-` id. ReserveCalifornia opens each day six months ahead at 8 AM
+Pacific; there's no release schedule to read, so a state park watch is
+never armed and is just checked every minute.
+
+ReserveCalifornia doesn't say how many people a site holds, so
+`--people` doesn't filter its sites, and site types come from the site's
+name ("Tent Campsite #023" is `TENT CAMPSITE`).
+
+**Not run against the live site yet.** This was written from the field
+names ReserveCalifornia's own script uses, and its API host wasn't
+reachable from where it was built. The first `campgrounds "big sur"` and
+`open` against it will tell: a field it reads differently, a site's
+occupancy, or the page link's form.
 
 ## Release days
 
@@ -278,8 +325,9 @@ own `.env` whichever directory it starts in.
 ### From the assistant
 
 `campsite-booker-mcp` is registered in `apps/assistant/.mcp.json`. Ask
-"anything open at Upper Pines Nov 6–8?" or "watch Scorpion for any Friday in
-November, two nights, hold it if one opens". A `challenged` hold comes back with the site's
+"anything open at Upper Pines Nov 6–8?", "any state park campsites at Big
+Sur next weekend?" or "watch Scorpion for any Friday in November, two
+nights, hold it if one opens". A `challenged` hold comes back with the site's
 link: add it yourself, then ask the assistant to pay for it. The tools are
 `search_campgrounds`, `find_open_campsites`, `create_watch`, `alert_timing`,
 `list_watches`, `stop_watch`, `resume_watch`, `hold_campsite` (with `pay`
@@ -293,6 +341,7 @@ assistant is checked by the watcher, which reads the same database.
 ```bash
 campsite-booker-cli campgrounds "upper pines"
 campsite-booker-cli campgrounds --near 34.28,-119.29 --radius 40
+campsite-booker-cli campgrounds "big sur"         # state parks too (rc- ids)
 campsite-booker-cli open 232447 --arrive 2026-11-06 --nights 2
 campsite-booker-cli open 232498 --arrive 2026-11-01 --until 2026-11-30 \
     --nights 2 --days fri,sat --people 4 --type tent
@@ -320,7 +369,9 @@ uv run --package campsite-booker alembic revision --autogenerate -m "what change
 ```
 
 Tests use no network. recreation.gov's API responses are real ones trimmed
-into `tests/fixtures` (Santa Cruz Island Scorpion, November 2026), and the
+into `tests/fixtures` (Santa Cruz Island Scorpion, November 2026).
+ReserveCalifornia's (`rc_*`) are made up in the shape its script reads,
+with made-up ids: replace them with real ones once it's been run. The
 database is a throwaway SQLite file migrated with Alembic. Telegram is a
 fake. `test_pages.py` drives a headless Chromium over recreation.gov's own
 pages, trimmed into `tests/fixtures/pages` (the campsite calendar, order

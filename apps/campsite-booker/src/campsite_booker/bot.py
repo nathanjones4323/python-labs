@@ -1,10 +1,11 @@
 """`campsite-booker`: the always-on watcher, with a Telegram bot to talk to.
 
 Long polling, so nothing listens on a port. Every `CAMPSITE_POLL_SECONDS` it
-checks every active watch against recreation.gov (`service.check_watches`)
-and sends what's newly open to every allowed user, each stay with an
-**Open** link (you add it to your cart on recreation.gov) and a **Hold**
-button (the bot tries). A watch with `auto_hold` gets its first opening
+checks every active watch against recreation.gov or ReserveCalifornia
+(`service.check_watches`) and sends what's newly open to every allowed user,
+each stay with an **Open** link (you add it to your cart on recreation.gov)
+and a **Hold** button (the bot tries). A state park's stays have only the
+Open link, to ReserveCalifornia. A watch with `auto_hold` gets its first opening
 tried straight away, before the alert goes out: a cancellation is usually
 gone within minutes. With `auto_pay` too it goes on to pay with the card
 saved on the account (a dry run unless CAMPSITE_SUBMIT_PAYMENT).
@@ -52,6 +53,7 @@ from telegram.ext import (
 )
 
 from campsite_booker import booker, messages, service
+from campsite_booker.campgrounds import Campgrounds
 from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.config import BotSettings, GmailSettings, Settings
 from campsite_booker.db import (
@@ -72,9 +74,9 @@ from campsite_booker.gmail import AuthenticationRequired, Gmail
 from campsite_booker.recgov import (
     CART_URL,
     RESERVATIONS_URL,
-    RecGov,
     campground_url,
     campsite_url,
+    is_state_park,
 )
 from campsite_booker.releases import Release, released
 
@@ -84,8 +86,9 @@ SEND_BACKOFF_MAX_S = 30
 HOLD_BUTTONS_MAX = 6
 
 HELP = (
-    "I watch recreation.gov for campsites you want and tell you the moment "
-    "one opens up, with a link to book it and a button to have me try.\n\n"
+    "I watch recreation.gov and ReserveCalifornia (state parks) for campsites "
+    "you want and tell you the moment one opens up, with a link to book it "
+    "and, on recreation.gov, a button to have me try.\n\n"
     "Set up watches by asking the assistant (or campsite-booker-cli).\n\n"
     "/watches: what I'm watching, with Stop buttons\n"
     "/holds: recent holds\n"
@@ -110,7 +113,7 @@ class CampsiteBot:
     def __init__(
         self,
         sessions: sessionmaker[Session],
-        recgov: RecGov,
+        recgov: Campgrounds,
         settings: Settings,
         bot_settings: BotSettings,
         hold: HoldFn = booker.hold,
@@ -625,7 +628,7 @@ class CampsiteBot:
         if error == self._reported_error:
             return
         try:
-            await self._broadcast(bot, f"⚠️ Couldn't check recreation.gov: {error}")
+            await self._broadcast(bot, f"⚠️ Couldn't check for campsites: {error}")
         except Exception:
             logger.exception("Reporting the problem failed")
             return
@@ -640,17 +643,22 @@ def _alert_buttons(
     alert: service.Alert, held: Collection[int] = ()
 ) -> InlineKeyboardMarkup:
     """A row per stay not in the cart yet: Open it on recreation.gov (you add
-    it, which gets past a human check), or Hold (the bot tries)."""
+    it, which gets past a human check), or Hold (the bot tries). A state
+    park's stays only open, on ReserveCalifornia."""
     rows = [
         [
-            InlineKeyboardButton(
-                messages.open_button_label(s.stay), url=campsite_url(s.stay.campsite_id)
-            ),
-            InlineKeyboardButton(
-                messages.hold_button_label(s.stay),
-                callback_data=f"hold:{s.opening_id}",
-            ),
+            InlineKeyboardButton(messages.open_button_label(s.stay), url=s.stay.url),
         ]
+        + (
+            [
+                InlineKeyboardButton(
+                    messages.hold_button_label(s.stay),
+                    callback_data=f"hold:{s.opening_id}",
+                )
+            ]
+            if s.stay.holdable
+            else []
+        )
         for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
     ]
     last = [
@@ -658,10 +666,15 @@ def _alert_buttons(
     ]
     if len(alert.stays) > HOLD_BUTTONS_MAX or not rows:
         first = alert.stays[0].stay
+        site = (
+            "ReserveCalifornia"
+            if is_state_park(first.campground_id)
+            else "recreation.gov"
+        )
         last.insert(
             0,
             InlineKeyboardButton(
-                "Open on recreation.gov", url=campground_url(first.campground_id)
+                f"Open on {site}", url=campground_url(first.campground_id)
             ),
         )
     rows.append(last)
@@ -799,7 +812,7 @@ def build_application() -> Application:
         mailbox = lambda: Gmail(gmail_settings)  # noqa: E731
     bot = CampsiteBot(
         make_session_factory(settings.database_url),
-        RecGov(),
+        Campgrounds(),
         settings,
         bot_settings,
         mailbox=mailbox,

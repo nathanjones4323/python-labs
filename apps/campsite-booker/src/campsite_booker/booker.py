@@ -307,6 +307,12 @@ def hold(
     go on to pay for it (a dry run unless `settings.submit_payment`). Never
     raises for the site's reasons: a `LoginRequired` is the one error that
     escapes, since only you can fix it."""
+    if not stay.holdable:
+        return HoldResult(
+            FAILED,
+            "State park sites can't be held from here: book it on ReserveCalifornia",
+            stay.url,
+        )
     with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=settings.headless)
         context = new_context(browser, settings.session_file)

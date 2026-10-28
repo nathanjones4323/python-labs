@@ -1,0 +1,29 @@
+[
+ {
+  "PlaceId": 1001,
+  "Name": "Pfeiffer Big Sur SP",
+  "Latitude": 36.2505,
+  "Longitude": -121.7835,
+  "Description": "<p>Redwoods along the Big Sur River.</p>",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 1002,
+  "Name": "Limekiln SP",
+  "Latitude": 35.999,
+  "Longitude": -121.519,
+  "Description": "<p>Camp among redwoods on the <b>Big Sur</b> coast.</p>",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 1003,
+  "Name": "Doheny SB",
+  "Latitude": 33.461,
+  "Longitude": -117.687,
+  "Description": "A beach campground in Dana Point.",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ }
+]

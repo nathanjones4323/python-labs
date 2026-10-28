@@ -2,11 +2,12 @@
 
     campsite-booker-mcp          # stdio
 
-Searching and reading watches touch only recreation.gov's public API and the
-local database. `hold_campsite` drives a signed-in browser and puts a site in
-the account's cart: give it a permission prompt in the client. Watches are
-checked by the watcher (`campsite-booker`), not here; a watch made here is
-picked up on its next check as long as it runs against the same database.
+Searching and reading watches touch only recreation.gov's and
+ReserveCalifornia's public APIs and the local database. `hold_campsite`
+drives a signed-in browser and puts a site in the account's cart: give it
+a permission prompt in the client. Watches are checked by the watcher
+(`campsite-booker`), not here; a watch made here is picked up on its next
+check as long as it runs against the same database.
 """
 
 import asyncio
@@ -20,6 +21,7 @@ from pydantic import Field
 
 from campsite_booker import booker, service
 from campsite_booker.availability import StayCriteria, parse_weekdays
+from campsite_booker.campgrounds import Campgrounds
 from campsite_booker.config import Settings
 from campsite_booker.db import (
     HELD,
@@ -31,14 +33,27 @@ from campsite_booker.db import (
     utcnow,
 )
 from campsite_booker.messages import WEEKDAYS
-from campsite_booker.recgov import CART_URL, Campground, RecGov, RecGovError, Stay
+from campsite_booker.recgov import (
+    CART_URL,
+    Campground,
+    RecGovError,
+    Stay,
+    is_state_park,
+)
 from campsite_booker.releases import parse_releases, waiting_on
 
 INSTRUCTIONS = """
 Campsites on recreation.gov (federal campgrounds: national parks and forests,
-Army Corps lakes, BLM). Not state parks: those book on ReserveCalifornia etc.
+Army Corps lakes, BLM) and ReserveCalifornia (California state parks and
+beaches, e.g. Pfeiffer Big Sur). Other states' parks aren't covered.
 
-- `search_campgrounds` finds campground ids by name or near a point.
+- `search_campgrounds` finds campground ids by name or near a point, on
+  both sites. State park ids start with `rc-` (`source: reservecalifornia`).
+- State parks can be searched and watched, and alerts link to
+  ReserveCalifornia to book, but nothing here holds or pays for them:
+  `auto_hold`, `hold_campsite` and `set_watch_auto_pay` are recreation.gov
+  only. ReserveCalifornia opens each day six months ahead at 8 AM Pacific;
+  there's no release to arm for.
 - `find_open_campsites` says what's bookable now for some dates.
 - `create_watch` alerts on Telegram when a site opens up (cancellations),
   and with `auto_hold` puts the first one straight in the cart.
@@ -114,6 +129,7 @@ def campground_dict(c: Campground) -> dict[str, Any]:
             None if c.price_min is None else {"min": c.price_min, "max": c.price_max}
         ),
         "url": c.url,
+        "source": "reservecalifornia" if is_state_park(c.id) else "recreation.gov",
     }
 
 
@@ -123,7 +139,7 @@ def stay_dict(s: Stay) -> dict[str, Any]:
         "site": s.site,
         "loop": s.loop,
         "type": s.campsite_type,
-        "max_people": s.max_people,
+        "max_people": s.max_people or None,
         "check_in": s.check_in.isoformat(),
         "check_out": s.check_out.isoformat(),
         "nights": s.nights,
@@ -181,7 +197,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
     settings = settings or Settings.from_env()
     migrate(settings.database_url)
     sessions = make_session_factory(settings.database_url)
-    recgov = RecGov()
+    recgov = Campgrounds()
     mcp = FastMCP(name="campsite-booker", instructions=INSTRUCTIONS)
 
     def today() -> date:
@@ -203,8 +219,9 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         radius_miles: Annotated[float, Field(gt=0, le=300)] = 50,
         limit: Annotated[int, Field(ge=1, le=50)] = 20,
     ) -> list[dict[str, Any]]:
-        """Find recreation.gov campgrounds by text, or near a point (nearest
-        first). Returns ids for the other tools."""
+        """Find campgrounds on recreation.gov and ReserveCalifornia (state
+        parks) by text, or near a point (nearest first). Returns ids for the
+        other tools."""
         if latitude is not None and longitude is not None:
             found = await run(
                 recgov.search_near, latitude, longitude, radius_miles, limit
@@ -299,7 +316,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             bool,
             Field(
                 description="Put the first opening straight in the cart (once), "
-                "rather than only alerting"
+                "rather than only alerting; recreation.gov only"
             ),
         ] = False,
         name: str | None = None,
@@ -328,6 +345,8 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             auto_hold=auto_hold,
         )
         out = watch_dict(watch)
+        if is_state_park(campground_id):
+            return out  # no release schedule: checked as usual
         try:
             release = parse_releases(
                 await run(recgov.releases, campground_id), utcnow()
@@ -390,7 +409,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         payment is enabled: see `checkout_status`). Takes up to a minute or
         two (a real browser). A site and dates already in the cart (or paid
         for) aren't held again: that hold comes back instead. `challenged`
-        means recreation.gov wanted a human check, so it isn't in the cart."""
+        means recreation.gov wanted a human check, so it isn't in the cart.
+        recreation.gov only: a state park is booked on ReserveCalifornia."""
+        if is_state_park(campground_id):
+            raise ToolError(service.NO_STATE_PARK_HOLDS)
         campground = await run(recgov.campground, campground_id)
         stay = await run(
             service.stay_at, recgov, campground_id, campsite_id, check_in, nights
