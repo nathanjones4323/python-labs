@@ -47,6 +47,10 @@ Army Corps lakes, BLM). Not state parks: those book on ReserveCalifornia etc.
   `pay_hold` pays for an earlier hold. Both are dry runs (stop at Review and
   Confirm, nothing paid) unless the operator turned payment on; the result
   says which.
+- recreation.gov may answer Add to Cart with a human check (reCAPTCHA),
+  which nothing here answers: the hold comes back `challenged`. Give the
+  person the site's link to add it to their cart themselves; once they say
+  it's there, `pay_hold` can pay for it (it checks the cart has it).
 - `set_watch_auto_pay` makes a watch pay for its automatic hold too.
 - A watch for dates not on sale yet is armed for the release that opens
   them: `create_watch` says when (`on_sale_at`), and the watcher polls every
@@ -385,7 +389,8 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         recreation.gov (`pay_at`), or with `pay` it pays now (a dry run unless
         payment is enabled: see `checkout_status`). Takes up to a minute or
         two (a real browser). A site and dates already in the cart (or paid
-        for) aren't held again: that hold comes back instead."""
+        for) aren't held again: that hold comes back instead. `challenged`
+        means recreation.gov wanted a human check, so it isn't in the cart."""
         campground = await run(recgov.campground, campground_id)
         stay = await run(
             service.stay_at, recgov, campground_id, campsite_id, check_in, nights
@@ -422,7 +427,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
     @mcp.tool
     async def pay_hold(hold_id: int) -> dict[str, Any]:
         """Pay for an earlier hold that's still in the cart, with the card
-        saved on the account (a dry run unless payment is enabled)."""
+        saved on the account (a dry run unless payment is enabled). A
+        `challenged` hold (recreation.gov wanted a human check) can be paid
+        once the user has added the site on recreation.gov themselves; it
+        stops if the cart doesn't have it."""
         hold = await run(service.get_hold, sessions, hold_id)
         if hold.checkout_status == PAID:
             return hold_dict(hold)
@@ -434,11 +442,18 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         )
         try:
             result, _ = await asyncio.to_thread(
-                booker.pay, settings, hold.page_url, group_size, f"hold-{hold_id}"
+                booker.pay,
+                settings,
+                hold.page_url,
+                group_size,
+                f"hold-{hold_id}",
+                service.cart_item(hold),
             )
         except booker.LoginRequired as e:
             raise ToolError(f"LoginRequired: {e}") from e
-        return hold_dict(await run(service.record_checkout, sessions, hold_id, result))
+        return hold_dict(
+            await run(service.record_checkout, sessions, hold_id, result, utcnow())
+        )
 
     @mcp.tool
     async def alert_timing(

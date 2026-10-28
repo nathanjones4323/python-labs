@@ -31,6 +31,10 @@ FAILED = "failed"
 # The click went through but neither the cart nor an error showed up: look
 # at the cart on recreation.gov.
 UNKNOWN = "unknown"
+# recreation.gov asked for a human check (reCAPTCHA) after Add to Cart, so it
+# isn't in the cart: you add it on recreation.gov, then it can be paid from
+# the cart.
+CHALLENGED = "challenged"
 
 # Hold.checkout_status (FAILED and UNKNOWN as above)
 PAID = "paid"

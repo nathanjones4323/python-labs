@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- recreation.gov's campsite page (Upper Pines site 156, Oct 28 2026),
+     trimmed to the calendar, the booking bar and the human-check modal.
+     The labels and ids are the live page's; the script stands in for its
+     React: picking relabels the days around the pick, dates picked earlier
+     come back from the saved session, and Add to Cart either goes to the
+     order details or asks for a human check (?challenge). -->
+<html>
+<head><title>Site: 156, Loop: Upper Pines</title></head>
+<body>
+<header><button aria-label="User: Pat C.">Pat C.</button></header>
+<div id="calendar">
+  <button aria-label="Previous" class="next-prev-button">‹</button>
+  <span>October 2026</span><span>November 2026</span>
+  <button aria-label="Next" class="next-prev-button disabled" disabled>›</button>
+  <!-- October's grid ends with November days as unlabelled filler. -->
+  <div role="button" aria-disabled="true" aria-label="Saturday, October 31, 2026 - Unavailable">31</div>
+  <div role="button" aria-disabled="true" aria-label="Sunday, November 1, 2026">1</div>
+  <div role="button" aria-label="Sunday, November 1, 2026 - Available">1</div>
+  <div role="button" aria-disabled="true" aria-label="Saturday, November 7, 2026 - Current Reservation">7</div>
+  <div role="button" data-day="8" aria-label="Sunday, November 8, 2026 - Available">8</div>
+  <div role="button" data-day="9" aria-label="Monday, November 9, 2026 - Available">9</div>
+  <div role="button" data-day="18" aria-label="Wednesday, November 18, 2026 - Available">18</div>
+</div>
+<div id="bar">
+  <span id="chosen"></span>
+  <button type="button" id="clear" hidden>Clear Dates</button>
+  <button type="button" id="add">Add to Cart</button>
+</div>
+<div role="dialog" aria-modal="true" aria-labelledby="modal-heading" id="check" hidden>
+  <h2 id="modal-heading">We need to verify that you're a human</h2>
+  <p>Please complete the challenge below to continue booking.</p>
+  <iframe title="reCAPTCHA"></iframe>
+  <button type="button" disabled>Continue Booking</button>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const cells = [...document.querySelectorAll("[data-day]")];
+  const base = Object.fromEntries(cells.map((c) => [c.dataset.day, c.getAttribute("aria-label")]));
+  const date = (d) => base[d].split(" - ")[0];
+  let start = null, end = null;
+  function render() {
+    cells.forEach((c) => c.setAttribute("aria-label", base[c.dataset.day]));
+    if (start) {
+      const s = cells.find((c) => c.dataset.day === start);
+      s.setAttribute("aria-label", `${date(start)} selected, First available date - Available`);
+      cells.filter((c) => +c.dataset.day === +start + 1).forEach((c) =>
+        c.setAttribute("aria-label", `${date(c.dataset.day)}, Last available date - Checkout`));
+    }
+    const mmdd = (d) => `11/${String(d).padStart(2, "0")}/2026`;
+    document.getElementById("chosen").textContent =
+      start && end ? `${mmdd(start)} - ${mmdd(end)}` : "";
+    document.getElementById("clear").hidden = !start;
+  }
+  cells.forEach((c) => c.addEventListener("click", () => {
+    if (!start || end) { start = c.dataset.day; end = null; } else { end = c.dataset.day; }
+    render();
+  }));
+  window.cleared = 0;
+  document.getElementById("clear").addEventListener("click", () => {
+    window.cleared += 1; start = end = null; render();
+  });
+  document.getElementById("add").addEventListener("click", () => {
+    if (params.has("challenge")) document.getElementById("check").hidden = false;
+    else location.href = "/camping/reservations/orderdetails?id=1";
+  });
+  // Dates picked on an earlier visit, from the saved session.
+  if (params.has("remembered")) { start = "8"; end = "9"; render(); }
+</script>
+</body>
+</html>

@@ -2,11 +2,17 @@
 
 Long polling, so nothing listens on a port. Every `CAMPSITE_POLL_SECONDS` it
 checks every active watch against recreation.gov (`service.check_watches`)
-and sends what's newly open to every allowed user, each stay with a **Hold**
-button that puts it in your cart. A watch with `auto_hold` gets its first
-opening held straight away, before the alert goes out: a cancellation is
-usually gone within minutes. With `auto_pay` too it goes on to pay with the
-card saved on the account (a dry run unless CAMPSITE_SUBMIT_PAYMENT).
+and sends what's newly open to every allowed user, each stay with an
+**Open** link (you add it to your cart on recreation.gov) and a **Hold**
+button (the bot tries). A watch with `auto_hold` gets its first opening
+tried straight away, before the alert goes out: a cancellation is usually
+gone within minutes. With `auto_pay` too it goes on to pay with the card
+saved on the account (a dry run unless CAMPSITE_SUBMIT_PAYMENT).
+
+recreation.gov can answer Add to Cart with a human check (reCAPTCHA). The
+bot never tries to answer it: the hold comes back `challenged`, with a link
+to add the site yourself and an "It's in my cart" button that pays for it
+from the cart (after checking the cart has it).
 
 A watch whose dates aren't on sale yet is armed for the release that opens
 them (`releases.py`): you're told when, the sign-in is checked ten minutes
@@ -46,12 +52,13 @@ from telegram.ext import (
 )
 
 from campsite_booker import booker, messages, service
-from campsite_booker.checkout import CheckoutResult
+from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.config import BotSettings, GmailSettings, Settings
 from campsite_booker.db import (
     BOOKED,
     BY_EMAIL,
     BY_RELEASE,
+    CHALLENGED,
     HELD,
     PAID,
     STOPPED,
@@ -78,7 +85,7 @@ HOLD_BUTTONS_MAX = 6
 
 HELP = (
     "I watch recreation.gov for campsites you want and tell you the moment "
-    "one opens up, with a button to put it in your cart.\n\n"
+    "one opens up, with a link to book it and a button to have me try.\n\n"
     "Set up watches by asking the assistant (or campsite-booker-cli).\n\n"
     "/watches: what I'm watching, with Stop buttons\n"
     "/holds: recent holds\n"
@@ -88,7 +95,9 @@ HELP = (
 )
 
 HoldFn = Callable[[Settings, Any, int | None], booker.HoldResult]
-PayFn = Callable[[Settings, str | None, int, str], tuple[CheckoutResult, Any]]
+PayFn = Callable[
+    [Settings, str | None, int, str, CartItem | None], tuple[CheckoutResult, Any]
+]
 # The sign-in is checked this long before a release, so there's time to fix it.
 RELEASE_SESSION_CHECK = timedelta(minutes=10)
 # Release bursts start this long before the release (clocks differ)...
@@ -367,12 +376,13 @@ class CampsiteBot:
                     record.page_url,
                     group_size,
                     f"hold-{hold_id}",
+                    service.cart_item(record),
                 )
             except booker.LoginRequired as e:
                 await self._broadcast(bot, messages.login_needed(str(e)))
                 return
         record = await asyncio.to_thread(
-            service.record_checkout, self.sessions, hold_id, result
+            service.record_checkout, self.sessions, hold_id, result, self.clock()
         )
         await self._broadcast(
             bot,
@@ -629,27 +639,32 @@ class CampsiteBot:
 def _alert_buttons(
     alert: service.Alert, held: Collection[int] = ()
 ) -> InlineKeyboardMarkup:
-    holds = [
-        InlineKeyboardButton(
-            messages.hold_button_label(s.stay), callback_data=f"hold:{s.opening_id}"
-        )
-        for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
-    ]
-    rows = [holds[i : i + 2] for i in range(0, len(holds), 2)]
-    first = alert.stays[0].stay
-    rows.append(
+    """A row per stay not in the cart yet: Open it on recreation.gov (you add
+    it, which gets past a human check), or Hold (the bot tries)."""
+    rows = [
         [
             InlineKeyboardButton(
-                "Open on recreation.gov",
-                url=campsite_url(first.campsite_id)
-                if len(alert.stays) == 1
-                else campground_url(first.campground_id),
+                messages.open_button_label(s.stay), url=campsite_url(s.stay.campsite_id)
             ),
             InlineKeyboardButton(
-                "Stop watching", callback_data=f"stop:{alert.watch_id}"
+                messages.hold_button_label(s.stay),
+                callback_data=f"hold:{s.opening_id}",
             ),
         ]
-    )
+        for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
+    ]
+    last = [
+        InlineKeyboardButton("Stop watching", callback_data=f"stop:{alert.watch_id}")
+    ]
+    if len(alert.stays) > HOLD_BUTTONS_MAX or not rows:
+        first = alert.stays[0].stay
+        last.insert(
+            0,
+            InlineKeyboardButton(
+                "Open on recreation.gov", url=campground_url(first.campground_id)
+            ),
+        )
+    rows.append(last)
     return InlineKeyboardMarkup(rows)
 
 
@@ -673,6 +688,21 @@ def _hold_buttons(
         rows = [
             [InlineKeyboardButton(label, callback_data=f"pay:{record.id}")],
             [InlineKeyboardButton("Pay on recreation.gov", url=CART_URL)],
+        ]
+    elif record.status == CHALLENGED:
+        # You add it on recreation.gov; paying checks the cart has it.
+        label = (
+            "💳 It's in my cart: pay"
+            if settings.submit_payment
+            else "💳 It's in my cart: pay (dry run)"
+        )
+        rows = [
+            [
+                InlineKeyboardButton(
+                    "Open the site", url=campsite_url(record.campsite_id)
+                )
+            ],
+            [InlineKeyboardButton(label, callback_data=f"pay:{record.id}")],
         ]
     else:
         rows = [

@@ -222,9 +222,13 @@ def main(argv: list[str] | None = None) -> None:
                 parser.exit(1, f"{refusal}\n")
             group_size = service.hold_group_size(sessions, hold, settings.group_size)
             checkout, screenshot = booker.pay(
-                settings, hold.page_url, group_size, f"hold-{hold.id}"
+                settings,
+                hold.page_url,
+                group_size,
+                f"hold-{hold.id}",
+                service.cart_item(hold),
             )
-            service.record_checkout(sessions, hold.id, checkout)
+            service.record_checkout(sessions, hold.id, checkout, utcnow())
             print(f"Checkout {checkout.status}: {checkout.detail}")
             if checkout.confirmation:
                 print(f"Order {checkout.confirmation}")

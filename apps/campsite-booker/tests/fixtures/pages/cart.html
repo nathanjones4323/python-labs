@@ -1,0 +1,48 @@
+<!doctype html>
+<!-- recreation.gov's cart (Upper Pines site 156, Oct 28 2026), trimmed to one
+     item. Until its order details are filled (any query string here) the
+     item says "Incomplete Order Details" and Proceed to Payment is disabled,
+     as on the live site. -->
+<html>
+<head><title>Shopping Cart</title></head>
+<body>
+<div class="cart-item">
+  <div class="cart-item-summary-header">
+    <div class="cart-item-summary-title" translate="no">156, Upper Pines( STANDARD NONELECTRIC )</div>
+    <div class="cart-item-summary-location">
+      <button type="button" class="sarsa-button sarsa-button-link"><span class="sarsa-button-content">Upper Pines Campground</span></button>
+    </div>
+  </div>
+  <div class="cart-item-summary-mobile-dates">Sun Nov 8, 2026 - Mon Nov 9, 2026</div>
+  <div id="incomplete" hidden>Incomplete Order Details.&nbsp;<button data-component="Button" type="button" class="sarsa-button sarsa-button-link sarsa-button-xxs"><span class="sarsa-button-inner-wrapper"><span class="sarsa-button-content">Please update here.</span></span></button></div>
+  <div class="cart-item-body" id="cart-item-body">
+    <div class="cart-item-details">
+      <div><div class="cart-item-detail-label">Check In</div><div class="cart-item-detail-value">Sun Nov 08, 2026</div></div>
+      <div><div class="cart-item-detail-label">Check Out</div><div class="cart-item-detail-value">Mon Nov 09, 2026</div></div>
+      <div><div class="cart-item-detail-label">Primary Occupant</div><div class="cart-item-detail-value">Pat Camper</div></div>
+    </div>
+  </div>
+</div>
+<button type="button" class="rec-button-primary-large" id="pay">Proceed to Payment</button>
+<div id="payment" hidden>
+  <h2>Select Payment</h2>
+  <h3>Saved Credit Card</h3>
+  <input type="radio" name="card" id="card-1"><label for="card-1">VISA ****4242</label>
+  <button type="button" id="next">Next</button>
+</div>
+<div id="review" hidden><h2>Review and Confirm</h2><button type="button">Confirm</button></div>
+<script>
+  const $ = (s) => document.querySelector(s);
+  const complete = location.search.length > 1;
+  $("#incomplete").hidden = complete;
+  $("#pay").disabled = !complete;
+  $("#incomplete button").addEventListener("click", () => {
+    location.href = "/camping/reservations/orderdetails?id=1";
+  });
+  $("#pay").addEventListener("click", () => { $("#payment").hidden = false; });
+  $("#next").addEventListener("click", () => {
+    if ($("#card-1").checked) $("#review").hidden = false;
+  });
+</script>
+</body>
+</html>

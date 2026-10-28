@@ -180,7 +180,7 @@ def test_auto_pay_and_paying_holds(server, recgov, monkeypatch):
     monkeypatch.setattr(
         booker,
         "pay",
-        lambda s, url, size, label: (CheckoutResult(PAID, "Paid", "77"), None),
+        lambda s, url, size, label, expect: (CheckoutResult(PAID, "Paid", "77"), None),
     )
     paid = call(server, "pay_hold", hold_id=held["hold_id"])
     assert (paid["checkout_status"], paid["confirmation"], paid["pay_at"]) == (

@@ -86,6 +86,11 @@ class Settings:
     card_exp_year: str | None = None  # YY
     # Group size for order details, when a watch doesn't give one.
     group_size: int = 2
+    # Vehicles on the order, and the equipment to tick where a campground
+    # makes equipment mandatory (the order page's words: tent, rv, trailer,
+    # pop_up, caravan_camper_van, pickup_camper, large_tent_over_9_x_12).
+    vehicles: int = 1
+    equipment: tuple[str, ...] = ("tent",)
     # Seconds between checks while waiting on a release.
     release_poll_seconds: float = 2.0
 
@@ -114,6 +119,12 @@ class Settings:
             card_exp_month=_two_digits("CAMPSITE_CARD_EXP_MONTH"),
             card_exp_year=_two_digits("CAMPSITE_CARD_EXP_YEAR"),
             group_size=max(_int("CAMPSITE_GROUP_SIZE", 2), 1),
+            vehicles=max(_int("CAMPSITE_VEHICLES", 1), 0),
+            equipment=tuple(
+                kind.strip().lower()
+                for kind in _optional("CAMPSITE_EQUIPMENT", "tent").split(",")
+                if kind.strip()
+            ),
             # Bursts last minutes at most, but not every half second.
             release_poll_seconds=max(_int("CAMPSITE_RELEASE_POLL_SECONDS", 2), 1),
         )
