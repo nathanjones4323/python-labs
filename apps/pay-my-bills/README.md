@@ -21,8 +21,8 @@ Gmail (read-only) ──poll every 2 min──▶ parsers ──▶ pipeline ─
 | "Your Ventura Water eBill is Now Available" | `noreply@kubra.com` | A **bill** is recorded: amount due and due date. |
 | "Ventura Water Payment Service - Payment Confirmation" (autopay, status `SCHEDULED`) | `noreply@kubra.com` | The **payment** is recorded, including KUBRA's $2.95 fee, and matched to its bill. A **request** goes out for the roommate's share of the total. |
 | "KUBRA EZ-PAY - Your payment processed successfully" (one-time payment) | `noreply@kubra.com` | Same as an autopay confirmation. |
-| "Bill is Ready" | `sce@message.sce.com` | A **bill** is recorded. On statement date + `SCE_AUTOPAY_LAG_DAYS` (10), the autopay date, the app assumes the bill's amount was paid and sends the request. |
-| Anything payment-like from SCE | `*.sce.com` | Forwarded to you as "can't read yet". SCE's autopay confirmation hasn't been seen yet; when it arrives, add a parser (see below). Once it has one, a confirmation replaces the assumed payment. If the amount differs, the request is corrected, or you're warned if you already sent it. |
+| "Bill is Ready" | `sce@message.sce.com` | A **bill** is recorded. On the due date − `SCE_AUTOPAY_DAYS_BEFORE_DUE` (11), when autopay is expected, the app assumes the bill's amount was paid that day and sends the request, labelled "autopay expected". SCE doesn't email when autopay takes the money (none came for the Sep or Oct 2026 bills), so check your bank to be sure. |
+| Anything payment-like from SCE | `*.sce.com` | Forwarded to you as "can't read yet". SCE hasn't sent an autopay confirmation so far; if one ever arrives, add a parser (see below). Once it has one, a confirmation replaces the assumed payment. If the amount differs, the request is corrected, or you're warned if you already sent it. |
 | "Austin Will paid your $X request", or "Austin Will paid $X to your Venmo account" if they pay without a request | `venmo@venmo.com` | The open request for that amount is marked **paid** and you get a ✅. Other Venmo payments, like rent, don't count. |
 
 The share is `SPLIT_PERCENT` (50%) of what actually left the account, fees
