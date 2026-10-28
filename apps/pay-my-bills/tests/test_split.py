@@ -1,7 +1,13 @@
 from datetime import date
 from urllib.parse import parse_qs, urlsplit
 
-from pay_my_bills.split import dollars, request_note, share_cents, venmo_request_url
+from pay_my_bills.split import (
+    NO_BREAK_SPACE,
+    dollars,
+    request_note,
+    share_cents,
+    venmo_request_url,
+)
 
 
 def test_half_rounds_half_a_cent_up():
@@ -31,10 +37,10 @@ def test_venmo_link_prefills_the_request():
         "audience": ["private"],
         "recipients": ["AGWill"],
         "amount": ["28.60"],
-        "note": [note],
+        "note": [note.replace(" ", NO_BREAK_SPACE)],
     }
-    # Spaces as %20: Venmo shows a literal "+" otherwise.
-    assert "+" not in url
+    # No plain spaces, which Venmo's redirect turns into a literal "+".
+    assert "+" not in url and "%20" not in url
 
 
 def test_venmo_amount_has_no_thousands_separator():

@@ -11,6 +11,10 @@ from decimal import ROUND_HALF_UP, Decimal
 from urllib.parse import quote, urlencode
 
 VENMO_URL = "https://venmo.com/"
+# Venmo's redirect to the app re-encodes a space ("%20") as "+", which the
+# app then shows literally: "SCE+Oct+2026". A no-break space comes through
+# as itself and looks the same.
+NO_BREAK_SPACE = "\u00a0"
 
 
 def share_cents(total_cents: int, percent: int) -> int:
@@ -35,7 +39,7 @@ def venmo_request_url(username: str, amount_cents: int, note: str) -> str:
             "audience": "private",
             "recipients": username,
             "amount": dollars(amount_cents).replace(",", ""),
-            "note": note,
+            "note": note.replace(" ", NO_BREAK_SPACE),
         },
         quote_via=quote,
     )
