@@ -75,10 +75,15 @@ def waiting_on(criteria: StayCriteria, release: Release, today: date) -> list[da
 
 
 def released(sites: dict[str, Campsite], release: Release) -> bool:
-    """Whether the release has happened: the first day it opens is no longer
-    `Open` or `NYR` at any site. (Other statuses don't tell: a seasonal site
-    is `Closed` either way, and a stay arriving inside the old window already
-    shows `Reserved` on it.)"""
-    day = date.fromordinal(release.open_through.toordinal() + 1)
+    """Whether the release has happened: the first day it opens that was
+    fetched is no longer `Open` or `NYR` at any site. (Other statuses don't
+    tell: a seasonal site is `Closed` either way, and a stay arriving inside
+    the old window already shows `Reserved` on it.) The day after the old
+    window may not have been fetched: a watch arriving in a later month only
+    fetches that month."""
+    fetched = {day for s in sites.values() for day in s.nights if release.opens(day)}
+    if not fetched:
+        return False
+    day = min(fetched)
     statuses = {s.nights.get(day) for s in sites.values()} - {None}
     return bool(statuses) and not statuses & {OPEN, NYR}

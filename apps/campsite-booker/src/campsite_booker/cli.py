@@ -217,6 +217,9 @@ def main(argv: list[str] | None = None) -> None:
             _print_timing(summary, settings.timezone, args.days)
         elif args.command == "pay":
             hold = service.get_hold(sessions, args.hold_id)
+            refusal = service.pay_refusal(hold)
+            if refusal:
+                parser.exit(1, f"{refusal}\n")
             group_size = service.hold_group_size(sessions, hold, settings.group_size)
             checkout, screenshot = booker.pay(
                 settings, hold.page_url, group_size, f"hold-{hold.id}"

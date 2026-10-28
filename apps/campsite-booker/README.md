@@ -107,7 +107,10 @@ Asked to pay (a watch's `auto_pay`, the **💳 Pay** button on a hold, `hold
 3. **Payment**: the account's **saved card**. recreation.gov's wallet may
    first ask for a saved card's last 4 digits (and expiry) to unlock it.
    That's answered from `CAMPSITE_CARD_*`, once only, because wrong answers
-   lock the wallet for 24 hours. Then Next.
+   lock the wallet for 24 hours. If the wallet says the digits are wrong,
+   they're kept in `wallet-refused.json` beside the session and never sent
+   again until you change `CAMPSITE_CARD_*`; an unlock that just didn't
+   finish (no error, or a "try again later") can be retried. Then Next.
 4. **Review and Confirm**: stops here unless `CAMPSITE_SUBMIT_PAYMENT=true`
    (a **dry run**: nothing paid, still in the cart). Otherwise it presses
    Confirm and waits for `/cart/confirmation`, reading the order number off

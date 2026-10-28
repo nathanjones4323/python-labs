@@ -16,13 +16,21 @@ refreshed tokens are kept. If the saved session has expired, a hold tries
 the login form with `RECGOV_EMAIL` / `RECGOV_PASSWORD`; if that's refused
 too, it stops with `LoginRequired` and you run the login again.
 
+The watcher, the MCP server and the CLI are separate processes on that one
+session file, so every browser run takes `session_lock` first: two at once
+would each refresh the tokens and the last to save would sign the other out.
+
 Selectors anchor on what the page's own accessibility depends on: calendar
 days are `role=button` with labels like "Sunday, November 1, 2026 -
 Available", the login form's inputs are `#email` / `#password`, and buttons
 are found by their text.
 """
 
+import fcntl
 import os
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -90,6 +98,28 @@ def new_context(browser: Browser, session_file: Path) -> BrowserContext:
     )
     context.set_default_timeout(STEP_TIMEOUT_MS)
     return context
+
+
+@contextmanager
+def session_lock(settings: Settings) -> Iterator[None]:
+    """Wait for any other process's browser run on the saved session to
+    finish, and keep it to this one until the block ends. An OS file lock,
+    so it's let go if the process dies."""
+    path = settings.session_file.with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Worth knowing during a release: the hold is queued behind this.
+            logger.info("Waiting for another browser run on the session to finish")
+            started = time.monotonic()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            logger.info(f"Got the session after {time.monotonic() - started:.0f}s")
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def save_session(context: BrowserContext, session_file: Path) -> None:
@@ -224,7 +254,7 @@ def hold(
     go on to pay for it (a dry run unless `settings.submit_payment`). Never
     raises for the site's reasons: a `LoginRequired` is the one error that
     escapes, since only you can fix it."""
-    with sync_playwright() as playwright:
+    with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=settings.headless)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
@@ -268,7 +298,7 @@ def pay(
 ) -> tuple[CheckoutResult, Path | None]:
     """Pay for a site held earlier: from its order details page if the hold
     recorded one, else from the cart. Raises `LoginRequired` like `hold`."""
-    with sync_playwright() as playwright:
+    with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=settings.headless)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
@@ -319,7 +349,7 @@ def interactive_login(settings: Settings, timeout_s: int = 300) -> None:
     """Open a visible browser on recreation.gov's login, fill in the login
     from the environment if it's there, and wait for you to finish (solve a
     challenge if one comes up). Saves the session for `hold`."""
-    with sync_playwright() as playwright:
+    with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=False)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
@@ -346,7 +376,7 @@ def interactive_login(settings: Settings, timeout_s: int = 300) -> None:
 
 def check_session(settings: Settings) -> bool:
     """Whether the saved session is still signed in (headless, no login)."""
-    with sync_playwright() as playwright:
+    with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = new_context(browser, settings.session_file)
         page = context.new_page()

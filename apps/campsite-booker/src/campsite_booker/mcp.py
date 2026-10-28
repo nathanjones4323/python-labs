@@ -15,6 +15,7 @@ from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from loguru import logger
 from pydantic import Field
 
 from campsite_booker import booker, service
@@ -29,6 +30,7 @@ from campsite_booker.db import (
     migrate,
     utcnow,
 )
+from campsite_booker.messages import WEEKDAYS
 from campsite_booker.recgov import CART_URL, Campground, RecGov, RecGovError, Stay
 from campsite_booker.releases import parse_releases, waiting_on
 
@@ -135,10 +137,7 @@ def watch_dict(w: Watch) -> dict[str, Any]:
         "arrival_from": w.arrival_from.isoformat(),
         "arrival_to": w.arrival_to.isoformat(),
         "nights": w.nights,
-        "arrival_weekdays": [
-            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d]
-            for d in w.arrival_weekdays
-        ],
+        "arrival_weekdays": [WEEKDAYS[d] for d in w.arrival_weekdays],
         "group_size": w.group_size,
         "site_types": w.site_types,
         "auto_hold": w.auto_hold,
@@ -246,7 +245,11 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             include_group_sites,
         )
         if campground_ids:
-            campgrounds = [await run(recgov.campground, cid) for cid in campground_ids]
+            campgrounds = list(
+                await asyncio.gather(
+                    *(run(recgov.campground, cid) for cid in campground_ids)
+                )
+            )
         elif latitude is not None and longitude is not None:
             campgrounds = await run(
                 recgov.search_near, latitude, longitude, radius_miles, max_campgrounds
@@ -381,11 +384,19 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         as the account owner. Holds it for 15 minutes; the person pays on
         recreation.gov (`pay_at`), or with `pay` it pays now (a dry run unless
         payment is enabled: see `checkout_status`). Takes up to a minute or
-        two (a real browser)."""
+        two (a real browser). A site and dates already in the cart (or paid
+        for) aren't held again: that hold comes back instead."""
         campground = await run(recgov.campground, campground_id)
         stay = await run(
             service.stay_at, recgov, campground_id, campsite_id, check_in, nights
         )
+        held = await run(service.live_hold, sessions, stay, utcnow())
+        if held is not None:
+            logger.info(
+                f"Not holding {campsite_id} on {check_in}: "
+                f"hold {held.id} already has it"
+            )
+            return hold_dict(held)
         target = service.HoldTarget(stay, campground.name)
         try:
             result = await asyncio.to_thread(
@@ -415,6 +426,9 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         hold = await run(service.get_hold, sessions, hold_id)
         if hold.checkout_status == PAID:
             return hold_dict(hold)
+        refusal = service.pay_refusal(hold)
+        if refusal:
+            raise ToolError(refusal)
         group_size = await run(
             service.hold_group_size, sessions, hold, settings.group_size
         )

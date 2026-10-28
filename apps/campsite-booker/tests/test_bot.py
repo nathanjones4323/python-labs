@@ -9,7 +9,7 @@ from campsite_booker.availability import StayCriteria
 from campsite_booker.bot import CampsiteBot
 from campsite_booker.checkout import CheckoutResult
 from campsite_booker.config import BotSettings
-from campsite_booker.db import BOOKED, DRY_RUN, FAILED, HELD, PAID, Watch
+from campsite_booker.db import BOOKED, DRY_RUN, FAILED, HELD, PAID, UNKNOWN, Watch
 from campsite_booker.gmail import AuthenticationRequired
 from campsite_booker.recgov import CART_URL, Campground
 from conftest import FakeMailbox, alert_message, site
@@ -139,10 +139,35 @@ def test_auto_hold_holds_first_then_alerts(db, recgov, make_bot):
     holds = service.list_holds(db)
     assert [(h.status, h.automatic, h.watch_id) for h in holds] == [(HELD, True, w.id)]
 
+    # The site it just held has no Hold button on the alert.
+    assert "(in your cart)" in alert[1]
+    assert "Tap one" not in alert[1]
+    assert not [d for d in buttons(alert[2]) if d.startswith("hold:")]
+
     # Another site opens: alerted, not held again.
     free(recgov, "40", "41")
     asyncio.run(bot.check_once(tg))
     assert len(held) == 1
+
+
+def test_a_stay_already_in_the_cart_isnt_held_again(db, recgov, make_bot):
+    add_watch(db)
+    free(recgov, "40")
+    bot, held = make_bot()
+    tg = FakeTelegram()
+    asyncio.run(bot.check_once(tg))
+    tap = [d for d in buttons(tg.sent[0][2]) if d.startswith("hold:")][0]
+
+    press(bot, tg, tap)
+    press(bot, tg, tap)
+    assert len(held) == 1
+    assert "Already done" in tg.sent[-1][1]
+    assert len(service.list_holds(db)) == 1
+
+    # Once the cart's 15 minutes are up it can be held again.
+    bot.test_clock.now += timedelta(minutes=16)
+    press(bot, tg, tap)
+    assert len(held) == 2
 
 
 def test_a_failed_hold_says_why(db, recgov, make_bot):
@@ -282,6 +307,33 @@ def test_a_paid_hold_isnt_paid_twice(db, recgov, make_bot):
     press(bot, tg, f"pay:{hold_id}")
     assert len(bot.pays) == 1
     assert "already paid" in tg.sent[-1][1]
+
+
+def test_an_unknown_checkout_isnt_offered_or_paid_again(db, recgov, make_bot):
+    add_watch(db, auto_hold=True)
+    free(recgov, "40")
+    bot, _ = make_bot(
+        submit_payment=True, pay_result=CheckoutResult(UNKNOWN, "No confirmation")
+    )
+    tg = FakeTelegram()
+    asyncio.run(bot.check_once(tg))
+    hold_id = service.list_holds(db)[0].id
+    press(bot, tg, f"pay:{hold_id}")
+    assert not [b for b in buttons(tg.sent[-1][2]) if b.startswith("pay:")]
+    press(bot, tg, f"pay:{hold_id}")
+    assert len(bot.pays) == 1
+    assert "may have paid" in tg.sent[-1][1]
+
+
+def test_a_failed_hold_isnt_paid(db, recgov, make_bot):
+    add_watch(db, auto_hold=True)
+    free(recgov, "40")
+    bot, _ = make_bot(booker.HoldResult(FAILED, "Gone", "u"))
+    tg = FakeTelegram()
+    asyncio.run(bot.check_once(tg))
+    press(bot, tg, f"pay:{service.list_holds(db)[0].id}")
+    assert bot.pays == []
+    assert "nothing to pay" in tg.sent[-1][1]
 
 
 RELEASE_AT = datetime(2026, 11, 15, 15, 0, tzinfo=UTC)  # 7 AM Pacific

@@ -33,6 +33,7 @@ from campsite_booker.db import (
     NOT_WATCHED,
     PAID,
     STOPPED,
+    UNKNOWN,
     WATCHER_FIRST,
     AlertEmail,
     Hold,
@@ -489,6 +490,39 @@ def record_hold(
         return hold
 
 
+def live_hold(
+    sessions: sessionmaker[Session], stay: Stay, now: datetime
+) -> Hold | None:
+    """The hold that has `stay` in the cart (still inside its 15 minutes) or
+    paid for, if any: holding it again would only fail or add it twice."""
+    with sessions() as session:
+        holds = session.scalars(
+            select(Hold).where(
+                Hold.campground_id == stay.campground_id,
+                Hold.campsite_id == stay.campsite_id,
+                Hold.check_in == stay.check_in,
+                Hold.check_out == stay.check_out,
+                Hold.status == HELD,
+            )
+        )
+        return next(
+            (
+                h
+                for h in holds
+                if h.checkout_status == PAID
+                or (h.expires_at is not None and h.expires_at > now)
+            ),
+            None,
+        )
+
+
+def held_openings(
+    sessions: sessionmaker[Session], stays: Iterable[OpenStay], now: datetime
+) -> set[int]:
+    """The opening ids among `stays` that have a live hold."""
+    return {s.opening_id for s in stays if live_hold(sessions, s.stay, now)}
+
+
 def _apply_checkout(hold: Hold, checkout: CheckoutResult) -> None:
     hold.checkout_status = checkout.status
     hold.checkout_detail = checkout.detail
@@ -515,6 +549,23 @@ def record_checkout(
             raise NotFound(f"No hold {hold_id}")
         _apply_checkout(hold, checkout)
         return hold
+
+
+def pay_refusal(hold: Hold) -> str | None:
+    """Why paying for `hold` mustn't be tried, or None if it may. Paying
+    starts from the cart when there's no order page, so a hold that never
+    got into the cart would pay for whatever else is there; and after an
+    `UNKNOWN` checkout (Confirm was pressed) it may already be paid."""
+    if hold.checkout_status == PAID:
+        return "That one's already paid."
+    if hold.status != HELD:
+        return "That hold didn't put the site in the cart, so there's nothing to pay."
+    if hold.checkout_status == UNKNOWN:
+        return (
+            "The last try pressed Confirm and may have paid; check your "
+            "reservations on recreation.gov before paying again."
+        )
+    return None
 
 
 def hold_group_size(sessions: sessionmaker[Session], hold: Hold, default: int) -> int:

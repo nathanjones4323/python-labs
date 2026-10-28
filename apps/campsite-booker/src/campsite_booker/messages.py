@@ -1,5 +1,6 @@
 """The Telegram text (HTML), kept apart from the bot so it's easy to test."""
 
+from collections.abc import Collection
 from datetime import date, datetime
 from html import escape
 from zoneinfo import ZoneInfo
@@ -52,19 +53,25 @@ def stay_line(stay: Stay) -> str:
     )
 
 
-def alert(item: Alert) -> str:
+def alert(item: Alert, held: Collection[int] = ()) -> str:
+    """The alert for `item`; stays whose opening id is in `held` are already
+    in the cart and say so."""
     count = len(item.stays)
     lines = [
         f"🏕 <b>Open at {escape(item.campground_name)}</b>",
         f"<i>{escape(item.watch_name)}</i>",
         "",
     ]
-    lines += [f"• {stay_line(s.stay)}" for s in item.stays[:ALERT_LIST_MAX]]
+    lines += [
+        f"• {stay_line(s.stay)}" + (" (in your cart)" if s.opening_id in held else "")
+        for s in item.stays[:ALERT_LIST_MAX]
+    ]
     if count > ALERT_LIST_MAX:
         lines.append(f"…and {count - ALERT_LIST_MAX} more")
     if item.found_by == BY_EMAIL:
         lines += ["", "📧 Found checking right after recreation.gov's alert email."]
-    lines += ["", "Tap one to put it in your cart (15 min to pay)."]
+    if any(s.opening_id not in held for s in item.stays):
+        lines += ["", "Tap one to put it in your cart (15 min to pay)."]
     return "\n".join(lines)
 
 
@@ -112,6 +119,11 @@ def hold_result(hold: Hold, tz: ZoneInfo, screenshot_note: bool = False) -> str:
     if screenshot_note:
         text += "\n<i>A screenshot and the page are saved in the artifacts folder.</i>"
     return text
+
+
+def already_held(hold: Hold, tz: ZoneInfo) -> str:
+    """A Hold tap for a stay that's already in the cart, or paid."""
+    return "Already done, not holding it again.\n\n" + hold_result(hold, tz)
 
 
 def when(moment: datetime, tz: ZoneInfo) -> str:

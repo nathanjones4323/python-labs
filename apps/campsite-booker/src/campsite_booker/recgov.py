@@ -67,7 +67,7 @@ class Campground:
 
     @property
     def url(self) -> str:
-        return f"{BASE_URL}/camping/campgrounds/{self.id}"
+        return campground_url(self.id)
 
 
 @dataclass
@@ -108,6 +108,10 @@ class Stay:
     @property
     def url(self) -> str:
         return campsite_url(self.campsite_id)
+
+
+def campground_url(campground_id: str) -> str:
+    return f"{BASE_URL}/camping/campgrounds/{campground_id}"
 
 
 def campsite_url(campsite_id: str) -> str:

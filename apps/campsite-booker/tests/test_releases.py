@@ -60,6 +60,15 @@ def test_released_once_no_site_is_open_or_nyr_on_the_first_new_day():
     assert not released({}, PINES)
 
 
+def test_released_when_only_a_later_month_was_fetched():
+    # A watch arriving in April fetches April only; Mar 15 isn't there.
+    s = site("1", [])
+    s.nights = {date(2027, 4, 5): "NYR"}
+    assert not released({"1": s}, PINES)
+    s.nights = {date(2027, 4, 5): "Available"}
+    assert released({"1": s}, PINES)
+
+
 def test_a_stay_may_end_in_open_nights_but_not_start_in_one():
     s = site("1", [])
     s.nights = {

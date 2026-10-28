@@ -79,7 +79,8 @@ class Settings:
     # recreation.gov's digital wallet sometimes asks for the saved card's
     # last 4 digits (and expiry) before using it. Not secret enough to keep
     # out of .env, and never typed anywhere else; a wrong answer counts
-    # towards a 24-hour wallet lock, so it's tried once.
+    # towards a 24-hour wallet lock, so it's tried once, and digits the
+    # wallet clearly refused aren't tried again (`wallet_refusal_file`).
     card_last4: str | None = None
     card_exp_month: str | None = None  # MM
     card_exp_year: str | None = None  # YY
@@ -87,6 +88,12 @@ class Settings:
     group_size: int = 2
     # Seconds between checks while waiting on a release.
     release_poll_seconds: float = 2.0
+
+    @property
+    def wallet_refusal_file(self) -> Path:
+        """The card digits the wallet refused, beside the session (every
+        process that pays reads it)."""
+        return self.session_file.with_name("wallet-refused.json")
 
     @classmethod
     def from_env(cls) -> "Settings":

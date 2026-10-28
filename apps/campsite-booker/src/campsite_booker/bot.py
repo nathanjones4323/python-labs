@@ -27,7 +27,7 @@ recreation.gov session still signed in?).
 
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -55,13 +55,20 @@ from campsite_booker.db import (
     HELD,
     PAID,
     STOPPED,
+    UNKNOWN,
     Hold,
     make_session_factory,
     migrate,
     utcnow,
 )
 from campsite_booker.gmail import AuthenticationRequired, Gmail
-from campsite_booker.recgov import CART_URL, RESERVATIONS_URL, RecGov, campsite_url
+from campsite_booker.recgov import (
+    CART_URL,
+    RESERVATIONS_URL,
+    RecGov,
+    campground_url,
+    campsite_url,
+)
 from campsite_booker.releases import Release, released
 
 SEND_RETRY_S = 120
@@ -287,8 +294,23 @@ class CampsiteBot:
         pay_group_size: int | None = None,
     ) -> None:
         """Hold `target` (and pay, with `pay_group_size`) and tell everyone
-        how it went."""
+        how it went. Not if it's already held (an older Hold button, or a
+        second tap), checked under the lock so the first tap is seen."""
         async with self._browser_lock:
+            held = await asyncio.to_thread(
+                service.live_hold, self.sessions, target.stay, self.clock()
+            )
+            if held is not None:
+                logger.info(
+                    f"Not holding {target.stay.campsite_id} on "
+                    f"{target.stay.check_in}: hold {held.id} already has it"
+                )
+                await self._broadcast(
+                    bot,
+                    messages.already_held(held, self.settings.timezone),
+                    reply_markup=_hold_buttons(held, target.watch_id, self.settings),
+                )
+                return
             try:
                 result = await asyncio.to_thread(
                     self.hold_fn, self.settings, target.stay, pay_group_size
@@ -318,18 +340,26 @@ class CampsiteBot:
 
     async def pay(self, bot: Any, hold_id: int) -> None:
         """Pay for an earlier hold (its Pay button)."""
-        try:
-            record = await asyncio.to_thread(service.get_hold, self.sessions, hold_id)
-        except service.NotFound:
-            await self._broadcast(bot, "That hold is no longer on record.")
-            return
-        if record.checkout_status == PAID:
-            await self._broadcast(bot, "That one's already paid.")
-            return
-        group_size = await asyncio.to_thread(
-            service.hold_group_size, self.sessions, record, self.settings.group_size
-        )
+        # Every allowed user gets a Pay button: read the hold under the
+        # browser lock, so a second tap sees what the first one did.
         async with self._browser_lock:
+            try:
+                record = await asyncio.to_thread(
+                    service.get_hold, self.sessions, hold_id
+                )
+            except service.NotFound:
+                await self._broadcast(bot, "That hold is no longer on record.")
+                return
+            refusal = service.pay_refusal(record)
+            if refusal:
+                await self._broadcast(bot, refusal)
+                return
+            group_size = await asyncio.to_thread(
+                service.hold_group_size,
+                self.sessions,
+                record,
+                self.settings.group_size,
+            )
             try:
                 result, screenshot = await asyncio.to_thread(
                     self.pay_fn,
@@ -559,9 +589,16 @@ class CampsiteBot:
 
     async def _deliver(self, bot: Any, alerts: list[service.Alert]) -> None:
         for alert in alerts:
+            # An auto-hold just before, or an earlier tap, may have one of
+            # these in the cart already: no Hold button for it.
+            held = await asyncio.to_thread(
+                service.held_openings, self.sessions, alert.stays, self.clock()
+            )
             try:
                 await self._broadcast(
-                    bot, messages.alert(alert), reply_markup=_alert_buttons(alert)
+                    bot,
+                    messages.alert(alert, held),
+                    reply_markup=_alert_buttons(alert, held),
                 )
             except Exception:
                 # Left unmarked, so the next check sends it again.
@@ -589,12 +626,14 @@ class CampsiteBot:
             await send_with_retry(bot, chat_id, text, **kwargs)
 
 
-def _alert_buttons(alert: service.Alert) -> InlineKeyboardMarkup:
+def _alert_buttons(
+    alert: service.Alert, held: Collection[int] = ()
+) -> InlineKeyboardMarkup:
     holds = [
         InlineKeyboardButton(
             messages.hold_button_label(s.stay), callback_data=f"hold:{s.opening_id}"
         )
-        for s in alert.stays[:HOLD_BUTTONS_MAX]
+        for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
     ]
     rows = [holds[i : i + 2] for i in range(0, len(holds), 2)]
     first = alert.stays[0].stay
@@ -604,7 +643,7 @@ def _alert_buttons(alert: service.Alert) -> InlineKeyboardMarkup:
                 "Open on recreation.gov",
                 url=campsite_url(first.campsite_id)
                 if len(alert.stays) == 1
-                else f"https://www.recreation.gov/camping/campgrounds/{first.campground_id}",
+                else campground_url(first.campground_id),
             ),
             InlineKeyboardButton(
                 "Stop watching", callback_data=f"stop:{alert.watch_id}"
@@ -619,6 +658,12 @@ def _hold_buttons(
 ) -> InlineKeyboardMarkup:
     if record.checkout_status == PAID:
         rows = [[InlineKeyboardButton("Your reservations", url=RESERVATIONS_URL)]]
+    elif record.status == HELD and record.checkout_status == UNKNOWN:
+        # Confirm was pressed: it may be paid. No second Pay button.
+        rows = [
+            [InlineKeyboardButton("Your reservations", url=RESERVATIONS_URL)],
+            [InlineKeyboardButton("Your cart", url=CART_URL)],
+        ]
     elif record.status == HELD:
         label = (
             "💳 Pay with saved card"

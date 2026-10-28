@@ -15,7 +15,10 @@ JavaScript, not yet watched end to end signed in):
 3. **Payment**: "Saved Credit Card" from the account's digital wallet. The
    wallet may first ask to be unlocked with the last 4 digits of a saved
    card (and its expiry): answered once from `CAMPSITE_CARD_*`, since wrong
-   answers lock it for 24 hours. Then "Next".
+   answers lock it for 24 hours. Digits it refuses with an error are kept
+   (`Settings.wallet_refusal_file`) and not sent again, by any checkout,
+   until `CAMPSITE_CARD_*` changes; an unlock that just didn't finish (no
+   error, or the site's own hiccup) may be tried again. Then "Next".
 4. **Review and Confirm**: "Confirm", then `/cart/confirmation`.
 
 Paying needs a card saved on the recreation.gov account: this never types a
@@ -24,8 +27,11 @@ Anything unexpected stops the checkout, and the site stays in the cart for
 you to finish.
 """
 
+import json
+import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from loguru import logger
 from playwright.sync_api import Page
@@ -41,6 +47,13 @@ ORDER_NUMBER = re.compile(
     r"(?:Order|Confirmation)\s*(?:#|Number|No\.?)?\s*:?\s*([0-9][0-9-]{5,})", re.I
 )
 NEED_TO_KNOW = "I have read and agree to this important information"
+# Errors that say the site couldn't check the card, not that it's the wrong
+# card: these don't count as a refusal.
+SITE_HICCUP = re.compile(
+    r"something went wrong|unexpected error|try again later|temporarily|"
+    r"unavailable|network|timed? ?out",
+    re.I,
+)
 
 
 class CheckoutStopped(Exception):
@@ -114,8 +127,38 @@ def to_payment(page: Page) -> None:
         ) from None
 
 
+def _card_answer(settings: Settings) -> str:
+    return (
+        f"{settings.card_last4} {settings.card_exp_month or ''}/"
+        f"{settings.card_exp_year or ''}"
+    )
+
+
+def _refusal(settings: Settings) -> dict | None:
+    try:
+        return json.loads(settings.wallet_refusal_file.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _record_refusal(settings: Settings, error: str) -> None:
+    path = settings.wallet_refusal_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "answer": _card_answer(settings),
+                "error": error,
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            }
+        )
+    )
+    os.chmod(path, 0o600)
+
+
 def unlock_wallet(page: Page, settings: Settings) -> None:
-    """Answer the wallet's "last 4 digits" challenge, once, if it asks."""
+    """Answer the wallet's "last 4 digits" challenge, once, if it asks, and
+    never with digits it has refused before."""
     unlock = page.get_by_role("button", name="Unlock")
     if not unlock.count():
         return
@@ -123,6 +166,17 @@ def unlock_wallet(page: Page, settings: Settings) -> None:
         raise CheckoutStopped(
             "recreation.gov wants the saved card's last 4 digits to unlock the "
             "wallet; set CAMPSITE_CARD_LAST4 (and _EXP_MONTH / _EXP_YEAR)"
+        )
+    refused = _refusal(settings)
+    if refused and refused.get("answer") == _card_answer(settings):
+        logger.warning(
+            f"Not unlocking the wallet: these digits were refused {refused.get('at')}"
+        )
+        raise CheckoutStopped(
+            f"The wallet refused these card digits on {refused.get('at')} "
+            f"({refused.get('error')}), so they aren't tried again: fix "
+            "CAMPSITE_CARD_LAST4 / _EXP_MONTH / _EXP_YEAR (or, if they're right, "
+            f"delete {settings.wallet_refusal_file})"
         )
     page.locator("#last4").fill(settings.card_last4)
     month, year = page.locator("#month"), page.locator("#year")
@@ -138,10 +192,28 @@ def unlock_wallet(page: Page, settings: Settings) -> None:
     try:
         unlock.wait_for(state="detached", timeout=STEP_TIMEOUT_MS)
     except PlaywrightTimeout:
+        error = _errors(page)
+        # The site's own words, either way: what SITE_HICCUP is checked
+        # against hasn't been seen signed in yet.
+        if error and not SITE_HICCUP.search(error):
+            logger.warning(f"Wallet refused the card digits; won't resend: {error!r}")
+            _record_refusal(settings, error)
+            raise CheckoutStopped(
+                "The wallet refused the card digits (it locks for 24 hours after "
+                "a few wrong tries, so these won't be tried again until "
+                f"CAMPSITE_CARD_* changes): {error}"
+            ) from None
+        logger.warning(
+            f"Wallet didn't unlock, taken as a blip: {error or 'no error shown'!r}"
+        )
         raise CheckoutStopped(
-            "The wallet didn't unlock (it locks for 24 hours after a few wrong "
-            "tries, so this doesn't try again): " + (_errors(page) or "no error shown")
+            "The wallet didn't unlock, but didn't say the digits were wrong, so "
+            "paying may be tried again: " + (error or "no error shown")
         ) from None
+    if refused:
+        # Unlocked with new digits: the old refusal is moot.
+        logger.info("Wallet unlocked with new digits; cleared the old refusal")
+        settings.wallet_refusal_file.unlink(missing_ok=True)
 
 
 def choose_saved_card(page: Page) -> None:
