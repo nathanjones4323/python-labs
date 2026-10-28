@@ -1,0 +1,478 @@
+"""The app as MCP tools, for the assistant (or Claude Desktop / Claude Code).
+
+    campsite-booker-mcp          # stdio
+
+Searching and reading watches touch only recreation.gov's public API and the
+local database. `hold_campsite` drives a signed-in browser and puts a site in
+the account's cart: give it a permission prompt in the client. Watches are
+checked by the watcher (`campsite-booker`), not here; a watch made here is
+picked up on its next check as long as it runs against the same database.
+"""
+
+import asyncio
+from datetime import date, datetime, timedelta
+from typing import Annotated, Any
+
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from pydantic import Field
+
+from campsite_booker import booker, service
+from campsite_booker.availability import StayCriteria, parse_weekdays
+from campsite_booker.config import Settings
+from campsite_booker.db import (
+    HELD,
+    PAID,
+    Hold,
+    Watch,
+    make_session_factory,
+    migrate,
+    utcnow,
+)
+from campsite_booker.recgov import CART_URL, Campground, RecGov, RecGovError, Stay
+from campsite_booker.releases import parse_releases, waiting_on
+
+INSTRUCTIONS = """
+Campsites on recreation.gov (federal campgrounds: national parks and forests,
+Army Corps lakes, BLM). Not state parks: those book on ReserveCalifornia etc.
+
+- `search_campgrounds` finds campground ids by name or near a point.
+- `find_open_campsites` says what's bookable now for some dates.
+- `create_watch` alerts on Telegram when a site opens up (cancellations),
+  and with `auto_hold` puts the first one straight in the cart.
+- `hold_campsite` puts one site in the cart now (15 minutes to pay). With
+  `pay: true` it carries on and pays with the card saved on the account;
+  `pay_hold` pays for an earlier hold. Both are dry runs (stop at Review and
+  Confirm, nothing paid) unless the operator turned payment on; the result
+  says which.
+- `set_watch_auto_pay` makes a watch pay for its automatic hold too.
+- A watch for dates not on sale yet is armed for the release that opens
+  them: `create_watch` says when (`on_sale_at`), and the watcher polls every
+  couple of seconds from just before it.
+
+Dates are YYYY-MM-DD, campground-local. A stay is `nights` nights from the
+arrival date; flexible trips give an arrival range and optionally weekdays.
+""".strip()
+
+# Stays returned per campground by a search; the rest are counted.
+STAYS_PER_CAMPGROUND = 15
+
+Dates = Annotated[date, Field(description="YYYY-MM-DD")]
+Weekdays = Annotated[
+    list[str] | None,
+    Field(description='Only arrive on these days, e.g. ["Fri", "Sat"]'),
+]
+SiteTypes = Annotated[
+    list[str] | None,
+    Field(
+        description='Site type must contain one of these words, e.g. ["TENT"] '
+        'or ["RV"]; case-insensitive'
+    ),
+]
+
+
+def criteria(
+    arrival_from: date,
+    arrival_to: date | None,
+    nights: int,
+    arrival_weekdays: list[str] | None = None,
+    group_size: int | None = None,
+    site_types: list[str] | None = None,
+    campsite_ids: list[str] | None = None,
+    include_group_sites: bool = False,
+) -> StayCriteria:
+    try:
+        return StayCriteria(
+            arrival_from=arrival_from,
+            arrival_to=arrival_to or arrival_from,
+            nights=nights,
+            arrival_weekdays=parse_weekdays(arrival_weekdays),
+            group_size=group_size,
+            site_types=tuple(site_types or ()),
+            campsite_ids=frozenset(str(c) for c in campsite_ids or ()),
+            include_group_sites=include_group_sites,
+        )
+    except ValueError as e:
+        raise ToolError(f"Invalid: {e}") from e
+
+
+def campground_dict(c: Campground) -> dict[str, Any]:
+    return {
+        "campground_id": c.id,
+        "name": c.name,
+        "park": c.park,
+        "city": c.city,
+        "state": c.state,
+        "distance_miles": c.distance_miles,
+        "price_per_night": (
+            None if c.price_min is None else {"min": c.price_min, "max": c.price_max}
+        ),
+        "url": c.url,
+    }
+
+
+def stay_dict(s: Stay) -> dict[str, Any]:
+    return {
+        "campsite_id": s.campsite_id,
+        "site": s.site,
+        "loop": s.loop,
+        "type": s.campsite_type,
+        "max_people": s.max_people,
+        "check_in": s.check_in.isoformat(),
+        "check_out": s.check_out.isoformat(),
+        "nights": s.nights,
+        "url": s.url,
+    }
+
+
+def watch_dict(w: Watch) -> dict[str, Any]:
+    return {
+        "watch_id": w.id,
+        "name": w.name,
+        "campground_id": w.campground_id,
+        "campground_name": w.campground_name,
+        "campsite_ids": w.campsite_ids,
+        "arrival_from": w.arrival_from.isoformat(),
+        "arrival_to": w.arrival_to.isoformat(),
+        "nights": w.nights,
+        "arrival_weekdays": [
+            ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d]
+            for d in w.arrival_weekdays
+        ],
+        "group_size": w.group_size,
+        "site_types": w.site_types,
+        "auto_hold": w.auto_hold,
+        "auto_pay": w.auto_pay,
+        "auto_hold_used": w.auto_held_at is not None,
+        "waiting_on_release_at": (
+            w.armed_release_at.isoformat() if w.armed_release_at else None
+        ),
+        "active": w.active,
+        "ended_reason": w.ended_reason,
+        "last_checked_at": w.last_checked_at.isoformat() if w.last_checked_at else None,
+        "last_error": w.last_error,
+    }
+
+
+def hold_dict(h: Hold) -> dict[str, Any]:
+    return {
+        "hold_id": h.id,
+        "status": h.status,
+        "detail": h.detail,
+        "campground_name": h.campground_name,
+        "site": h.site,
+        "campsite_id": h.campsite_id,
+        "check_in": h.check_in.isoformat(),
+        "check_out": h.check_out.isoformat(),
+        "expires_at": h.expires_at.isoformat() if h.expires_at else None,
+        "checkout_status": h.checkout_status,
+        "checkout_detail": h.checkout_detail,
+        "confirmation": h.confirmation,
+        "pay_at": CART_URL if h.status == HELD and h.checkout_status != PAID else None,
+        "automatic": h.automatic,
+        "created_at": h.created_at.isoformat(),
+    }
+
+
+def create_server(settings: Settings | None = None) -> FastMCP:
+    settings = settings or Settings.from_env()
+    migrate(settings.database_url)
+    sessions = make_session_factory(settings.database_url)
+    recgov = RecGov()
+    mcp = FastMCP(name="campsite-booker", instructions=INSTRUCTIONS)
+
+    def today() -> date:
+        return datetime.now(settings.timezone).date()
+
+    async def run(fn, *args, **kwargs):
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except (RecGovError, service.NotFound, ValueError) as e:
+            raise ToolError(f"{type(e).__name__}: {e}") from e
+
+    @mcp.tool
+    async def search_campgrounds(
+        query: Annotated[
+            str | None, Field(description="Name, park or place, e.g. 'Upper Pines'")
+        ] = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_miles: Annotated[float, Field(gt=0, le=300)] = 50,
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+    ) -> list[dict[str, Any]]:
+        """Find recreation.gov campgrounds by text, or near a point (nearest
+        first). Returns ids for the other tools."""
+        if latitude is not None and longitude is not None:
+            found = await run(
+                recgov.search_near, latitude, longitude, radius_miles, limit
+            )
+        elif query:
+            found = await run(recgov.search, query, limit)
+        else:
+            raise ToolError("Give a query, or latitude and longitude")
+        return [campground_dict(c) for c in found if c.reservable]
+
+    @mcp.tool
+    async def find_open_campsites(
+        arrival_from: Dates,
+        nights: Annotated[int, Field(ge=1, le=21)],
+        arrival_to: Annotated[
+            date | None, Field(description="Last arrival date; omit for exact dates")
+        ] = None,
+        campground_ids: list[str] | None = None,
+        query: Annotated[
+            str | None, Field(description="Search campgrounds by text instead")
+        ] = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_miles: Annotated[float, Field(gt=0, le=300)] = 50,
+        max_campgrounds: Annotated[int, Field(ge=1, le=30)] = 10,
+        arrival_weekdays: Weekdays = None,
+        group_size: int | None = None,
+        site_types: SiteTypes = None,
+        include_group_sites: bool = False,
+    ) -> dict[str, Any]:
+        """What's bookable right now: every site free for the whole stay, at
+        the given campgrounds, or the ones matching `query`, or the nearest
+        to a point. Campgrounds with nothing open are listed by name only."""
+        crit = criteria(
+            arrival_from,
+            arrival_to,
+            nights,
+            arrival_weekdays,
+            group_size,
+            site_types,
+            None,
+            include_group_sites,
+        )
+        if campground_ids:
+            campgrounds = [await run(recgov.campground, cid) for cid in campground_ids]
+        elif latitude is not None and longitude is not None:
+            campgrounds = await run(
+                recgov.search_near, latitude, longitude, radius_miles, max_campgrounds
+            )
+        elif query:
+            campgrounds = await run(recgov.search, query, max_campgrounds)
+        else:
+            raise ToolError("Give campground_ids, a query, or latitude and longitude")
+        campgrounds = [c for c in campgrounds if c.reservable][:max_campgrounds]
+        results = await run(service.find_open, recgov, campgrounds, crit, today())
+        open_at, nothing, errors = [], [], []
+        for r in results:
+            if r.error:
+                errors.append({"name": r.campground.name, "error": r.error})
+            elif r.stays:
+                open_at.append(
+                    {
+                        **campground_dict(r.campground),
+                        "open_count": len(r.stays),
+                        "stays": [stay_dict(s) for s in r.stays[:STAYS_PER_CAMPGROUND]],
+                    }
+                )
+            else:
+                nothing.append(r.campground.name)
+        return {"open": open_at, "nothing_open": nothing, "errors": errors}
+
+    @mcp.tool
+    async def create_watch(
+        campground_id: str,
+        arrival_from: Dates,
+        nights: Annotated[int, Field(ge=1, le=21)],
+        arrival_to: Annotated[
+            date | None, Field(description="Last arrival date; omit for exact dates")
+        ] = None,
+        campsite_ids: Annotated[
+            list[str] | None, Field(description="Only these sites; omit for any")
+        ] = None,
+        arrival_weekdays: Weekdays = None,
+        group_size: int | None = None,
+        site_types: SiteTypes = None,
+        include_group_sites: bool = False,
+        auto_hold: Annotated[
+            bool,
+            Field(
+                description="Put the first opening straight in the cart (once), "
+                "rather than only alerting"
+            ),
+        ] = False,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Watch a campground for cancellations: the watcher checks every
+        minute or so and alerts on Telegram with Hold buttons."""
+        crit = criteria(
+            arrival_from,
+            arrival_to,
+            nights,
+            arrival_weekdays,
+            group_size,
+            site_types,
+            campsite_ids,
+            include_group_sites,
+        )
+        if crit.arrival_to < today():
+            raise ToolError("Invalid: every arrival date has passed")
+        campground = await run(recgov.campground, campground_id)
+        watch = await run(
+            service.create_watch,
+            sessions,
+            campground,
+            crit,
+            name=name,
+            auto_hold=auto_hold,
+        )
+        out = watch_dict(watch)
+        try:
+            release = parse_releases(
+                await run(recgov.releases, campground_id), utcnow()
+            )
+        except ToolError:
+            return out  # the watch is made; the schedule is a nicety
+        out["on_sale_through"] = release.open_through.isoformat()
+        if waiting_on(crit, release, today()):
+            out["on_sale_at"] = release.next_at.isoformat()
+        elif crit.arrival_to > release.open_through:
+            out["note"] = (
+                "Some arrival dates go on sale after the next release; the "
+                "watcher arms for them when they're next."
+            )
+        return out
+
+    @mcp.tool
+    async def set_watch_auto_pay(watch_id: int, on: bool = True) -> dict[str, Any]:
+        """Pay for the watch's automatic hold too, with the card saved on the
+        recreation.gov account (turns auto_hold on). Paying also needs the
+        operator's CAMPSITE_SUBMIT_PAYMENT; without it it's a dry run."""
+        out = watch_dict(await run(service.set_auto_pay, sessions, watch_id, on))
+        out["payment_enabled"] = settings.submit_payment
+        return out
+
+    @mcp.tool
+    async def list_watches(include_ended: bool = False) -> list[dict[str, Any]]:
+        """The watches, soonest arrival first."""
+        return [
+            watch_dict(w)
+            for w in await run(service.list_watches, sessions, include_ended)
+        ]
+
+    @mcp.tool
+    async def stop_watch(watch_id: int) -> dict[str, Any]:
+        """Stop alerting for a watch (it's kept, and can be resumed)."""
+        return watch_dict(await run(service.stop_watch, sessions, watch_id))
+
+    @mcp.tool
+    async def resume_watch(watch_id: int) -> dict[str, Any]:
+        """Start a stopped watch again."""
+        return watch_dict(await run(service.resume_watch, sessions, watch_id))
+
+    @mcp.tool
+    async def hold_campsite(
+        campground_id: str,
+        campsite_id: str,
+        check_in: Dates,
+        nights: Annotated[int, Field(ge=1, le=21)],
+        pay: Annotated[
+            bool, Field(description="Go on to pay with the saved card")
+        ] = False,
+        group_size: Annotated[
+            int | None, Field(ge=1, description="For the order, when paying")
+        ] = None,
+    ) -> dict[str, Any]:
+        """Put one site in the recreation.gov cart for these dates, signed in
+        as the account owner. Holds it for 15 minutes; the person pays on
+        recreation.gov (`pay_at`), or with `pay` it pays now (a dry run unless
+        payment is enabled: see `checkout_status`). Takes up to a minute or
+        two (a real browser)."""
+        campground = await run(recgov.campground, campground_id)
+        stay = await run(
+            service.stay_at, recgov, campground_id, campsite_id, check_in, nights
+        )
+        target = service.HoldTarget(stay, campground.name)
+        try:
+            result = await asyncio.to_thread(
+                booker.hold,
+                settings,
+                stay,
+                (group_size or settings.group_size) if pay else None,
+            )
+        except booker.LoginRequired as e:
+            raise ToolError(f"LoginRequired: {e}") from e
+        hold = await run(
+            service.record_hold,
+            sessions,
+            target,
+            result.status,
+            result.detail,
+            result.page_url,
+            utcnow(),
+            checkout=result.checkout,
+        )
+        return hold_dict(hold)
+
+    @mcp.tool
+    async def pay_hold(hold_id: int) -> dict[str, Any]:
+        """Pay for an earlier hold that's still in the cart, with the card
+        saved on the account (a dry run unless payment is enabled)."""
+        hold = await run(service.get_hold, sessions, hold_id)
+        if hold.checkout_status == PAID:
+            return hold_dict(hold)
+        group_size = await run(
+            service.hold_group_size, sessions, hold, settings.group_size
+        )
+        try:
+            result, _ = await asyncio.to_thread(
+                booker.pay, settings, hold.page_url, group_size, f"hold-{hold_id}"
+            )
+        except booker.LoginRequired as e:
+            raise ToolError(f"LoginRequired: {e}") from e
+        return hold_dict(await run(service.record_checkout, sessions, hold_id, result))
+
+    @mcp.tool
+    async def alert_timing(
+        days: Annotated[int, Field(ge=1, le=365)] = 30,
+    ) -> dict[str, Any]:
+        """The watcher against recreation.gov's own alert emails: for each
+        alert email, whether the watcher saw the opening before the email
+        arrived (`watcher_first`, `lead_seconds` > 0) or the email did
+        (`email_first`), plus the medians."""
+        summary = await run(
+            service.timing_summary, sessions, utcnow() - timedelta(days=days)
+        )
+        return {
+            "counts": summary.counts,
+            "median_watcher_lead_seconds": summary.median_lead_s,
+            "median_recgov_to_inbox_seconds": summary.median_email_delay_s,
+            "emails": [
+                {
+                    "received_at": r.received_at.isoformat(),
+                    "available_as_of": (
+                        r.available_as_of.isoformat() if r.available_as_of else None
+                    ),
+                    "campground": r.campground_name,
+                    "sites": r.sites,
+                    "watcher_saw_at": (
+                        r.watcher_seen_at.isoformat() if r.watcher_seen_at else None
+                    ),
+                    "lead_seconds": r.lead_seconds,
+                    "outcome": r.outcome,
+                    "found_by_emails_check": bool(r.triggered_finds),
+                }
+                for r in summary.rows[:50]
+            ],
+        }
+
+    @mcp.tool
+    async def list_holds(
+        limit: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> list[dict[str, Any]]:
+        """Recent holds, newest first."""
+        return [hold_dict(h) for h in await run(service.list_holds, sessions, limit)]
+
+    return mcp
+
+
+def main() -> None:
+    create_server().run()
+
+
+if __name__ == "__main__":
+    main()

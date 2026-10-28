@@ -1,11 +1,20 @@
 {
-  "enabledMcpjsonServers": ["date-planner", "garmin", "tee-time-booker"],
+  "enabledMcpjsonServers": ["campsite-booker", "date-planner", "garmin", "tee-time-booker"],
   "permissions": {
     "allow": [
       "Read(./memory/**)",
       "Edit(./memory/**)",
       "WebSearch",
       "WebFetch",
+
+      "mcp__campsite-booker__search_campgrounds",
+      "mcp__campsite-booker__find_open_campsites",
+      "mcp__campsite-booker__list_watches",
+      "mcp__campsite-booker__create_watch",
+      "mcp__campsite-booker__stop_watch",
+      "mcp__campsite-booker__resume_watch",
+      "mcp__campsite-booker__list_holds",
+      "mcp__campsite-booker__alert_timing",
 
       "mcp__date-planner__ping",
       "mcp__date-planner__list_couples",
@@ -62,6 +71,9 @@
       "mcp__claude_ai_Gmail__get_thread"
     ],
     "ask": [
+      "mcp__campsite-booker__hold_campsite",
+      "mcp__campsite-booker__pay_hold",
+      "mcp__campsite-booker__set_watch_auto_pay",
       "mcp__tee-time-booker__book_plan",
       "mcp__tee-time-booker__run_request"
     ],

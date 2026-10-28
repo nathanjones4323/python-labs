@@ -15,6 +15,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "campsite-booker",
     "date-planner",
     "db",
     "garmin-mcp",
@@ -340,6 +341,49 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/a3/19ab810f11d1688bb2009e669b2645410a89b7a35b608239ac4076dc1611/caio-0.12.4-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:ceee64265a55b9aba9c38c1d01a159b99f1e36eb56938022018199d2e7fe1742", size = 181460, upload-time = "2026-09-07T06:52:35.841Z" },
     { url = "https://files.pythonhosted.org/packages/0f/b2/e54e6e445d600e22b107e4005714cad0657bc7dc19d200817ab7a62ac722/caio-0.12.4-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:456a93868ff007cea65d916d96d192cda8b9992c6eee046cb0159040f9446ab5", size = 179230, upload-time = "2026-09-07T06:52:36.978Z" },
     { url = "https://files.pythonhosted.org/packages/e8/e6/07100a694613344d22958fb6d803fdf914ee9395278fe58ad1b1b9c59e52/caio-0.12.4-py3-none-any.whl", hash = "sha256:7a5e231bbf81eaed269f99afa9ef46457f51f9407952a1795c0795b3a62c23c0", size = 25628, upload-time = "2026-09-07T06:52:38.147Z" },
+]
+
+[[package]]
+name = "campsite-booker"
+version = "0.1.0"
+source = { editable = "apps/campsite-booker" }
+dependencies = [
+    { name = "alembic" },
+    { name = "fastmcp" },
+    { name = "google-api-python-client" },
+    { name = "google-auth-oauthlib" },
+    { name = "httpx" },
+    { name = "loguru" },
+    { name = "playwright" },
+    { name = "python-dotenv" },
+    { name = "python-telegram-bot" },
+    { name = "sqlalchemy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "respx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.20.0" },
+    { name = "fastmcp", specifier = ">=4.0" },
+    { name = "google-api-python-client", specifier = ">=2.201.0" },
+    { name = "google-auth-oauthlib", specifier = ">=1.5.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "loguru", specifier = ">=0.7.2" },
+    { name = "playwright", specifier = ">=1.47.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-telegram-bot", specifier = ">=22.8" },
+    { name = "sqlalchemy", specifier = ">=2.0.54" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "respx", specifier = ">=0.22.0" },
 ]
 
 [[package]]
