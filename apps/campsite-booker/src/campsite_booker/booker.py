@@ -415,13 +415,21 @@ def interactive_login(settings: Settings, timeout_s: int = 300) -> None:
         if is_logged_in(page):
             logger.info("Already signed in")
         else:
-            page.locator(LOGIN_BUTTON).first.click()
-            page.locator("#email").wait_for(state="visible")
-            if settings.recgov_email:
-                page.locator("#email").fill(settings.recgov_email)
-            if settings.recgov_password:
-                page.locator("#password").fill(settings.recgov_password)
-                page.get_by_role("button", name="Log In", exact=True).click()
+            try:
+                # The site may have opened the login modal (or another one
+                # over the header) by itself, so only click when it isn't up.
+                email = page.locator("#email")
+                if not email.is_visible():
+                    page.locator(LOGIN_BUTTON).first.click()
+                    email.wait_for(state="visible")
+                if settings.recgov_email:
+                    email.fill(settings.recgov_email)
+                if settings.recgov_password:
+                    page.locator("#password").fill(settings.recgov_password)
+                    page.get_by_role("button", name="Log In", exact=True).click()
+            except PlaywrightTimeout:
+                # Something's in the way: you can still sign in by hand.
+                logger.info("Couldn't open the login form; use the window")
             print("Finish signing in in the browser window (it waits 5 minutes)...")
             page.locator(LOGIN_BUTTON).first.wait_for(
                 state="detached", timeout=timeout_s * 1000
