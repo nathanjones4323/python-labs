@@ -75,10 +75,9 @@ class Settings:
     roommate_zelle: str | None
     # The roommate's share of every bill, in percent.
     split_percent: int
-    # SCE autopay debits this many days after the statement date. Until SCE
-    # sends a confirmation email we know how to read, that's when the
-    # request goes out.
-    electric_autopay_lag_days: int
+    # SCE autopay debits this many days before the due date. SCE doesn't
+    # email when it does, so that's when the request goes out.
+    electric_autopay_days_before_due: int
     # Bill dates are local dates.
     timezone: ZoneInfo
     # The whole month's rent, charged (split_percent of it) on the last day
@@ -101,7 +100,7 @@ class Settings:
             roommate_venmo=_required("ROOMMATE_VENMO").removeprefix("@"),
             roommate_zelle=os.environ.get("ROOMMATE_ZELLE", "").strip() or None,
             split_percent=split,
-            electric_autopay_lag_days=_int("SCE_AUTOPAY_LAG_DAYS", 10),
+            electric_autopay_days_before_due=_int("SCE_AUTOPAY_DAYS_BEFORE_DUE", 11),
             timezone=ZoneInfo(
                 _optional("PAY_MY_BILLS_TIMEZONE", "America/Los_Angeles")
             ),

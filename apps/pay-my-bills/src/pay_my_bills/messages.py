@@ -41,8 +41,9 @@ def request_text(request: SplitRequest, settings: Settings, *, reminder: bool) -
     else:
         if payment.source == ASSUMED:
             how = (
-                f"autopay date {_day(payment.paid_on)} "
-                "(no confirmation email yet, so this is the bill's amount)"
+                f"autopay expected {_day(payment.paid_on)} "
+                "(SCE doesn't email when it's taken, so this is the bill's "
+                "amount and date: check your bank)"
             )
         else:
             how = f"paid {_day(payment.paid_on)}"
@@ -110,7 +111,7 @@ def status_text(
         for bill in bills:
             when = autopay_date(bill, settings)
             expected = (
-                f"autopay {_day(when)}"
+                f"autopay expected {_day(when)}"
                 if when
                 else f"due {_day(bill.due_date)}"
                 if bill.due_date

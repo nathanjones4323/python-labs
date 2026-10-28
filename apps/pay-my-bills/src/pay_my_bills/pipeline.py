@@ -6,9 +6,10 @@ own, so the whole flow runs in tests against a SQLite file. The bot calls
 and marks each thing sent only once Telegram has taken it.
 
 A payment is what triggers a request: the email saying the money went out,
-or, for SCE (whose autopay confirmation hasn't been seen yet), the autopay
-date passing. Rent is a payment too, made on the last day of each month
-(`charge_rent`), so it's asked for, reminded and settled the same way.
+or, for SCE (which doesn't email when autopay takes the money), the
+expected autopay date passing. Rent is a payment too, made on the last day
+of each month (`charge_rent`), so it's asked for, reminded and settled the
+same way.
 
 When the real email for an assumed payment turns up later it takes the
 assumed one's place instead of asking a second time.
@@ -311,9 +312,11 @@ def local_today(settings: Settings, now: datetime) -> date:
 
 
 def autopay_date(bill: Bill, settings: Settings) -> date | None:
-    if bill.utility != ELECTRIC:
+    """When SCE's autopay should take the bill: a set number of days before
+    it's due (statement Oct 14, due Nov 2, taken Oct 22)."""
+    if bill.utility != ELECTRIC or bill.due_date is None:
         return None
-    return bill.statement_date + timedelta(days=settings.electric_autopay_lag_days)
+    return bill.due_date - timedelta(days=settings.electric_autopay_days_before_due)
 
 
 def assume_autopay(

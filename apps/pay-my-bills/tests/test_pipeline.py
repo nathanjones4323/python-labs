@@ -142,19 +142,21 @@ def test_failed_payment_is_reported_not_requested(db, settings):
 
 def test_sce_request_waits_for_the_autopay_date(db, settings):
     mailbox = FakeMailbox(sce_bill())
-    poll(db, settings, mailbox, "2026-10-23 12:00")
+    # Due Nov 2, so autopay is expected Oct 22.
+    poll(db, settings, mailbox, "2026-10-21 12:00")
     assert count(db, SplitRequest) == 0
 
-    poll(db, settings, mailbox, "2026-10-24 00:05")
+    poll(db, settings, mailbox, "2026-10-22 00:05")
     [request] = requests(db)
     assert request.share_cents == 4348
     assert request.payment.source == ASSUMED
-    assert request.payment.paid_on == date(2026, 10, 24)
-    [item] = send_all(db, settings, "2026-10-24 00:05")
-    assert "no confirmation email yet" in item.text
+    assert request.payment.paid_on == date(2026, 10, 22)
+    [item] = send_all(db, settings, "2026-10-22 00:05")
+    assert "autopay expected Oct 22" in item.text
+    assert "SCE doesn't email" in item.text
 
     # Only once.
-    poll(db, settings, mailbox, "2026-10-25 00:05")
+    poll(db, settings, mailbox, "2026-10-23 00:05")
     assert count(db, SplitRequest) == 1
 
 
@@ -342,7 +344,7 @@ def test_status_lists_open_requests_and_waiting_bills(db, settings):
     )
     text = service.status(db, settings)
     assert "Ventura Water Oct 2026 ($57.19 total): $28.60, 🕓" in text
-    assert "SCE Oct 2026: $86.96, autopay Oct 24" in text
+    assert "SCE Oct 2026: $86.96, autopay expected Oct 22" in text
 
 
 def test_duplicate_bill_email_is_one_bill(db, settings):

@@ -84,7 +84,7 @@ def settings(tmp_path) -> Settings:
         roommate_venmo="AGWill",
         roommate_zelle=None,
         split_percent=50,
-        electric_autopay_lag_days=10,
+        electric_autopay_days_before_due=11,
         timezone=ZoneInfo("America/Los_Angeles"),
     )
 
