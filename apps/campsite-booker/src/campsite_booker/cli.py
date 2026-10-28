@@ -1,6 +1,7 @@
 """`campsite-booker-cli`: search and manage watches from a terminal.
 
     campsite-booker-cli campgrounds "upper pines"
+    campsite-booker-cli campgrounds "big sur"        # state parks too
     campsite-booker-cli campgrounds --near 34.28,-119.29 --radius 40
     campsite-booker-cli open 232447 --arrive 2026-11-06 --nights 2
     campsite-booker-cli open 232447 232450 --arrive 2026-11-01 --until 2026-11-30 \\
@@ -14,6 +15,9 @@
     campsite-booker-cli pay 7
     campsite-booker-cli timing --days 14
 
+Campground ids starting rc- are California state parks (ReserveCalifornia):
+they can be searched and watched, not held or paid for.
+
 Paying (--pay, --auto-pay, pay) uses the card saved on the recreation.gov
 account, and is a dry run unless CAMPSITE_SUBMIT_PAYMENT=true.
 """
@@ -23,10 +27,11 @@ from datetime import UTC, date, datetime, timedelta
 
 from campsite_booker import booker, service
 from campsite_booker.availability import StayCriteria, parse_weekdays
+from campsite_booker.campgrounds import Campgrounds
 from campsite_booker.config import Settings
 from campsite_booker.db import make_session_factory, migrate, utcnow
 from campsite_booker.messages import site_kind
-from campsite_booker.recgov import RecGov
+from campsite_booker.recgov import is_state_park
 
 
 def _criteria_args(parser: argparse.ArgumentParser) -> None:
@@ -136,7 +141,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = Settings.from_env()
     today = datetime.now(settings.timezone).date()
 
-    with RecGov() as recgov:
+    with Campgrounds() as recgov:
         if args.command == "campgrounds":
             if args.near:
                 lat, lng = (float(x) for x in args.near.split(","))
@@ -147,7 +152,7 @@ def main(argv: list[str] | None = None) -> None:
                 )
             for c in found:
                 miles = f"{c.distance_miles:5.1f} mi  " if c.distance_miles else ""
-                print(f"{c.id:>9}  {miles}{c.name} ({c.park or c.state or ''})")
+                print(f"{c.id:>11}  {miles}{c.name} ({c.park or c.state or ''})")
             return
 
         if args.command == "open":
@@ -159,10 +164,11 @@ def main(argv: list[str] | None = None) -> None:
                 if result.error:
                     print(f"  error: {result.error}")
                 for s in result.stays:
+                    people = f", up to {s.max_people}" if s.max_people else ""
                     print(
                         f"  {s.check_in} → {s.check_out}  site {s.site:<6} "
-                        f"id {s.campsite_id:<7} {site_kind(s.campsite_type)}, "
-                        f"up to {s.max_people}  {s.url}"
+                        f"id {s.campsite_id:<7} {site_kind(s.campsite_type)}"
+                        f"{people}  {s.url}"
                     )
                 if not result.stays and not result.error:
                     print("  nothing open")
@@ -172,6 +178,8 @@ def main(argv: list[str] | None = None) -> None:
         sessions = make_session_factory(settings.database_url)
 
         if args.command == "watch":
+            if (args.auto_hold or args.auto_pay) and is_state_park(args.campground_id):
+                parser.exit(1, f"{service.NO_STATE_PARK_HOLDS}\n")
             campground = recgov.campground(args.campground_id)
             watch = service.create_watch(
                 sessions,
@@ -190,6 +198,8 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "stop":
             print(f"Stopped #{service.stop_watch(sessions, args.watch_id).id}")
         elif args.command == "hold":
+            if is_state_park(args.campground_id):
+                parser.exit(1, f"{service.NO_STATE_PARK_HOLDS}\n")
             campground = recgov.campground(args.campground_id)
             stay = service.stay_at(
                 recgov, args.campground_id, args.campsite_id, args.arrive, args.nights

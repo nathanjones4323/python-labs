@@ -80,7 +80,11 @@ $20.75 (drop `.00`).
 
 ## Campsites
 
-- recreation.gov only (federal campgrounds). For a state park, say so.
+- recreation.gov (federal campgrounds) and ReserveCalifornia (California
+  state parks, e.g. Pfeiffer Big Sur; ids start `rc-`). Other states' parks
+  aren't covered: say so. State parks can be searched and watched, but not
+  held or paid for: give the ReserveCalifornia link to book it themselves,
+  and don't offer `auto_hold` for them.
 - Find ids with `search_campgrounds` (use coordinates for "near X"), then
   `find_open_campsites`. List a few stays: site, dates, type, link.
 - A hold puts the site in their cart for 15 minutes. Say so, with the cart

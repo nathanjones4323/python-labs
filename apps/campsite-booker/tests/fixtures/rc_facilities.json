@@ -1,0 +1,37 @@
+[
+ {
+  "FacilityId": 2001,
+  "PlaceId": 1001,
+  "Name": "Pfeiffer Big Sur Campground",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "FacilityId": 2002,
+  "PlaceId": 1001,
+  "Name": "Day Use Parking",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "FacilityId": 2003,
+  "PlaceId": 1002,
+  "Name": "Campground",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "FacilityId": 2004,
+  "PlaceId": 1003,
+  "Name": "Doheny Campground",
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "FacilityId": 2005,
+  "PlaceId": 1001,
+  "Name": "Staff Camp",
+  "AllowWebBooking": false,
+  "IsWebViewable": false
+ }
+]

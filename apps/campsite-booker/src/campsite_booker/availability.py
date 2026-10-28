@@ -1,7 +1,8 @@
 """Which stays a campground's availability offers for what you're after.
 
-Pure functions over `recgov.Campsite`s: the search, the watcher and the
-tests all go through `find_stays`.
+Pure functions over `recgov.Campsite`s (ReserveCalifornia's are read into
+the same shape): the search, the watcher and the tests all go through
+`find_stays`.
 """
 
 from collections.abc import Iterable
@@ -100,8 +101,11 @@ def free_for(site: Campsite, check_in: date, nights: int) -> bool:
     """The arrival night is `Available` and so is every night after it, or
     `Open`. Just past the booking window recreation.gov shows a week of
     `Open` nights: they can't be booked on their own, only as the end of a
-    stay that arrives inside the window."""
+    stay that arrives inside the window. A stay shorter than the site's
+    minimum for its arrival night (ReserveCalifornia's) can't be booked."""
     if site.nights.get(check_in) != AVAILABLE:
+        return False
+    if nights < site.min_nights.get(check_in, 1):
         return False
     return all(
         site.nights.get(check_in + timedelta(days=i)) in (AVAILABLE, OPEN)

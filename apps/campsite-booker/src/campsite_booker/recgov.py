@@ -82,6 +82,9 @@ class Campsite:
     max_people: int
     min_people: int
     nights: dict[date, str] = field(default_factory=dict)
+    # The fewest nights a stay arriving that night can be, where it's more
+    # than one (ReserveCalifornia's weekend minimums; recreation.gov has none).
+    min_nights: dict[date, int] = field(default_factory=dict)
 
     @property
     def is_group_site(self) -> bool:
@@ -107,10 +110,30 @@ class Stay:
 
     @property
     def url(self) -> str:
+        if is_state_park(self.campground_id):
+            # ReserveCalifornia has no page per site: the campground's grid.
+            return campground_url(self.campground_id)
         return campsite_url(self.campsite_id)
+
+    @property
+    def holdable(self) -> bool:
+        """Whether the booker can put it in a cart: recreation.gov only."""
+        return not is_state_park(self.campground_id)
+
+
+# ReserveCalifornia's campground ids start with this (see reservecalifornia.py).
+STATE_PARK_PREFIX = "rc-"
+
+
+def is_state_park(campground_id: str) -> bool:
+    return campground_id.startswith(STATE_PARK_PREFIX)
 
 
 def campground_url(campground_id: str) -> str:
+    if is_state_park(campground_id):
+        from campsite_booker.reservecalifornia import facility_url
+
+        return facility_url(campground_id)
     return f"{BASE_URL}/camping/campgrounds/{campground_id}"
 
 
@@ -212,6 +235,38 @@ def months_between(start: date, end: date) -> list[date]:
 # --- the client -----------------------------------------------------------------
 
 
+def request_json(
+    client: httpx.Client,
+    method: str,
+    path: str,
+    site: str,
+    error: type[RecGovError],
+    **kwargs: Any,
+) -> Any:
+    """`path`'s JSON, retrying a 429 / 5xx / dropped connection; `error`
+    (naming `site`) for anything else."""
+    wait = BACKOFF_S
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            response = client.request(method, path, **kwargs)
+        except httpx.TransportError as e:
+            if attempt == ATTEMPTS:
+                raise error(f"Couldn't reach {site}: {e}") from e
+        else:
+            if response.status_code < 400:
+                try:
+                    return response.json()
+                except ValueError as e:
+                    raise error(f"{path} didn't return JSON") from e
+            retryable = response.status_code == 429 or response.status_code >= 500
+            if not retryable or attempt == ATTEMPTS:
+                raise error(f"{site} answered {response.status_code} for {path}")
+        logger.debug(f"Retrying {path} in {wait:.0f}s (attempt {attempt})")
+        time.sleep(wait)
+        wait *= 2
+    raise AssertionError("unreachable")
+
+
 class RecGov:
     """A small synchronous client. Use as a context manager, or `close()`."""
 
@@ -233,28 +288,9 @@ class RecGov:
         self._client.close()
 
     def _get(self, path: str, params: dict[str, Any] | list | None = None) -> Any:
-        wait = BACKOFF_S
-        for attempt in range(1, ATTEMPTS + 1):
-            try:
-                response = self._client.get(path, params=params)
-            except httpx.TransportError as e:
-                if attempt == ATTEMPTS:
-                    raise RecGovError(f"Couldn't reach recreation.gov: {e}") from e
-            else:
-                if response.status_code < 400:
-                    try:
-                        return response.json()
-                    except ValueError as e:
-                        raise RecGovError(f"{path} didn't return JSON") from e
-                retryable = response.status_code == 429 or response.status_code >= 500
-                if not retryable or attempt == ATTEMPTS:
-                    raise RecGovError(
-                        f"recreation.gov answered {response.status_code} for {path}"
-                    )
-            logger.debug(f"Retrying {path} in {wait:.0f}s (attempt {attempt})")
-            time.sleep(wait)
-            wait *= 2
-        raise AssertionError("unreachable")
+        return request_json(
+            self._client, "GET", path, "recreation.gov", RecGovError, params=params
+        )
 
     def search(self, query: str, limit: int = 20) -> list[Campground]:
         """Campgrounds whose name, park or place matches `query`."""

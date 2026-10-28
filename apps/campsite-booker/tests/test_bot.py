@@ -532,3 +532,27 @@ def test_a_gmail_sign_in_problem_is_reported_once(db, recgov, make_bot):
     asyncio.run(bot.check_email(tg))
     asyncio.run(bot.check_email(tg))
     assert len(tg.sent) == 1 and "alert emails" in tg.sent[0][1]
+
+
+def test_a_state_park_opening_links_to_reservecalifornia_without_hold(
+    db, recgov, make_bot
+):
+    big_sur = Campground(id="rc-1001-2001", name="Pfeiffer Big Sur Campground")
+    w = service.create_watch(db, big_sur, StayCriteria(FRI, FRI, 2))
+    recgov.sites[big_sur.id] = [
+        site("50001", [FRI, FRI + timedelta(days=1)], site="001", max_people=0)
+    ]
+    bot, held = make_bot()
+    tg = FakeTelegram()
+
+    assert asyncio.run(bot.check_once(tg)) == 1
+    _, text, markup = tg.sent[0]
+    assert "Open at Pfeiffer Big Sur Campground" in text
+    # ReserveCalifornia doesn't say how many a site holds.
+    assert "up to" not in text
+    assert "book it on ReserveCalifornia" in text and "Hold" not in text
+    assert buttons(markup) == [
+        "https://www.reservecalifornia.com/park/1001/2001",
+        f"stop:{w.id}",
+    ]
+    assert held == []

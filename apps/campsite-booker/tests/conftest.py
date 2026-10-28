@@ -61,8 +61,8 @@ def site(campsite_id: str, free: list[date], **kw) -> Campsite:
 
 
 class FakeRecGov:
-    """Stands in for `RecGov`: `sites[campground_id]` is what availability
-    returns; `fail` makes a campground's fetch raise."""
+    """Stands in for `Campgrounds` (both sites): `sites[campground_id]` is
+    what availability returns; `fail` makes a campground's fetch raise."""
 
     def __init__(self) -> None:
         self.sites: dict[str, list[Campsite]] = {}
@@ -90,6 +90,9 @@ class FakeRecGov:
 
     def campground(self, campground_id: str) -> Campground:
         return Campground(id=campground_id, name=f"Campground {campground_id}")
+
+    def search(self, query: str, limit: int = 20) -> list[Campground]:
+        return [self.campground(cid) for cid in self.sites][:limit]
 
 
 class FakeMailbox:

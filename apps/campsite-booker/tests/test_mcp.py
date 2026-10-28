@@ -16,7 +16,7 @@ ARRIVE = date.today() + timedelta(days=10)
 
 @pytest.fixture
 def server(settings, recgov, tmp_path, monkeypatch):
-    monkeypatch.setattr(mcp_module, "RecGov", lambda: recgov)
+    monkeypatch.setattr(mcp_module, "Campgrounds", lambda: recgov)
     recgov.close = lambda: None
     settings = replace(settings, database_url=f"sqlite:///{tmp_path / 'mcp.db'}")
     return mcp_module.create_server(settings)
@@ -188,3 +188,44 @@ def test_auto_pay_and_paying_holds(server, recgov, monkeypatch):
         "77",
         None,
     )
+
+
+def test_state_parks_are_searched_and_watched_but_not_held(server, recgov):
+    big_sur = "rc-1001-2001"
+    recgov.sites[big_sur] = [site("50001", [ARRIVE])]
+    found = call(server, "search_campgrounds", query="big sur")["result"]
+    assert [(c["campground_id"], c["source"]) for c in found] == [
+        (big_sur, "reservecalifornia")
+    ]
+    assert found[0]["url"] == "https://www.reservecalifornia.com/park/1001/2001"
+
+    made = call(
+        server,
+        "create_watch",
+        campground_id=big_sur,
+        arrival_from=ARRIVE.isoformat(),
+        nights=1,
+    )
+    assert made["campground_id"] == big_sur
+    # No release schedule to report, and none asked for.
+    assert "on_sale_through" not in made and "note" not in made
+    assert recgov.release_calls == []
+
+    with pytest.raises(ToolError, match="ReserveCalifornia"):
+        call(
+            server,
+            "create_watch",
+            campground_id=big_sur,
+            arrival_from=ARRIVE.isoformat(),
+            nights=1,
+            auto_hold=True,
+        )
+    with pytest.raises(ToolError, match="ReserveCalifornia"):
+        call(
+            server,
+            "hold_campsite",
+            campground_id=big_sur,
+            campsite_id="50001",
+            check_in=ARRIVE.isoformat(),
+            nights=1,
+        )
