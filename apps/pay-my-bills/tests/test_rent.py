@@ -34,7 +34,7 @@ def test_rent_is_asked_for_at_9am_on_the_last_day(db, rent):
     assert item.text.startswith("🏠 <b>Rent November 2026</b>: $2,900.00")
     assert "Austin Will owes <b>$1,450.00</b> (50%)" in item.text
     assert "amount=1450.00" in item.venmo_url
-    assert "note=Rent%20November%202026" in item.venmo_url
+    assert "note=Rent%C2%A0November%C2%A02026" in item.venmo_url
 
 
 def test_rent_is_asked_for_once_a_month(db, rent):
