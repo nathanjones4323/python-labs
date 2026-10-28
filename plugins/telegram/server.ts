@@ -135,6 +135,8 @@ function defaultAccess(): Access {
 }
 
 const MAX_CHUNK_LIMIT = 4096
+// Fork: a rich message (Bot API 10.1+) holds up to 32768 characters.
+const MAX_RICH_CHUNK_LIMIT = 30000
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
 // reply's files param takes any path. .env is ~60 bytes and ships as a
@@ -179,6 +181,80 @@ function buildKeyboard(rows: unknown): InlineKeyboard {
 // Message keys (`chat:message`) whose buttons were already pressed, so a
 // double tap that beats the edit can't emit the choice twice.
 const pressedButtons = new Set<string>()
+
+// Fork: rich messages, as the tee-time bot sends them (`sendRichMessage`):
+// GitHub-flavoured Markdown plus some HTML (`<table>`, `<footer>`,
+// `<blockquote expandable>`). grammY has no wrappers yet, so they go through
+// `api.raw`, which forwards any method name.
+type Format = 'rich' | 'text' | 'markdownv2'
+const FORMAT_SCHEMA = {
+  type: 'string',
+  enum: ['rich', 'text', 'markdownv2'],
+  description: "Rendering mode. 'rich' (default): GitHub-flavoured Markdown (**bold**, _italic_, `code`, links, | tables |) plus HTML blocks such as <table compact>, <footer> and <blockquote expandable>; a blank line breaks a line, a single newline doesn't, and `$` before a digit is kept as a price. 'text': plain. 'markdownv2': Telegram MarkdownV2, caller escapes.",
+}
+
+function formatOf(arg: unknown): Format {
+  return arg === 'text' || arg === 'markdownv2' ? arg : 'rich'
+}
+
+// `$` opens a formula in rich Markdown, so "$20 or $25" would be one. Inside
+// an HTML block a backslash shows as itself, and `$` is literal anyway.
+const HTML_BLOCK = /<(table|footer|blockquote)\b[\s\S]*?<\/\1>/g
+const PRICE = /(?<!\\)\$(?=\d)/g
+
+function escapePrices(markdown: string): string {
+  let out = ''
+  let last = 0
+  for (const m of markdown.matchAll(HTML_BLOCK)) {
+    out += markdown.slice(last, m.index).replace(PRICE, '\\$') + m[0]
+    last = m.index! + m[0].length
+  }
+  return out + markdown.slice(last).replace(PRICE, '\\$')
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// The Markdown of rich messages that carry buttons, by `chat:message`. A
+// rich message comes back in a tap without its content, so this is what the
+// card is redrawn from. Lost on restart; a tap then just drops the buttons.
+const richWithButtons = new Map<string, string>()
+const MAX_RICH_REMEMBERED = 200
+
+function rememberRich(key: string, markdown: string): void {
+  richWithButtons.delete(key)
+  richWithButtons.set(key, markdown)
+  if (richWithButtons.size > MAX_RICH_REMEMBERED) {
+    richWithButtons.delete(richWithButtons.keys().next().value!)
+  }
+}
+
+async function sendRich(
+  chat_id: string,
+  markdown: string,
+  extra: Record<string, unknown>,
+): Promise<{ message_id: number }> {
+  return await (bot.api.raw as any).sendRichMessage({
+    chat_id,
+    rich_message: { markdown },
+    ...extra,
+  })
+}
+
+async function editRich(
+  chat_id: string,
+  message_id: number,
+  markdown: string,
+  extra: Record<string, unknown> = {},
+): Promise<unknown> {
+  return await (bot.api.raw as any).editMessageText({
+    chat_id,
+    message_id,
+    rich_message: { markdown },
+    ...extra,
+  })
+}
 
 function readAccessFile(): Access {
   try {
@@ -438,6 +514,8 @@ const mcp = new Server(
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
       // Fork: buttons.
+      'reply and edit_message send rich Markdown by default (format: rich): GitHub-flavoured Markdown with HTML blocks — **bold**, _italic_, `code`, tables (Markdown, or <table compact> / <table striped compact> with <tr><th><td>), <footer> and <blockquote expandable>. Leave a blank line between lines; a single newline does not break one. Pass format: text for plain text.',
+      '',
       'reply and edit_message accept buttons: rows of {text, data} shown under the message. A tap arrives as a <channel> message with a button attribute (the data you set) and the message_id of the message it was on; the message already shows the choice, so don\'t repeat it. A tap is the sender picking an option, not approval of a permission prompt.',
       '',
       "Telegram's Bot API exposes no history or search — you only see messages as they arrive. If you need earlier context, ask the user to paste it or summarize.",
@@ -518,11 +596,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: { type: 'string' },
             description: 'Absolute file paths to attach. Images send as photos (inline preview); other types as documents. Max 50MB each.',
           },
-          format: {
-            type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
-          },
+          format: FORMAT_SCHEMA,
           buttons: BUTTONS_SCHEMA,
         },
         required: ['chat_id', 'text'],
@@ -561,11 +635,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           chat_id: { type: 'string' },
           message_id: { type: 'string' },
           text: { type: 'string' },
-          format: {
-            type: 'string',
-            enum: ['text', 'markdownv2'],
-            description: "Rendering mode. 'markdownv2' enables Telegram formatting (bold, italic, code, links). Caller must escape special chars per MarkdownV2 rules. Default: 'text' (plain, no escaping needed).",
-          },
+          format: FORMAT_SCHEMA,
           buttons: {
             ...BUTTONS_SCHEMA,
             description: BUTTONS_SCHEMA.description + ' Leaving buttons out of an edit removes the message\'s buttons.',
@@ -586,7 +656,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const text = args.text as string
         const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined
         const files = (args.files as string[] | undefined) ?? []
-        const format = (args.format as string | undefined) ?? 'text'
+        const format = formatOf(args.format)
         const parseMode = format === 'markdownv2' ? 'MarkdownV2' as const : undefined
         const keyboard = args.buttons != null ? buildKeyboard(args.buttons) : undefined
 
@@ -601,10 +671,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         }
 
         const access = loadAccess()
-        const limit = Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT))
-        const mode = access.chunkMode ?? 'length'
         const replyMode = access.replyToMode ?? 'first'
-        const chunks = chunk(text, limit, mode)
+        // A rich message splits between paragraphs, never inside a table.
+        const chunks = format === 'rich'
+          ? chunk(escapePrices(text), MAX_RICH_CHUNK_LIMIT, 'newline')
+          : chunk(
+              text,
+              Math.max(1, Math.min(access.textChunkLimit ?? MAX_CHUNK_LIMIT, MAX_CHUNK_LIMIT)),
+              access.chunkMode ?? 'length',
+            )
         const sentIds: number[] = []
 
         try {
@@ -613,12 +688,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               reply_to != null &&
               replyMode !== 'off' &&
               (replyMode === 'all' || i === 0)
-            const sent = await bot.api.sendMessage(chat_id, chunks[i], {
+            const last = i === chunks.length - 1
+            const extra = {
               ...(shouldReplyTo ? { reply_parameters: { message_id: reply_to } } : {}),
-              ...(parseMode ? { parse_mode: parseMode } : {}),
               // Buttons go under the last chunk, where the reader ends up.
-              ...(keyboard && i === chunks.length - 1 ? { reply_markup: keyboard } : {}),
-            })
+              ...(keyboard && last ? { reply_markup: keyboard } : {}),
+            }
+            const sent = format === 'rich'
+              ? await sendRich(chat_id, chunks[i], extra)
+              : await bot.api.sendMessage(chat_id, chunks[i], {
+                  ...extra,
+                  ...(parseMode ? { parse_mode: parseMode } : {}),
+                })
+            if (format === 'rich' && keyboard && last) {
+              rememberRich(`${chat_id}:${sent.message_id}`, chunks[i])
+            }
             sentIds.push(sent.message_id)
           }
         } catch (err) {
@@ -678,20 +762,31 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       }
       case 'edit_message': {
         assertAllowedChat(args.chat_id as string)
-        const editFormat = (args.format as string | undefined) ?? 'text'
+        const editFormat = formatOf(args.format)
         const editParseMode = editFormat === 'markdownv2' ? 'MarkdownV2' as const : undefined
         const editKeyboard = args.buttons != null ? buildKeyboard(args.buttons) : undefined
-        const edited = await bot.api.editMessageText(
-          args.chat_id as string,
-          Number(args.message_id),
-          args.text as string,
-          {
-            ...(editParseMode ? { parse_mode: editParseMode } : {}),
-            ...(editKeyboard ? { reply_markup: editKeyboard } : {}),
-          },
-        )
+        const editKey = `${args.chat_id}:${Number(args.message_id)}`
+        const richText = editFormat === 'rich' ? escapePrices(args.text as string) : ''
+        const edited = editFormat === 'rich'
+          ? await editRich(
+              args.chat_id as string,
+              Number(args.message_id),
+              richText,
+              editKeyboard ? { reply_markup: editKeyboard } : {},
+            )
+          : await bot.api.editMessageText(
+              args.chat_id as string,
+              Number(args.message_id),
+              args.text as string,
+              {
+                ...(editParseMode ? { parse_mode: editParseMode } : {}),
+                ...(editKeyboard ? { reply_markup: editKeyboard } : {}),
+              },
+            )
+        if (editFormat === 'rich' && editKeyboard) rememberRich(editKey, richText)
+        else richWithButtons.delete(editKey)
         // Fresh buttons on a message that was already answered can be tapped again.
-        if (editKeyboard) pressedButtons.delete(`${args.chat_id}:${Number(args.message_id)}`)
+        if (editKeyboard) pressedButtons.delete(editKey)
         const id = typeof edited === 'object' ? edited.message_id : args.message_id
         return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
       }
@@ -806,8 +901,9 @@ async function handleButton(ctx: Context, data: string): Promise<void> {
     return
   }
   const msg = ctx.callbackQuery!.message
-  // Older than 48h, Telegram sends the message back without its content.
-  if (!msg || !('text' in msg) || msg.date === 0) {
+  // Older than 48h, Telegram sends the message back without its content. A
+  // rich message never has `text`, so the date is what tells.
+  if (!msg || msg.date === 0) {
     await ctx.answerCallbackQuery({ text: 'That message has expired.' }).catch(() => {})
     return
   }
@@ -824,10 +920,23 @@ async function handleButton(ctx: Context, data: string): Promise<void> {
     .flat()
     .find(b => 'callback_data' in b && b.callback_data === callbackData)?.text ?? data
   await ctx.answerCallbackQuery({ text: label }).catch(() => {})
-  // Entities keep the original formatting; appended text doesn't move them.
-  await ctx.editMessageText(`${msg.text ?? ''}\n\n→ ${label}`, {
-    ...(msg.entities ? { entities: msg.entities } : {}),
-  }).catch(() => {})
+  const rich = richWithButtons.get(key)
+  if (rich != null) {
+    // Redrawn from what was sent, with the choice in the footer; the
+    // buttons go.
+    richWithButtons.delete(key)
+    await editRich(chat_id, msg.message_id, `${rich}\n\n<footer>→ ${escapeHtml(label)}</footer>`)
+      .catch(() => ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {}))
+  } else if ('text' in msg) {
+    // Entities keep the original formatting; appended text doesn't move them.
+    await ctx.editMessageText(`${msg.text ?? ''}\n\n→ ${label}`, {
+      ...(msg.entities ? { entities: msg.entities } : {}),
+    }).catch(() => {})
+  } else {
+    // A rich message from before a restart: its content is gone, so only the
+    // buttons can go.
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {})
+  }
 
   const from = ctx.from!
   mcp.notification({
