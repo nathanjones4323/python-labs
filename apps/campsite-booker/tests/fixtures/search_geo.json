@@ -1,0 +1,80 @@
+{
+ "fq": [
+  "entity_type:campground"
+ ],
+ "latitude": "34.27000000000000",
+ "longitude": "-119.23000000000000",
+ "radius": "60",
+ "results": [
+  {
+   "entity_id": "232138",
+   "entity_type": "campground",
+   "name": "WHEELER GORGE",
+   "parent_name": "Los Padres National Forest",
+   "latitude": "34.51194440000000",
+   "longitude": "-119.27361110000000",
+   "distance": "27.20",
+   "reservable": true,
+   "city": "Ojai",
+   "state_code": "California",
+   "price_range": {
+    "amount_max": 70,
+    "amount_min": 33.97,
+    "per_unit": "night"
+   },
+   "campsite_reserve_type": [
+    "Site-Specific"
+   ],
+   "campsites_count": "66",
+   "time_zone": null
+  },
+  {
+   "entity_id": "232342",
+   "entity_type": "campground",
+   "name": "HOLIDAY GROUP CAMPGROUND",
+   "parent_name": "Los Padres National Forest",
+   "latitude": "34.51722220000000",
+   "longitude": "-119.27694440000000",
+   "distance": "27.83",
+   "reservable": true,
+   "city": "Ojai",
+   "state_code": "California",
+   "price_range": {
+    "amount_max": 150,
+    "amount_min": 150,
+    "per_unit": "night"
+   },
+   "campsite_reserve_type": [
+    "Site-Specific"
+   ],
+   "campsites_count": "1",
+   "time_zone": null
+  },
+  {
+   "entity_id": "273845",
+   "entity_type": "campground",
+   "name": "ROSE VALLEY CAMPGROUND",
+   "parent_name": "Los Padres National Forest",
+   "latitude": "34.53260000000000",
+   "longitude": "-119.18240000000000",
+   "distance": "29.52",
+   "reservable": true,
+   "city": "Ojai",
+   "state_code": "California",
+   "price_range": {
+    "amount_max": 30,
+    "amount_min": 30,
+    "per_unit": "night"
+   },
+   "campsite_reserve_type": [
+    "Site-Specific"
+   ],
+   "campsites_count": "9",
+   "time_zone": null
+  }
+ ],
+ "size": 10,
+ "spelling_autocorrected": false,
+ "start": "0",
+ "total": 17
+}

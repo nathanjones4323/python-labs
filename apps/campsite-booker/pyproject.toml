@@ -1,0 +1,46 @@
+[project]
+name = "campsite-booker"
+version = "0.1.0"
+description = "Finds open campsites on recreation.gov, watches for cancellations and holds them in your cart"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "playwright>=1.47.0",
+    "python-dotenv>=1.0.0",
+    "loguru>=0.7.2",
+    "sqlalchemy>=2.0.54",
+    "alembic>=1.20.0",
+    "python-telegram-bot>=22.8",
+    "fastmcp>=4.0",
+    # recreation.gov's alert emails, as a second trigger (read-only).
+    "google-api-python-client>=2.201.0",
+    "google-auth-oauthlib>=1.5.0",
+]
+
+[project.scripts]
+# The always-on watcher: polls the watches, alerts on Telegram, holds sites.
+campsite-booker = "campsite_booker.bot:main"
+# Sign in to recreation.gov once in a visible browser; holds reuse the session.
+campsite-booker-login = "campsite_booker.login:main"
+# Sign in to Gmail once, for recreation.gov's alert emails.
+campsite-booker-gmail-login = "campsite_booker.gmail_login:main"
+# Search and manage watches from a terminal.
+campsite-booker-cli = "campsite_booker.cli:main"
+# The same operations as MCP tools, for the assistant.
+campsite-booker-mcp = "campsite_booker.mcp:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "respx>=0.22.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/campsite_booker"]

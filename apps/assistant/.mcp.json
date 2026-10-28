@@ -1,5 +1,12 @@
 {
   "mcpServers": {
+    "campsite-booker": {
+      "command": "uv",
+      "args": [
+        "run", "--directory", "../campsite-booker",
+        "--package", "campsite-booker", "campsite-booker-mcp"
+      ]
+    },
     "date-planner": {
       "command": "uv",
       "args": ["run", "--directory", "../date-planner", "date-planner-mcp"]

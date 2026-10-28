@@ -1,5 +1,5 @@
 {
-  "enabledMcpjsonServers": ["date-planner", "garmin", "tee-time-booker"],
+  "enabledMcpjsonServers": ["campsite-booker", "date-planner", "garmin", "tee-time-booker"],
   "permissions": {
     "allow": [
       "Read(./memory/**)",
@@ -8,6 +8,7 @@
       "WebFetch",
 
       "Bash",
+      "mcp__campsite-booker",
       "mcp__date-planner",
       "mcp__garmin",
       "mcp__tee-time-booker",
@@ -16,6 +17,9 @@
       "mcp__claude_ai_Gmail__get_thread"
     ],
     "ask": [
+      "mcp__campsite-booker__hold_campsite",
+      "mcp__campsite-booker__pay_hold",
+      "mcp__campsite-booker__set_watch_auto_pay",
       "mcp__tee-time-booker__book_plan",
       "mcp__tee-time-booker__run_request"
     ],

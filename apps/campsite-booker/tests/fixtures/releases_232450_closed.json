@@ -1,0 +1,20 @@
+{
+    "current_release": {
+        "release_time": "2026-10-27T23:00:00-04:00",
+        "end": "2026-10-18T00:00:00Z",
+        "sliding_end": "2026-10-18T00:00:00Z",
+        "group_release_time": "2026-10-27T23:00:00-04:00",
+        "group_end": "2026-10-18T00:00:00Z",
+        "group_sliding_end": "2026-10-18T00:00:00Z"
+    },
+    "next_release": {
+        "release_time": "2027-10-27T23:00:00-04:00",
+        "end": "2026-10-18T00:00:00Z",
+        "sliding_end": "2026-10-18T00:00:00Z",
+        "group_release_time": "2027-10-27T23:00:00-04:00",
+        "group_end": "2026-10-18T00:00:00Z",
+        "group_sliding_end": "2026-10-18T00:00:00Z"
+    },
+    "late_releases": {},
+    "other_releases": {}
+}
