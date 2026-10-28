@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from campsite_booker.db import (
     BY_EMAIL,
+    CHALLENGED,
     DRY_RUN,
     FAILED,
     HELD,
@@ -71,12 +72,20 @@ def alert(item: Alert, held: Collection[int] = ()) -> str:
     if item.found_by == BY_EMAIL:
         lines += ["", "📧 Found checking right after recreation.gov's alert email."]
     if any(s.opening_id not in held for s in item.stays):
-        lines += ["", "Tap one to put it in your cart (15 min to pay)."]
+        lines += [
+            "",
+            "Open one to add it to your cart on recreation.gov, or tap 🤖 Hold "
+            "and I'll try (recreation.gov may want a human check first).",
+        ]
     return "\n".join(lines)
 
 
+def open_button_label(stay: Stay) -> str:
+    return f"Open {stay.site} · {short_day(stay.check_in)}"
+
+
 def hold_button_label(stay: Stay) -> str:
-    return f"Hold {stay.site} · {short_day(stay.check_in)}"
+    return f"🤖 Hold {stay.site}"
 
 
 def holding(stay: Stay, campground_name: str) -> str:
@@ -112,6 +121,18 @@ def hold_result(hold: Hold, tz: ZoneInfo, screenshot_note: bool = False) -> str:
             text += "\n<i>A screenshot and the page are in the artifacts folder.</i>"
         return text
     detail = escape(hold.detail or "")
+    if hold.status == CHALLENGED:
+        text = (
+            f"🧩 {'Tried to auto-hold: ' if hold.automatic else ''}"
+            f"<b>recreation.gov wants a human check</b> before {where} "
+            "goes in the cart, so it isn't held yet.\n\n"
+            "Tap <b>Open the site</b>, pick the dates and Add to Cart yourself "
+            "(answer the check if it asks). Then tap <b>It's in my cart</b> "
+            "and I'll do the checkout."
+        )
+        if hold.checkout_status:
+            text += f"\n\n⚠️ {escape(hold.checkout_detail or '')}"
+        return text
     if hold.status == FAILED:
         text = f"❌ {auto}Couldn't hold {where}.\n{detail}"
     else:

@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- recreation.gov's order details page (Upper Pines site 156, Oct 28 2026),
+     trimmed to what the checkout fills. Ids end in the cart item's uuid. The
+     script stands in for its validation: Proceed to Cart only goes on with a
+     group size, a vehicle count, a primary occupant, equipment and the Need
+     to Know box, and passes what was filled to the cart for the test. -->
+<html>
+<head><title>Order Details</title></head>
+<body>
+<form>
+  <label for="group_size-18b172d0">Group Size</label>
+  <input type="text" name="numberField" id="group_size-18b172d0">
+  <label for="num_vehicles-18b172d0">Number of Vehicles</label>
+  <input type="text" name="numberField" id="num_vehicles-18b172d0" value="0">
+  <input type="radio" name="group_leader_type_radio_group-18b172d0" id="primary_occupant-18b172d0">
+  <label for="primary_occupant-18b172d0">I am the primary occupant</label>
+  <input type="radio" name="group_leader_type_radio_group-18b172d0" id="other_occupant-18b172d0">
+  <label for="other_occupant-18b172d0">Someone else</label>
+  <input type="checkbox" id="equip_tent_checkbox-18b172d0"><label for="equip_tent_checkbox-18b172d0">Tent</label>
+  <input type="checkbox" id="equip_rv_checkbox-18b172d0"><label for="equip_rv_checkbox-18b172d0">RV</label>
+  <input type="text" id="equip_rv_length-18b172d0">
+  <input type="checkbox" name="needToKnowCheckbox" id="need-to-know-checkbox">
+  <label for="need-to-know-checkbox">I have read and agree to this important information</label>
+  <button type="button" id="test-hook-submit"><span class="sarsa-button-content">Proceed to Cart</span></button>
+  <div id="order-details-violations"></div>
+</form>
+<script>
+  const $ = (s) => document.querySelector(s);
+  $("#test-hook-submit").addEventListener("click", () => {
+    const filled = {
+      group: $("[id^=group_size]").value,
+      vehicles: $("[id^=num_vehicles]").value,
+      occupant: $("[id^=primary_occupant]").checked,
+      tent: $("[id^=equip_tent_checkbox]").checked,
+      rv: $("[id^=equip_rv_checkbox]").checked,
+      agreed: $("#need-to-know-checkbox").checked,
+    };
+    const missing = Object.entries(filled)
+      .filter(([k, v]) => k !== "rv" && (v === false || v === "" || v === "0"))
+      .map(([k]) => k);
+    if (missing.length) {
+      $("#order-details-violations").textContent = "Required: " + missing.join(", ");
+      return;
+    }
+    location.href = "/cart?" + new URLSearchParams(filled);
+  });
+</script>
+</body>
+</html>

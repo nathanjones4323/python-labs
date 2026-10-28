@@ -31,7 +31,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from loguru import logger
 from playwright.sync_api import Page
@@ -62,10 +62,27 @@ class CheckoutStopped(Exception):
 
 
 @dataclass(frozen=True)
+class CartItem:
+    """A site that has to be in the cart before paying from it."""
+
+    site: str
+    check_in: date
+
+
+@dataclass(frozen=True)
 class CheckoutResult:
     status: str  # PAID / DRY_RUN / FAILED / UNKNOWN
     detail: str
     confirmation: str | None = None
+
+
+def settle(page: Page, timeout_ms: int = 5_000) -> None:
+    """Give the page's own requests a moment to finish. Some pages never go
+    quiet (the home page keeps analytics going), so this never fails."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except PlaywrightTimeout:
+        pass
 
 
 def _on(url: str, *parts: str) -> bool:
@@ -89,15 +106,33 @@ def _errors(page: Page) -> str | None:
     return "; ".join(texts)[:400] or None
 
 
-def order_details(page: Page, group_size: int) -> None:
-    page.locator("#action-bar-submit").wait_for(timeout=STEP_TIMEOUT_MS)
-    for field in page.locator('input[id^="group_size_"]').all():
-        if field.is_visible() and not field.input_value():
-            field.fill(str(group_size))
+def _fill_empty(page: Page, selector: str, value: str) -> None:
+    for field in page.locator(selector).all():
+        if field.is_visible() and field.input_value() in ("", "0"):
+            field.fill(value)
+
+
+def _tick(page: Page, selector: str) -> None:
+    for box in page.locator(selector).all():
+        if not box.is_checked():
+            box.check(force=True)
+
+
+def order_details(page: Page, group_size: int, settings: Settings) -> None:
+    # Ids end in a per-item uuid ("group_size-18b1…"); the submit button's
+    # id has changed before ("#action-bar-submit" in older code).
+    submit = page.locator("#test-hook-submit, #action-bar-submit")
+    submit.first.wait_for(timeout=STEP_TIMEOUT_MS)
+    _fill_empty(page, 'input[id^="group_size"]', str(group_size))
+    _fill_empty(page, 'input[id^="num_vehicles"]', str(settings.vehicles))
+    _tick(page, 'input[type="radio"][id^="primary_occupant"]')
+    # Campgrounds where equipment is mandatory want one ticked.
+    for kind in settings.equipment:
+        _tick(page, f'input[type="checkbox"][id^="equip_{kind}_checkbox"]')
     box = page.get_by_label(NEED_TO_KNOW)
     if box.count() and not box.first.is_checked():
         box.first.check()
-    page.locator("#action-bar-submit").click()
+    submit.first.click()
     try:
         page.wait_for_url(lambda url: _on(url, "/cart"), timeout=STEP_TIMEOUT_MS)
     except PlaywrightTimeout:
@@ -253,7 +288,8 @@ def confirm(page: Page) -> CheckoutResult:
             "Pressed Confirm but no confirmation came up; check your "
             "reservations on recreation.gov before trying again",
         )
-    page.wait_for_load_state("networkidle")
+    # Paid by now: waiting must not turn that into an error.
+    settle(page)
     if "checkout_still_pending" in page.url:
         return CheckoutResult(
             UNKNOWN, "recreation.gov is still confirming the payment; check your email"
@@ -262,12 +298,48 @@ def confirm(page: Page) -> CheckoutResult:
     return CheckoutResult(PAID, "Paid", match.group(1) if match else None)
 
 
-def complete_order(page: Page, settings: Settings, group_size: int) -> CheckoutResult:
-    """Pay for what's in the cart, starting from the order details page the
-    hold left open, or from the cart. Never raises for the site's reasons."""
+def check_cart(page: Page, expect: CartItem) -> None:
+    """Stop unless the cart has `expect`: paying from the cart pays for all
+    of it. An item reads "156, Upper Pines( STANDARD NONELECTRIC )" with
+    "Check In Sun Nov 08, 2026" under it."""
+    titles = page.locator(".cart-item-summary-title")
     try:
+        titles.first.wait_for(timeout=STEP_TIMEOUT_MS)
+    except PlaywrightTimeout:
+        raise CheckoutStopped("The cart is empty") from None
+    title = titles.filter(has_text=re.compile(rf"^\s*{re.escape(expect.site)},"))
+    check_in = expect.check_in.strftime("%a %b %d, %Y")
+    for item in title.all():
+        # The nearest box around the title that also has the dates.
+        box = item.locator("xpath=ancestor::*[.//*[contains(., 'Check In')]][1]")
+        if box.count() and re.search(
+            rf"Check In\s+{re.escape(check_in)}", box.first.inner_text()
+        ):
+            return
+    raise CheckoutStopped(
+        f"Site {expect.site} arriving {check_in} isn't in your cart, so nothing "
+        "was paid: add it on recreation.gov first"
+    )
+
+
+def complete_order(
+    page: Page, settings: Settings, group_size: int, expect: CartItem | None = None
+) -> CheckoutResult:
+    """Pay for what's in the cart, starting from the order details page the
+    hold left open, or from the cart. With `expect`, only if the cart has
+    that site and check-in. Never raises for the site's reasons."""
+    try:
+        if expect is not None and _on(page.url, "/cart"):
+            check_cart(page, expect)
+        if _on(page.url, "/cart"):
+            # Held without its order details (a hold you made yourself, or
+            # one stopped early): the cart links back to them.
+            incomplete = page.get_by_role("button", name="Please update here")
+            if incomplete.count():
+                incomplete.first.click()
+                page.wait_for_url(lambda url: _on(url, "/orderdetails"))
         if not _on(page.url, "/cart"):
-            order_details(page, group_size)
+            order_details(page, group_size, settings)
         to_payment(page)
         unlock_wallet(page, settings)
         choose_saved_card(page)

@@ -1,15 +1,25 @@
 import asyncio
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from html import escape
 from types import SimpleNamespace
 
 import pytest
 from campsite_booker import booker, service
 from campsite_booker.availability import StayCriteria
 from campsite_booker.bot import CampsiteBot
-from campsite_booker.checkout import CheckoutResult
+from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.config import BotSettings
-from campsite_booker.db import BOOKED, DRY_RUN, FAILED, HELD, PAID, UNKNOWN, Watch
+from campsite_booker.db import (
+    BOOKED,
+    CHALLENGED,
+    DRY_RUN,
+    FAILED,
+    HELD,
+    PAID,
+    UNKNOWN,
+    Watch,
+)
 from campsite_booker.gmail import AuthenticationRequired
 from campsite_booker.recgov import CART_URL, Campground
 from conftest import FakeMailbox, alert_message, site
@@ -58,6 +68,7 @@ def make_bot(db, recgov, settings):
         held = []
         paid_with = []
         pays = []
+        expected = []
 
         def hold(settings_, stay, pay_group_size):
             held.append(stay)
@@ -66,8 +77,9 @@ def make_bot(db, recgov, settings):
                 raise raises
             return hold_result or booker.HoldResult(HELD, "In your cart", "u")
 
-        def pay(settings_, order_url, group_size, label):
+        def pay(settings_, order_url, group_size, label, expect=None):
             pays.append((order_url, group_size))
+            expected.append(expect)
             return pay_result or CheckoutResult(PAID, "Paid", "1234-5678"), None
 
         clock = Clock(kw.pop("now", NOW))
@@ -83,6 +95,7 @@ def make_bot(db, recgov, settings):
             sleep=clock.sleep,
         )
         bot.held, bot.paid_with, bot.pays, bot.test_clock = held, paid_with, pays, clock
+        bot.expected = expected
         return bot, held
 
     return make
@@ -112,9 +125,16 @@ def test_an_opening_is_sent_with_hold_buttons_and_marked_sent(db, recgov, make_b
     assert chat == 11
     assert "Open at Upper Pines" in text
     assert "Site 040" in text and "Fri Nov 6 → Sun Nov 8, 2 nights" in text
-    data = buttons(markup)
-    assert data[0].startswith("hold:") and data[1].startswith("hold:")
-    assert f"stop:{w.id}" in data
+    # A row per stay: Open it on recreation.gov, or have the bot Hold it.
+    rows = [[b.callback_data or b.url for b in row] for row in markup.inline_keyboard]
+    assert rows[0][0].endswith("/camping/campsites/40") and rows[0][1].startswith(
+        "hold:"
+    )
+    assert rows[1][0].endswith("/camping/campsites/41") and rows[1][1].startswith(
+        "hold:"
+    )
+    assert rows[2] == [f"stop:{w.id}"]
+    assert "Open one" in text
     assert held == []
     # Delivered: the next check sends nothing.
     assert asyncio.run(bot.check_once(tg)) == 0
@@ -141,7 +161,7 @@ def test_auto_hold_holds_first_then_alerts(db, recgov, make_bot):
 
     # The site it just held has no Hold button on the alert.
     assert "(in your cart)" in alert[1]
-    assert "Tap one" not in alert[1]
+    assert "Open one" not in alert[1]
     assert not [d for d in buttons(alert[2]) if d.startswith("hold:")]
 
     # Another site opens: alerted, not held again.
@@ -334,6 +354,55 @@ def test_a_failed_hold_isnt_paid(db, recgov, make_bot):
     press(bot, tg, f"pay:{service.list_holds(db)[0].id}")
     assert bot.pays == []
     assert "nothing to pay" in tg.sent[-1][1]
+
+
+def test_a_challenged_hold_hands_over_then_pays_from_the_cart(db, recgov, make_bot):
+    w = add_watch(db, auto_hold=True)
+    free(recgov, "40")
+    bot, _ = make_bot(
+        booker.HoldResult(CHALLENGED, "recreation.gov asked for a human check", "u"),
+        pay_result=CheckoutResult(DRY_RUN, "Dry run: stopped"),
+    )
+    tg = FakeTelegram()
+    asyncio.run(bot.check_once(tg))
+    result, alert = tg.sent
+    assert result[1].startswith("🧩 Tried to auto-hold: <b>recreation.gov wants")
+    assert "isn't held yet" in result[1]
+    data = buttons(result[2])
+    assert data[0].endswith("/camping/campsites/40")
+    assert "It's in my cart: pay (dry run)" in str(result[2])
+    assert f"booked:{w.id}" in data
+    # Not in the cart, so the alert still offers it.
+    assert "(in your cart)" not in alert[1]
+    assert [d for d in buttons(alert[2]) if d.startswith("hold:")]
+
+    # You add it on recreation.gov and tap "It's in my cart".
+    hold = service.list_holds(db)[0]
+    press(bot, tg, f"pay:{hold.id}")
+    assert bot.pays == [("u", 2)]
+    # Paying checks the cart has that site and check-in.
+    assert bot.expected == [CartItem("040", FRI)]
+    hold = service.list_holds(db)[0]
+    assert (hold.status, hold.checkout_status) == (HELD, DRY_RUN)
+    assert "In your cart" in tg.sent[-1][1]
+
+
+def test_a_challenged_hold_thats_not_in_the_cart_stays_challenged(db, recgov, make_bot):
+    add_watch(db, auto_hold=True)
+    free(recgov, "40")
+    missing = "Site 040 arriving Fri Nov 06, 2026 isn't in your cart"
+    bot, _ = make_bot(
+        booker.HoldResult(CHALLENGED, "human check", "u"),
+        pay_result=CheckoutResult(FAILED, missing),
+    )
+    tg = FakeTelegram()
+    asyncio.run(bot.check_once(tg))
+    hold = service.list_holds(db)[0]
+    press(bot, tg, f"pay:{hold.id}")
+    assert service.list_holds(db)[0].status == CHALLENGED
+    assert escape(missing) in tg.sent[-1][1]
+    # Still offered, for once it's added.
+    assert f"pay:{hold.id}" in buttons(tg.sent[-1][2])
 
 
 RELEASE_AT = datetime(2026, 11, 15, 15, 0, tzinfo=UTC)  # 7 AM Pacific

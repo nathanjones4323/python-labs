@@ -22,12 +22,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from campsite_booker.alerts import parse_alert
 from campsite_booker.availability import StayCriteria, find_stays
-from campsite_booker.checkout import CheckoutResult
+from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.db import (
     BY_EMAIL,
     BY_POLL,
+    CHALLENGED,
     EMAIL_FIRST,
     EXPIRED,
+    FAILED,
     HELD,
     MISSED,
     NOT_WATCHED,
@@ -39,6 +41,7 @@ from campsite_booker.db import (
     Hold,
     Opening,
     Watch,
+    utcnow,
 )
 from campsite_booker.recgov import Campground, Campsite, RecGov, RecGovError, Stay
 from campsite_booker.releases import Release, parse_releases, waiting_on
@@ -540,25 +543,41 @@ def get_hold(sessions: sessionmaker[Session], hold_id: int) -> Hold:
 
 
 def record_checkout(
-    sessions: sessionmaker[Session], hold_id: int, checkout: CheckoutResult
+    sessions: sessionmaker[Session],
+    hold_id: int,
+    checkout: CheckoutResult,
+    now: datetime | None = None,
 ) -> Hold:
-    """How paying for an earlier hold went (the Pay button, `pay_hold`)."""
+    """How paying for an earlier hold went (the Pay button, `pay_hold`). A
+    challenged hold whose checkout got past the cart check was added on
+    recreation.gov after all: it's held from here."""
     with sessions.begin() as session:
         hold = session.get(Hold, hold_id)
         if hold is None:
             raise NotFound(f"No hold {hold_id}")
+        if hold.status == CHALLENGED and checkout.status != FAILED:
+            hold.status = HELD
+            hold.detail = "Added on recreation.gov"
+            hold.expires_at = (now or utcnow()) + CART_HOLD
         _apply_checkout(hold, checkout)
         return hold
+
+
+def cart_item(hold: Hold) -> CartItem:
+    """What paying for `hold` from the cart checks is in the cart first."""
+    return CartItem(hold.site, hold.check_in)
 
 
 def pay_refusal(hold: Hold) -> str | None:
     """Why paying for `hold` mustn't be tried, or None if it may. Paying
     starts from the cart when there's no order page, so a hold that never
     got into the cart would pay for whatever else is there; and after an
-    `UNKNOWN` checkout (Confirm was pressed) it may already be paid."""
+    `UNKNOWN` checkout (Confirm was pressed) it may already be paid. A
+    `CHALLENGED` one may be: you add it on recreation.gov, and paying checks
+    the cart has it (`cart_item`)."""
     if hold.checkout_status == PAID:
         return "That one's already paid."
-    if hold.status != HELD:
+    if hold.status not in (HELD, CHALLENGED):
         return "That hold didn't put the site in the cart, so there's nothing to pay."
     if hold.checkout_status == UNKNOWN:
         return (

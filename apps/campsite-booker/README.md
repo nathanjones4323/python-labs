@@ -1,10 +1,18 @@
 # Campsite Booker
 
-Finds open campsites on recreation.gov and holds them for you. Use it to
+Finds open campsites on recreation.gov and helps you grab them. Use it to
 book a site that's open now, or to watch a full campground for
 cancellations: it checks every minute and messages you on Telegram the moment
-a site opens up. Each alert has a **Hold** button that puts the site in your
-recreation.gov cart. Or let the watch hold it for you before it even alerts.
+a site opens up. Each site in an alert has an **Open** link (you add it to
+your cart on recreation.gov) and a **🤖 Hold** button (the bot tries to add
+it). Or let the watch try a hold before it even alerts.
+
+recreation.gov may answer Add to Cart with a **human check** (reCAPTCHA).
+Nothing here answers or avoids it: it's the site's guard against booking
+bots. The hold comes back `challenged` with the site's link, you add it
+yourself (a few seconds on your phone), and tap **It's in my cart** to have
+the checkout done for you. So the watcher's job is to know first; the Add to
+Cart may be yours.
 
 A hold is recreation.gov's own cart, so the site is yours for its 15-minute
 timer. Pay on recreation.gov (phone or computer, same account), tap **Pay**
@@ -68,21 +76,29 @@ alerted when one first appears, and again if it disappears and comes back
 (someone's cart expired). Watches end on their own once the last arrival
 date passes.
 
-**Auto-hold**: a watch with `auto_hold` puts the first opening it finds
-straight into the cart, before sending the alert, since a cancellation is
-usually gone within minutes. It does this once per watch. After that the
-watch keeps alerting with Hold buttons, so a hold you let lapse isn't grabbed
-again every 15 minutes. After a hold you get **Pay on recreation.gov** (the
-cart) and **✅ Booked, stop watching** buttons.
+**Auto-hold**: a watch with `auto_hold` tries to put the first opening it
+finds straight into the cart, before sending the alert, since a cancellation
+is usually gone within minutes. It does this once per watch. After that the
+watch keeps alerting with Open links and Hold buttons, so a hold you let
+lapse isn't grabbed again every 15 minutes. After a hold you get **Pay on
+recreation.gov** (the cart) and **✅ Booked, stop watching** buttons. If
+recreation.gov wanted a human check instead, you're told at once (🧩), with
+**Open the site** and **It's in my cart: pay** buttons.
 
-**Holding** opens the campsite's page in Chromium, pages its calendar to
-the check-in month, clicks check-in and check-out, and presses Add to Cart.
-The calendar days are matched on their labels (`Friday, January 1, 2027 -
-Available`). A day only gets its status label once its month is showing and
-loaded, so a day shown as filler at the end of the previous month is skipped.
-Afterwards the page should move to the order details. If an error shows up
-instead, the hold is `failed` with the site's words. If neither happens it's
-`unknown`: check the cart. A screenshot and the page HTML are saved to
+**Holding** opens the campsite's page in Chromium, clears any dates the
+site remembered from the last visit (they come back with the saved
+session), pages its calendar to the check-in month, clicks check-in and
+check-out, and presses Add to Cart. The calendar days are matched on the
+date in their labels (`Friday, January 1, 2027 - Available`; once check-in
+is picked the next day reads `Saturday, January 2, 2027, Last available date
+- Checkout`). A day only gets a status once its month is showing and loaded,
+so a day shown as filler at the end of the previous month is skipped.
+Afterwards the page should move to the order details (`held`). If
+recreation.gov shows "We need to verify that you're a human" instead, the
+hold is `challenged`: in a visible window (`CAMPSITE_HEADLESS=false`) it
+waits 3 minutes for you to answer it; headless it stops there. If an error
+shows up, the hold is `failed` with the site's words. If nothing happens
+it's `unknown`: check the cart. A screenshot and the page HTML are saved to
 `CAMPSITE_ARTIFACTS_DIR` either way, and the HTML is what you need to fix a
 selector.
 
@@ -99,11 +115,19 @@ with `RECGOV_EMAIL` / `RECGOV_PASSWORD`. If that's refused, you get a
 Asked to pay (a watch's `auto_pay`, the **💳 Pay** button on a hold, `hold
 --pay`, or the assistant's `pay_hold`), the browser carries on from the hold:
 
-1. **Order details**: fills each site's group size (the watch's, or
-   `CAMPSITE_GROUP_SIZE`) where the campground asks for it, ticks "I have
-   read and agree to this important information", then presses Proceed to
-   Cart (`#action-bar-submit`).
-2. **Cart**: Proceed to Payment, skipping a park-pass upsell if one shows.
+1. **Order details**: fills the group size (the watch's, or
+   `CAMPSITE_GROUP_SIZE`), the number of vehicles (`CAMPSITE_VEHICLES`),
+   "I am the primary occupant", the equipment you're bringing
+   (`CAMPSITE_EQUIPMENT`, for campgrounds like Upper Pines where it's
+   mandatory) and "I have read and agree to this important information",
+   then presses Proceed to Cart (`#test-hook-submit`). Starting from the
+   cart, an item marked "Incomplete Order Details" is sent back here first
+   ("Please update here.").
+2. **Cart**: paying from the cart for a particular hold (a `challenged` one
+   you added yourself, or one with no order page) first checks the cart has
+   that site arriving that day (the item's "156, Upper Pines(…)" title and
+   its Check In), since paying pays for the whole cart. Then Proceed to
+   Payment, skipping a park-pass upsell if one shows.
 3. **Payment**: the account's **saved card**. recreation.gov's wallet may
    first ask for a saved card's last 4 digits (and expiry) to unlock it.
    That's answered from `CAMPSITE_CARD_*`, once only, because wrong answers
@@ -118,14 +142,14 @@ Asked to pay (a watch's `auto_pay`, the **💳 Pay** button on a hold, `hold
 
 Anything it doesn't expect stops the checkout, and the site stays in your
 cart with the reason in the message. That includes a field a campground
-requires (vehicles, equipment, a permit holder), no saved card, or a wallet
-it can't unlock. The hold is the race; paying can wait the 15 minutes.
+requires that isn't covered above (a permit holder, an equipment length),
+no saved card, or a wallet it can't unlock. The hold is the race; paying can wait the 15 minutes.
 Paying needs a card saved on the account: this never types a card number.
 
-The steps come from recreation.gov's own JavaScript (the order-details page
-and the cart). Nobody has watched them signed in yet, so do one dry run
-before turning payment on: `campsite-booker-cli hold <campground>
-<site> --arrive ... --pay` with `CAMPSITE_HEADLESS=false`. Every paying run
+Steps 1 to 4 were run signed in on Oct 28, 2026 (Upper Pines site 156, a
+dry run that stopped at Review and Confirm with the saved card selected; the
+wallet didn't ask to be unlocked). Confirm itself and the confirmation page
+haven't been run. Every paying run
 saves a screenshot (inputs masked) and the page HTML to
 `CAMPSITE_ARTIFACTS_DIR`.
 
@@ -209,20 +233,19 @@ cd apps/campsite-booker
 uv run --package campsite-booker campsite-booker-gmail-login
 ```
 
-### Not verified yet
+### What's been run against the live site
 
-Searching, watching, release schedules, alerting, and everything up to Add
-to Cart's login prompt have been run against the live site. The alert
-email parser was checked against a real alert. Not run yet: polling Gmail
-itself (it needs the Gmail sign-in), and the signed-in part:
-- what Add to Cart lands on (assumed: a URL with `/orderdetails`, `/cart` or
-  `/reservations/`)
-- where an error shows
-- the whole checkout above
+On Oct 28, 2026, against Yosemite (Upper Pines): searching, availability,
+watches and their checks, release schedules, signing in, picking dates, Add
+to Cart (which asked for a human check, answered by hand), and the checkout
+through Review and Confirm from the cart. The alert email parser was checked
+against a real alert.
 
-Watch the first hold (`CAMPSITE_HEADLESS=false`, `campsite-booker-cli hold
-... --pay` with payment off). If it comes back `unknown` or stops, the saved
-HTML shows what to match.
+Not run yet: pressing Confirm (so the confirmation page and its order
+number), where an error after Add to Cart shows, the Telegram bot itself,
+and polling Gmail (it needs the Gmail sign-in). How often recreation.gov
+asks for the human check isn't known either: it did on the first Add to
+Cart from a freshly signed-in session.
 
 ## Run it
 
@@ -256,7 +279,8 @@ own `.env` whichever directory it starts in.
 
 `campsite-booker-mcp` is registered in `apps/assistant/.mcp.json`. Ask
 "anything open at Upper Pines Nov 6–8?" or "watch Scorpion for any Friday in
-November, two nights, hold it if one opens". The tools are
+November, two nights, hold it if one opens". A `challenged` hold comes back with the site's
+link: add it yourself, then ask the assistant to pay for it. The tools are
 `search_campgrounds`, `find_open_campsites`, `create_watch`, `alert_timing`,
 `list_watches`, `stop_watch`, `resume_watch`, `hold_campsite` (with `pay`
 to pay too), `pay_hold`, `set_watch_auto_pay` and `list_holds`. The ones
@@ -295,10 +319,14 @@ cd apps/campsite-booker
 uv run --package campsite-booker alembic revision --autogenerate -m "what changed"
 ```
 
-Tests use no network or browser. recreation.gov responses are real ones
-trimmed into `tests/fixtures` (Santa Cruz Island Scorpion, November 2026),
-and the database is a throwaway SQLite file migrated with Alembic. Telegram
-and the browser are fakes. Be gentle with recreation.gov, a public service:
+Tests use no network. recreation.gov's API responses are real ones trimmed
+into `tests/fixtures` (Santa Cruz Island Scorpion, November 2026), and the
+database is a throwaway SQLite file migrated with Alembic. Telegram is a
+fake. `test_pages.py` drives a headless Chromium over recreation.gov's own
+pages, trimmed into `tests/fixtures/pages` (the campsite calendar, order
+details and cart, Upper Pines Oct 2026), with every other request aborted;
+it's skipped without `playwright install chromium`. When the site changes,
+refresh those from the HTML a hold saves to `CAMPSITE_ARTIFACTS_DIR`. Be gentle with recreation.gov, a public service:
 `CAMPSITE_POLL_SECONDS` has a 30 s floor.
 
 ## Environment variables
@@ -313,10 +341,12 @@ and the browser are fakes. Be gentle with recreation.gov, a public service:
 | `CAMPSITE_SUBMIT_PAYMENT` | no | `false` | Press the final Confirm. Off, every checkout is a dry run |
 | `CAMPSITE_CARD_LAST4`, `CAMPSITE_CARD_EXP_MONTH` (MM), `CAMPSITE_CARD_EXP_YEAR` (YY) | if the wallet asks | | Unlocks recreation.gov's wallet for the saved card |
 | `CAMPSITE_GROUP_SIZE` | no | `2` | Group size on the order when a watch has none |
+| `CAMPSITE_VEHICLES` | no | `1` | Number of vehicles on the order |
+| `CAMPSITE_EQUIPMENT` | no | `tent` | Equipment to tick where a campground requires it, comma-separated: `tent`, `rv`, `trailer`, `pop_up`, `caravan_camper_van`, `pickup_camper`, `large_tent_over_9_x_12` |
 | `CAMPSITE_GMAIL_POLL_SECONDS` | no | `30` | Seconds between looks for recreation.gov's alert emails (min 10; 0 is off) |
 | `CAMPSITE_GMAIL_CLIENT_SECRETS` | no | this app's, else pay-my-bills' | Desktop OAuth client for the Gmail sign-in |
 | `CAMPSITE_GMAIL_TOKEN_FILE` | no | `~/.config/campsite-booker/gmail-token.json` | The saved Gmail sign-in |
-| `CAMPSITE_HEADLESS` | no | `true` | `false` to watch holds happen |
+| `CAMPSITE_HEADLESS` | no | `true` | `false` to watch holds happen (and answer a human check yourself) |
 | `CAMPSITE_TIMEZONE` | no | `America/Los_Angeles` | What "today" is for watches |
 | `CAMPSITE_DATABASE_URL` | no | `~/.local/share/campsite-booker/campsites.db` | SQLite (or Postgres) URL |
 | `CAMPSITE_SESSION_FILE` | no | `~/.local/share/campsite-booker/session.json` | The saved sign-in |

@@ -2,8 +2,17 @@ from datetime import UTC, date, datetime, timedelta
 
 from campsite_booker import service
 from campsite_booker.availability import StayCriteria
-from campsite_booker.checkout import CheckoutResult
-from campsite_booker.db import DRY_RUN, EXPIRED, HELD, PAID, Opening, Watch
+from campsite_booker.checkout import CartItem, CheckoutResult
+from campsite_booker.db import (
+    CHALLENGED,
+    DRY_RUN,
+    EXPIRED,
+    FAILED,
+    HELD,
+    PAID,
+    Opening,
+    Watch,
+)
 from campsite_booker.recgov import Campground
 from conftest import site
 from sqlalchemy import select
@@ -183,6 +192,36 @@ def test_checkout_outcomes_are_recorded(db, recgov):
     )
     assert service.hold_group_size(db, paid, 2) == 3
     assert w.id == paid.watch_id
+
+
+def test_a_challenged_hold_can_be_paid_once_its_in_the_cart(db, recgov):
+    watch(db)
+    recgov.sites[PINES.id] = [site("100", [FRI, FRI + timedelta(days=1)], site="044")]
+    target = service.hold_target(db, check(db, recgov)[0].stays[0].opening_id)
+    hold = service.record_hold(db, target, CHALLENGED, "human check", "u", NOW)
+    # Not in the cart: no expiry, and not a live hold to skip.
+    assert hold.expires_at is None
+    assert service.live_hold(db, target.stay, NOW) is None
+    assert service.pay_refusal(hold) is None
+    assert service.cart_item(hold) == CartItem("044", FRI)
+
+    # Paying found it missing from the cart: still challenged.
+    missing = CheckoutResult(FAILED, "Site 044 isn't in your cart")
+    assert service.record_checkout(db, hold.id, missing, NOW).status == CHALLENGED
+
+    # You added it: once checkout gets past the cart it's held.
+    later = NOW + timedelta(minutes=3)
+    dry = service.record_checkout(db, hold.id, CheckoutResult(DRY_RUN, "Dry"), later)
+    assert (dry.status, dry.checkout_status) == (HELD, DRY_RUN)
+    assert dry.expires_at == later + timedelta(minutes=15)
+
+
+def test_a_failed_hold_isnt_paid_for_from_the_cart(db, recgov):
+    watch(db)
+    recgov.sites[PINES.id] = [site("100", [FRI, FRI + timedelta(days=1)])]
+    target = service.hold_target(db, check(db, recgov)[0].stays[0].opening_id)
+    hold = service.record_hold(db, target, FAILED, "gone", None, NOW)
+    assert "nothing to pay" in service.pay_refusal(hold)
 
 
 def test_check_campgrounds_only_fetches_the_ones_asked_for(db, recgov):

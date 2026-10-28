@@ -28,6 +28,7 @@ are found by their text.
 
 import fcntl
 import os
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,9 +46,9 @@ from playwright.sync_api import (
 )
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
-from campsite_booker.checkout import CheckoutResult, complete_order
+from campsite_booker.checkout import CartItem, CheckoutResult, complete_order, settle
 from campsite_booker.config import Settings
-from campsite_booker.db import FAILED, HELD, UNKNOWN
+from campsite_booker.db import CHALLENGED, FAILED, HELD, UNKNOWN
 from campsite_booker.recgov import BASE_URL, CART_URL, Stay
 
 STEP_TIMEOUT_MS = 15_000
@@ -56,6 +57,11 @@ STEP_TIMEOUT_MS = 15_000
 MAX_MONTH_STEPS = 14
 # After Add to Cart: how long to wait for the order page or an error.
 RESULT_TIMEOUT_MS = 30_000
+# The modal recreation.gov shows after Add to Cart when it wants a reCAPTCHA
+# answered before booking.
+HUMAN_CHECK = "We need to verify that you're a human"
+# How long a visible window waits for you to answer it.
+HUMAN_CHECK_TIMEOUT_MS = 180_000
 # The header's "Sign Up / Log In" button, shown only while signed out. CSS
 # rather than a role: with the login modal open the header is aria-hidden,
 # and a role lookup would miss the button and take you for signed in.
@@ -128,6 +134,13 @@ def save_session(context: BrowserContext, session_file: Path) -> None:
     os.chmod(session_file, 0o600)
 
 
+def open_page(page: Page, url: str) -> None:
+    """Go to `url` and let it finish loading. Not "networkidle": the home
+    page never goes quiet, so that times out."""
+    page.goto(url, wait_until="load", timeout=45_000)
+    settle(page)
+
+
 def calendar_label(day: date) -> str:
     """How the calendar labels a day, up to its status: "Sunday, November 1,
     2026"."""
@@ -175,7 +188,15 @@ def log_in(page: Page, settings: Settings) -> None:
 
 def pick_dates(page: Page, check_in: date, check_out: date) -> None:
     """Click check-in then check-out on the site's availability calendar,
-    paging it forward to the right month first."""
+    paging it forward to the right month first. The site keeps the last
+    dates picked (in the saved session's local storage), so those are
+    cleared first."""
+    clear = page.get_by_role("button", name="Clear Dates")
+    if clear.count() and clear.first.is_visible():
+        clear.first.click()
+        page.get_by_text(
+            re.compile(r"\d\d/\d\d/\d{4} - \d\d/\d\d/\d{4}")
+        ).first.wait_for(state="hidden")
     first = _show_day(page, check_in)
     label = first.get_attribute("aria-label") or ""
     if first.get_attribute("aria-disabled") == "true":
@@ -192,8 +213,15 @@ def _show_day(page: Page, day: date) -> Locator:
     """The calendar's cell for `day`, paging forward until it's in a month
     on show. Only a shown month's days carry their status ("Friday, January
     1, 2027 - Available"); the same day as filler at the end of the month
-    before is unlabelled and disabled, so it's the labelled one we want."""
-    cell = page.locator(f'[role="button"][aria-label^="{calendar_label(day)} - "]')
+    before is unlabelled and disabled, so it's the labelled one we want.
+    Once check-in is picked, days are labelled around it ("Monday, November
+    9, 2026, Last available date - Checkout"), so it's matched on the date
+    alone, anywhere in the label: the weekday before it and the year after
+    keep November 8 from matching November 18."""
+    label = calendar_label(day)
+    cell = page.locator(
+        f'[role="button"][aria-label*="{label}"]:not([aria-label="{label}"])'
+    )
     for _ in range(MAX_MONTH_STEPS):
         if cell.count():
             return cell.first
@@ -223,16 +251,41 @@ def add_to_cart(page: Page, settings: Settings) -> tuple[str, str]:
             button.click()
     except PlaywrightTimeout:
         pass
-    try:
-        page.wait_for_url(lambda url: _on_order_page(url), timeout=RESULT_TIMEOUT_MS)
-    except PlaywrightTimeout:
-        error = _visible_error(page)
-        if error:
-            return FAILED, error
-        return UNKNOWN, (
-            "Pressed Add to Cart but neither the order page nor an error came "
-            "up; check the cart on recreation.gov"
+    challenge = page.get_by_text(HUMAN_CHECK)
+    deadline = time.monotonic() + RESULT_TIMEOUT_MS / 1000
+    while time.monotonic() < deadline:
+        if _on_order_page(page.url):
+            return HELD, "In your cart for 15 minutes"
+        if challenge.count() and challenge.first.is_visible():
+            return _human_check(page, settings)
+        page.wait_for_timeout(250)
+    error = _visible_error(page)
+    if error:
+        return FAILED, error
+    return UNKNOWN, (
+        "Pressed Add to Cart but neither the order page nor an error came "
+        "up; check the cart on recreation.gov"
+    )
+
+
+def _human_check(page: Page, settings: Settings) -> tuple[str, str]:
+    """recreation.gov's "verify that you're a human" reCAPTCHA, shown after
+    Add to Cart. Only a person can answer it, so nothing here tries: in a
+    visible window it waits for you to; headless, it stops and says so (you
+    add it on recreation.gov, and it can be paid from the cart after)."""
+    if settings.headless:
+        return CHALLENGED, (
+            "recreation.gov asked for a human check (reCAPTCHA) before it would "
+            "go in the cart"
         )
+    logger.info("recreation.gov wants a human check: solve it in the window")
+    print("Solve recreation.gov's human check in the window, then Continue Booking")
+    try:
+        page.wait_for_url(
+            lambda url: _on_order_page(url), timeout=HUMAN_CHECK_TIMEOUT_MS
+        )
+    except PlaywrightTimeout:
+        return CHALLENGED, "recreation.gov's human check wasn't answered in time"
     return HELD, "In your cart for 15 minutes"
 
 
@@ -259,7 +312,7 @@ def hold(
         context = new_context(browser, settings.session_file)
         page = context.new_page()
         try:
-            page.goto(stay.url, wait_until="networkidle", timeout=45_000)
+            open_page(page, stay.url)
             if not is_logged_in(page) and settings.recgov_email:
                 # Sign in before the race rather than in the middle of it.
                 log_in(page, settings)
@@ -294,21 +347,26 @@ def hold(
 
 
 def pay(
-    settings: Settings, order_url: str | None, group_size: int, label: str
+    settings: Settings,
+    order_url: str | None,
+    group_size: int,
+    label: str,
+    expect: CartItem | None = None,
 ) -> tuple[CheckoutResult, Path | None]:
     """Pay for a site held earlier: from its order details page if the hold
-    recorded one, else from the cart. Raises `LoginRequired` like `hold`."""
+    recorded one, else from the cart, and then only if the cart has `expect`.
+    Raises `LoginRequired` like `hold`."""
     with session_lock(settings), sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=settings.headless)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
         try:
             start = order_url if order_url and "orderdetails" in order_url else CART_URL
-            page.goto(start, wait_until="networkidle", timeout=45_000)
+            open_page(page, start)
             if not is_logged_in(page):
                 log_in(page, settings)
-                page.goto(start, wait_until="networkidle", timeout=45_000)
-            result = complete_order(page, settings, group_size)
+                open_page(page, start)
+            result = complete_order(page, settings, group_size, expect)
             return result, _artifacts(page, settings, label, f"pay-{result.status}")
         finally:
             try:
@@ -353,7 +411,7 @@ def interactive_login(settings: Settings, timeout_s: int = 300) -> None:
         browser = playwright.chromium.launch(headless=False)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
-        page.goto(BASE_URL, wait_until="networkidle", timeout=45_000)
+        open_page(page, BASE_URL)
         if is_logged_in(page):
             logger.info("Already signed in")
         else:
@@ -369,7 +427,7 @@ def interactive_login(settings: Settings, timeout_s: int = 300) -> None:
                 state="detached", timeout=timeout_s * 1000
             )
             # Let the site store its tokens before saving them.
-            page.wait_for_load_state("networkidle")
+            settle(page)
         save_session(context, settings.session_file)
         browser.close()
 
@@ -380,7 +438,7 @@ def check_session(settings: Settings) -> bool:
         browser = playwright.chromium.launch(headless=True)
         context = new_context(browser, settings.session_file)
         page = context.new_page()
-        page.goto(BASE_URL, wait_until="networkidle", timeout=45_000)
+        open_page(page, BASE_URL)
         signed_in = is_logged_in(page)
         browser.close()
         return signed_in
