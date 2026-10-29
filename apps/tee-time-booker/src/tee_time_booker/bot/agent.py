@@ -13,11 +13,10 @@ as a note rather than by editing earlier turns. `/new` starts over.
 
 import asyncio
 import secrets
-import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from anthropic.types import Message, MessageParam, ToolResultBlockParam, ToolUseBlock
@@ -30,13 +29,27 @@ from tee_time_booker.bot.tools import (
     ToolResult,
     asks_to_pay,
 )
+from tee_time_booker.cards import (
+    BOOK_SLOT,
+    MAX_OFFERED,
+    PendingPayment,
+    StartedRun,
+    TeeTimeOffer,
+    book_slot,
+    hold_slot,
+    make_offer,
+    nothing_to_show,
+    pick_slots,
+    plan_searched,
+    remember_found,
+    searched,
+    shown,
+)
 from tee_time_booker.config import BotSettings
 from tee_time_booker.courses import DEFAULT_SEARCH_MILES, MAX_SEARCH_MILES
 
 # Tool-use rounds per message before giving up on a runaway loop.
 MAX_STEPS = 12
-# A Confirm button older than this does nothing; ask again.
-PAYMENT_TTL_S = 15 * 60
 
 SYSTEM = """\
 You book golf tee times for {email} over Telegram, using the tee-time-booker tools.
@@ -123,7 +136,6 @@ Today is {today:%A %B} {today.day}, {today:%Y}."""
 # search in the same chat, so the card can't show a made-up one.
 SHOW_TEE_TIMES = "show_tee_times"
 SEARCH_TOOLS = frozenset({"find_tee_times", "search_tee_times"})
-MAX_OFFERED = 12
 SHOW_TEE_TIMES_DEF = {
     "name": SHOW_TEE_TIMES,
     "description": (
@@ -170,67 +182,12 @@ SHOW_TEE_TIMES_DEF = {
         "required": ["date", "players", "holes", "slots"],
     },
 }
-# A held booking of one slot from a card, run by `confirm` (not an MCP tool).
-BOOK_SLOT = "book_slot"
 
 PAYMENT_ON = "Payment is switched on for this install: a confirmed booking really pays."
 PAYMENT_OFF = (
     "Payment is switched off for this install (TEE_TIME_SUBMIT_PAYMENT), so every run "
     "is a dry run whatever you ask. Say so if the person wants to book for real."
 )
-
-
-@dataclass(frozen=True)
-class PendingPayment:
-    """A paying call the model made, waiting on the person's Confirm."""
-
-    id: str
-    chat_id: int
-    tool: str
-    arguments: dict[str, Any]
-    created: float = field(default_factory=time.monotonic)
-
-    @property
-    def expired(self) -> bool:
-        return time.monotonic() - self.created > PAYMENT_TTL_S
-
-
-@dataclass(frozen=True)
-class StartedRun:
-    """A run the bot should watch: the parts of the API's `RunStarted` it reports."""
-
-    run_id: str
-    course: str
-    target_date: str
-    dry_run: bool
-
-    @classmethod
-    def from_result(cls, result: ToolResult) -> "StartedRun":
-        body = result.json()
-        return cls(
-            run_id=body["run_id"],
-            course=body["course"],
-            target_date=body["target_date"],
-            dry_run=body["dry_run"],
-        )
-
-
-@dataclass(frozen=True)
-class TeeTimeOffer:
-    """Slots shown on a card, each with a Book button. `slots` are rows of a
-    search result, as the API returned them, each with its `course` key;
-    `searches` says, per course, who searched for how many (`user_email`,
-    `course`, `env_prefix`, `holes`, `players`)."""
-
-    id: str
-    chat_id: int
-    searches: dict[str, dict[str, Any]]
-    slots: tuple[dict[str, Any], ...]
-    created: float = field(default_factory=time.monotonic)
-
-    @property
-    def expired(self) -> bool:
-        return time.monotonic() - self.created > PAYMENT_TTL_S
 
 
 @dataclass
@@ -241,12 +198,6 @@ class Reply:
     offers: list[TeeTimeOffer] = field(default_factory=list)
     # The model couldn't be reached; `text` says so.
     failed: bool = False
-
-
-def _group(search: dict[str, Any]) -> str:
-    """'2 players, 18 holes': what a card's Book button books."""
-    players = str(search["players"])
-    return f"{players} player{'' if players == '1' else 's'}, {search['holes']} holes"
 
 
 class BookingAgent:
@@ -383,98 +334,33 @@ class BookingAgent:
         self, chat_id: int, tool: str, arguments: dict[str, Any], result: ToolResult
     ) -> None:
         if tool == "find_tee_times":
-            # A plan's search: the plan says where and for how many.
             plan = await self._tools.call(
                 "get_plan", {"plan_id": arguments.get("plan_id")}
             )
             if plan.is_error:
                 return
-            row = plan.json()
-            fields = ("user_email", "course", "env_prefix", "holes", "players")
-            searches = {row["course"]: {key: row[key] for key in fields}}
-            found = [{**slot, "course": row["course"]} for slot in result.json()]
+            searches, found = plan_searched(plan.json(), result.json())
         else:
-            found = result.json()["tee_times"]
-            searches = {
-                slot["course"]: {
-                    "user_email": arguments.get("user_email"),
-                    "course": slot["course"],
-                    "env_prefix": None,
-                    "holes": arguments.get("holes"),
-                    "players": arguments.get("players"),
-                }
-                for slot in found
-            }
-        by_place: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for slot in found:
-            by_place.setdefault((slot["course"], slot["start"][:10]), []).append(slot)
-        for (course, day), slots in by_place.items():
-            self._found[(chat_id, course, day)] = (searches[course], slots)
+            searches, found = searched(arguments, result.json())
+        remember_found(self._found, chat_id, searches, found)
 
     def _show(
         self, chat_id: int, call: ToolUseBlock, reply: Reply
     ) -> ToolResultBlockParam:
-        arguments = dict(call.input)
-        day = str(arguments.get("date"))
-        # Compared as text: the model and the API may send either 2 or "2".
-        group = (str(arguments.get("players")), str(arguments.get("holes")))
-        slots: list[dict[str, Any]] = []
-        searches: dict[str, dict[str, Any]] = {}
-        missing: list[str] = []
-        # Slots a tap would book for some other group, from an older search.
-        other_group: list[str] = []
-        for wanted in arguments.get("slots") or []:
-            course = str(wanted.get("course"))
-            at = str(wanted.get("time"))[:5].zfill(5)
-            search, found = self._found.get((chat_id, course, day), (None, []))
-            slot = next((s for s in found if s["start"][11:16] == at), None)
-            if slot is None:
-                missing.append(f"{course} {at}")
-            elif (str(search["players"]), str(search["holes"])) != group:
-                other_group.append(f"{course} {at} ({_group(search)})")
-            elif slot not in slots:
-                slots.append(slot)
-                searches[course] = search
-        if not slots:
-            content = f"Nothing to show for {day}."
-            if missing:
-                content += (
-                    f" Not in a search result: {missing}; search first "
-                    "(search_tee_times) and offer only slots it found."
-                )
-            if other_group:
-                content += (
-                    f" Searched for a different group: {other_group}; search again "
-                    "for the group the person wants."
-                )
+        picked = pick_slots(self._found, chat_id, dict(call.input))
+        if not picked.slots:
             return {
                 "type": "tool_result",
                 "tool_use_id": call.id,
-                "content": content,
+                "content": nothing_to_show(picked),
                 "is_error": True,
             }
-        offer = TeeTimeOffer(
-            id=secrets.token_urlsafe(8),
-            chat_id=chat_id,
-            searches=searches,
-            slots=tuple(slots[:MAX_OFFERED]),
-        )
+        offer = make_offer(chat_id, picked)
         for stale in [o.id for o in self._offers.values() if o.expired]:
             del self._offers[stale]
         self._offers[offer.id] = offer
         reply.offers.append(offer)
-        shown = [f"{s['course']} {s['start']}" for s in offer.slots]
-        # Said back so the model knows what a tap books: the group is fixed
-        # by the search, whatever the person says after the card is shown.
-        group_shown = _group(searches[offer.slots[0]["course"]])
-        content = f"Shown as a card for {group_shown} with Book buttons: {shown}."
-        if missing:
-            content += f" Not in the results, so left out: {missing}."
-        if other_group:
-            content += (
-                f" Searched for a different group, so left out: {other_group}; "
-                "search those courses again to offer them."
-            )
+        content = shown(offer, picked)
         return {"type": "tool_result", "tool_use_id": call.id, "content": content}
 
     def offer(self, offer_id: str) -> TeeTimeOffer | None:
@@ -487,43 +373,11 @@ class BookingAgent:
 
     def hold_slot(self, offer: TeeTimeOffer, slot: dict[str, Any]) -> PendingPayment:
         """A Book tap: booking that one slot, waiting on Confirm."""
-        payment = PendingPayment(
-            id=secrets.token_urlsafe(8),
-            chat_id=offer.chat_id,
-            tool=BOOK_SLOT,
-            arguments={"search": offer.searches[slot["course"]], "slot": slot},
-        )
+        payment = hold_slot(offer, slot)
         for stale in [p.id for p in self._payments.values() if p.expired]:
             del self._payments[stale]
         self._payments[payment.id] = payment
         return payment
-
-    async def _book_slot(self, arguments: dict[str, Any]) -> ToolResult:
-        """A one-off request for exactly this slot, then a run on it."""
-        search = arguments["search"]
-        start = datetime.fromisoformat(arguments["slot"]["start"])
-        request = {
-            "user_email": search["user_email"] or self._settings.user_email,
-            "course": search["course"],
-            "target_date": start.date().isoformat(),
-            "earliest": start.time().isoformat(),
-            "latest": start.time().isoformat(),
-            "holes": search["holes"],
-            "players": search["players"],
-        }
-        if search.get("env_prefix"):
-            request["env_prefix"] = search["env_prefix"]
-        created = await self._tools.call("create_request", request)
-        if created.is_error:
-            return created
-        return await self._tools.call(
-            "run_request",
-            {
-                "request_id": created.json()["id"],
-                "submit_payment": self._pays,
-                "wait_for_release": False,
-            },
-        )
 
     def take_payment(self, payment_id: str) -> PendingPayment | None:
         """The pending payment for a button, once; None if unknown or stale."""
@@ -540,7 +394,12 @@ class BookingAgent:
         The run is None when the call failed, or when it scheduled a booking
         for later rather than starting one."""
         if payment.tool == BOOK_SLOT:
-            result = await self._book_slot(payment.arguments)
+            result = await book_slot(
+                self._tools.call,
+                payment.arguments,
+                self._settings.user_email,
+                self._pays,
+            )
             what = f"booking {payment.arguments['slot']['start']} from the card"
         else:
             result = await self._tools.call(payment.tool, payment.arguments)

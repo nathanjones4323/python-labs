@@ -13,12 +13,17 @@ it. The bot narrows them twice:
   until the person taps Confirm (see `agent.py`).
 """
 
-import json
-from dataclasses import dataclass
 from typing import Any
 
 from anthropic.types import ToolParam
 from fastmcp import Client
+
+from tee_time_booker.cards import (  # noqa: F401 - re-exported
+    PAYING_TOOLS,
+    RUN_TOOLS,
+    ToolResult,
+    asks_to_pay,
+)
 
 ALLOWED_TOOLS = frozenset(
     {
@@ -42,36 +47,6 @@ ALLOWED_TOOLS = frozenset(
         "get_run",
     }
 )
-
-PAYING_TOOLS: dict[str, str] = {
-    "book_plan": "submit_payment",
-    "run_request": "submit_payment",
-    "create_plan": "auto_book",
-    "create_request": "auto_book",
-    "set_plan_auto_book": "enabled",
-}
-# The paying calls that start a run now; the others schedule one for later.
-RUN_TOOLS = frozenset({"book_plan", "run_request"})
-
-
-def asks_to_pay(name: str, arguments: dict[str, Any]) -> bool:
-    # Anything but an absent or literal False is held: the API coerces "true"
-    # or 1 to True, so an `is True` check would let those pay unconfirmed.
-    flag = PAYING_TOOLS.get(name)
-    return flag is not None and arguments.get(flag, False) is not False
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    text: str
-    is_error: bool = False
-
-    def json(self) -> Any:
-        """The route's response body. FastMCP wraps a list as {"result": [...]}."""
-        data = json.loads(self.text)
-        if isinstance(data, dict) and data.keys() == {"result"}:
-            return data["result"]
-        return data
 
 
 class BookingTools:

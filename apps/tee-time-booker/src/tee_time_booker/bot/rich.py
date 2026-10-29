@@ -10,18 +10,14 @@ it's on.
 """
 
 import asyncio
-import re
 from collections.abc import Sequence
 from typing import Any
 
 from loguru import logger
 from telegram.error import TelegramError
 
-# Backslash-escaped in values put into a template: Markdown punctuation, the
-# HTML brackets and `$`, which opens a formula.
-_SPECIAL = re.compile(r"([\\`*_~|\[\]()<>#=+\-!$])")
-# A `$` before a digit is a price, never a formula ("$20 or $25" would be one).
-_PRICE = re.compile(r"(?<!\\)\$(?=\d)")
+from tee_time_booker.cards import escape, escape_prices  # noqa: F401 - re-exported
+
 # A draft lasts about 30 seconds; refresh it well before then.
 DRAFT_REFRESH_S = 20
 
@@ -43,17 +39,6 @@ STEP_LABELS = {
     "list_runs": "Checking your runs…",
     "list_request_runs": "Checking your runs…",
 }
-
-
-def escape(text: Any) -> str:
-    """`text` shown literally inside rich Markdown."""
-    return _SPECIAL.sub(r"\\\1", str(text))
-
-
-def escape_prices(markdown: str) -> str:
-    """The model's Markdown with its prices kept out of formulas. Not for
-    templates: inside an HTML block a backslash shows as itself."""
-    return _PRICE.sub(r"\\$", markdown)
 
 
 async def send_rich(bot: Any, chat_id: int, markdown: str, **kwargs: Any) -> None:

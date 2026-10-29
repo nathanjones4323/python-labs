@@ -47,6 +47,8 @@ def test_tools_are_the_ones_the_assistant_allowlists(server):
         "set_watch_auto_pay",
         "list_holds",
         "alert_timing",
+        "ask_auto_pay",
+        "press_button",
     }
 
 
@@ -229,3 +231,76 @@ def test_state_parks_are_searched_and_watched_but_not_held(server, recgov):
             check_in=ARRIVE.isoformat(),
             nights=1,
         )
+
+
+def _buttons(card):
+    return [b for row in card["buttons"] for b in row]
+
+
+def test_search_hold_and_pay_by_the_bots_cards(server, recgov, monkeypatch):
+    """The assistant's path: a search card with Hold buttons, a tap holds,
+    the hold card's Pay button pays, each card the watcher bot's own."""
+    recgov.sites["1"] = [site("10", [ARRIVE, ARRIVE + timedelta(days=1)], site="010")]
+    out = call(
+        server,
+        "find_open_campsites",
+        arrival_from=ARRIVE.isoformat(),
+        nights=2,
+        campground_ids=["1"],
+    )
+    [found] = out["telegram"]
+    assert found["format"] == "html"
+    assert found["text"].startswith("🏕 <b>Open at Campground 1</b>")
+    assert "Site 010" in found["text"]
+    hold_button = next(b for b in _buttons(found) if "data" in b)
+    assert hold_button["text"] == "🤖 Hold 010"
+    assert hold_button["data"].startswith("camp:hold:")
+    assert any(b.get("url", "").endswith("/campsites/10") for b in _buttons(found))
+    # No watch found these, so there's nothing to stop.
+    assert not any(b.get("data", "").startswith("camp:stop:") for b in _buttons(found))
+
+    monkeypatch.setattr(
+        booker,
+        "hold",
+        lambda settings, stay, pay_group_size: booker.HoldResult(
+            HELD, "In your cart", "https://www.recreation.gov/x"
+        ),
+    )
+    held = call(server, "press_button", data=hold_button["data"])
+    assert held["status"] == HELD
+    assert "In your cart" in held["telegram"]["text"]
+    pay_button = next(
+        b
+        for b in _buttons(held["telegram"])
+        if b.get("data", "").startswith("camp:pay:")
+    )
+    assert pay_button["text"] == "💳 Pay (dry run)"
+
+    again = call(server, "press_button", data=hold_button["data"])
+    assert again["telegram"]["text"].startswith("Already done")
+
+    monkeypatch.setattr(
+        booker,
+        "pay",
+        lambda s, url, size, label, expect: (CheckoutResult(PAID, "Paid", "77"), None),
+    )
+    paid = call(server, "press_button", data=pay_button["data"])
+    assert paid["checkout_status"] == PAID
+    assert "Booked and paid" in paid["telegram"]["text"]
+
+
+def test_auto_pay_is_a_card_then_a_tap(server):
+    made = call(
+        server,
+        "create_watch",
+        campground_id="1",
+        arrival_from=ARRIVE.isoformat(),
+        nights=2,
+    )
+    asked = call(server, "ask_auto_pay", watch_id=made["watch_id"])
+    data = [b["data"] for b in _buttons(asked["telegram"])]
+    assert data == [f"camp:autopay:{made['watch_id']}", "camp:none"]
+    on = call(server, "press_button", data=data[0])
+    assert (on["auto_pay"], on["auto_hold"]) == (True, True)
+    stopped = call(server, "press_button", data=f"camp:booked:{made['watch_id']}")
+    assert stopped["active"] is False

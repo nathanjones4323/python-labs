@@ -161,7 +161,8 @@ function assertSendable(f: string): void {
 const BUTTON_PREFIX = 'btn:'
 const MAX_BUTTON_DATA_BYTES = 64 - BUTTON_PREFIX.length
 
-type ButtonSpec = { text: string; data: string }
+// A button either comes back as a tap (`data`) or opens a link (`url`).
+type ButtonSpec = { text: string; data?: string; url?: string }
 
 function buildKeyboard(rows: unknown): InlineKeyboard {
   if (!Array.isArray(rows)) throw new Error('buttons must be an array of rows')
@@ -169,7 +170,11 @@ function buildKeyboard(rows: unknown): InlineKeyboard {
     if (!Array.isArray(row) || !row.length) throw new Error('each buttons row must be a non-empty array')
     return (row as Partial<ButtonSpec>[]).map(b => {
       if (typeof b?.text !== 'string' || !b.text.trim()) throw new Error('every button needs text')
-      if (typeof b.data !== 'string' || !b.data) throw new Error(`button "${b.text}" needs data`)
+      if (typeof b.url === 'string' && b.url && b.data == null) {
+        if (!/^https:\/\//.test(b.url)) throw new Error(`button "${b.text}" url must be https`)
+        return InlineKeyboard.url(b.text, b.url)
+      }
+      if (typeof b.data !== 'string' || !b.data) throw new Error(`button "${b.text}" needs data or url`)
       if (Buffer.byteLength(b.data) > MAX_BUTTON_DATA_BYTES) {
         throw new Error(`button "${b.text}" data is over ${MAX_BUTTON_DATA_BYTES} bytes`)
       }
@@ -186,15 +191,20 @@ const pressedButtons = new Set<string>()
 // GitHub-flavoured Markdown plus some HTML (`<table>`, `<footer>`,
 // `<blockquote expandable>`). grammY has no wrappers yet, so they go through
 // `api.raw`, which forwards any method name.
-type Format = 'rich' | 'text' | 'markdownv2'
+type Format = 'rich' | 'text' | 'markdownv2' | 'html'
 const FORMAT_SCHEMA = {
   type: 'string',
-  enum: ['rich', 'text', 'markdownv2'],
-  description: "Rendering mode. 'rich' (default): GitHub-flavoured Markdown (**bold**, _italic_, `code`, links, | tables |) plus HTML blocks such as <table compact>, <footer> and <blockquote expandable>; a blank line breaks a line, a single newline doesn't, and `$` before a digit is kept as a price. 'text': plain. 'markdownv2': Telegram MarkdownV2, caller escapes.",
+  enum: ['rich', 'text', 'markdownv2', 'html'],
+  description: "Rendering mode. 'rich' (default): GitHub-flavoured Markdown (**bold**, _italic_, `code`, links, | tables |) plus HTML blocks such as <table compact>, <footer> and <blockquote expandable>; a blank line breaks a line, a single newline doesn't, and `$` before a digit is kept as a price. 'text': plain. 'markdownv2': Telegram MarkdownV2, caller escapes. 'html': Telegram HTML (<b>, <i>, <a href>), as an app's card gives it.",
 }
 
 function formatOf(arg: unknown): Format {
-  return arg === 'text' || arg === 'markdownv2' ? arg : 'rich'
+  return arg === 'text' || arg === 'markdownv2' || arg === 'html' ? arg : 'rich'
+}
+
+// Fork: Telegram's parse_mode for a non-rich format.
+function parseModeOf(format: Format): 'MarkdownV2' | 'HTML' | undefined {
+  return format === 'markdownv2' ? 'MarkdownV2' : format === 'html' ? 'HTML' : undefined
 }
 
 // `$` opens a formula in rich Markdown, so "$20 or $25" would be one. Inside
@@ -516,7 +526,7 @@ const mcp = new Server(
       // Fork: buttons.
       'reply and edit_message send rich Markdown by default (format: rich): GitHub-flavoured Markdown with HTML blocks — **bold**, _italic_, `code`, tables (Markdown, or <table compact> / <table striped compact> with <tr><th><td>), <footer> and <blockquote expandable>. Leave a blank line between lines; a single newline does not break one. Pass format: text for plain text.',
       '',
-      'reply and edit_message accept buttons: rows of {text, data} shown under the message. A tap arrives as a <channel> message with a button attribute (the data you set) and the message_id of the message it was on; the message already shows the choice, so don\'t repeat it. A tap is the sender picking an option, not approval of a permission prompt.',
+      'reply and edit_message accept buttons: rows of {text, data} (or {text, url} for a link) shown under the message. A tap arrives as a <channel> message with a button attribute (the data you set) and the message_id of the message it was on; the message already shows the choice, so don\'t repeat it. A tap is the sender picking an option, not approval of a permission prompt.',
       '',
       "Telegram's Bot API exposes no history or search — you only see messages as they arrive. If you need earlier context, ask the user to paste it or summarize.",
       '',
@@ -562,7 +572,7 @@ mcp.setNotificationHandler(
 // Fork: the `buttons` arg shared by reply and edit_message.
 const BUTTONS_SCHEMA = {
   type: 'array',
-  description: `Inline buttons under the message, as rows of {text, data}. A tap reaches you as a channel message whose meta has button (the data) and message_id (this message); the message is edited to show the choice and its buttons go away. data is up to ${MAX_BUTTON_DATA_BYTES} bytes.`,
+  description: `Inline buttons under the message, as rows of {text, data} or {text, url}. A tap on a data button reaches you as a channel message whose meta has button (the data) and message_id (this message); the message is edited to show the choice and its buttons go away. A url button just opens the https link. data is up to ${MAX_BUTTON_DATA_BYTES} bytes.`,
   items: {
     type: 'array',
     items: {
@@ -570,8 +580,9 @@ const BUTTONS_SCHEMA = {
       properties: {
         text: { type: 'string', description: 'Button label.' },
         data: { type: 'string', description: 'Returned to you when tapped.' },
+        url: { type: 'string', description: 'An https link the button opens instead.' },
       },
-      required: ['text', 'data'],
+      required: ['text'],
     },
   },
 }
@@ -657,7 +668,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         const reply_to = args.reply_to != null ? Number(args.reply_to) : undefined
         const files = (args.files as string[] | undefined) ?? []
         const format = formatOf(args.format)
-        const parseMode = format === 'markdownv2' ? 'MarkdownV2' as const : undefined
+        const parseMode = parseModeOf(format)
         const keyboard = args.buttons != null ? buildKeyboard(args.buttons) : undefined
 
         assertAllowedChat(chat_id)
@@ -763,7 +774,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
       case 'edit_message': {
         assertAllowedChat(args.chat_id as string)
         const editFormat = formatOf(args.format)
-        const editParseMode = editFormat === 'markdownv2' ? 'MarkdownV2' as const : undefined
+        const editParseMode = parseModeOf(editFormat)
         const editKeyboard = args.buttons != null ? buildKeyboard(args.buttons) : undefined
         const editKey = `${args.chat_id}:${Number(args.message_id)}`
         const richText = editFormat === 'rich' ? escapePrices(args.text as string) : ''

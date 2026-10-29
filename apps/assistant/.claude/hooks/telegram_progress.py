@@ -50,9 +50,17 @@ STEP_LABELS = {
     "get_run": "Checking your runs…",
     "list_runs": "Checking your runs…",
     "list_request_runs": "Checking your runs…",
+    "ask_to_pay": "Laying out the booking…",
+    "wait_for_run": "Booking…",
+    # campsite-booker
+    "search_campgrounds": "Looking up campgrounds…",
+    "find_open_campsites": "Checking what's open…",
+    "hold_campsite": "Putting it in your cart…",
+    "create_watch": "Setting up the watch…",
 }
 SERVER_LABELS = {
     "garmin": "Checking Garmin…",
+    "campsite-booker": "Working on campsites…",
     "date-planner": "Working on the date…",
     "claude_ai_Google_Calendar": "Checking your calendar…",
     "claude_ai_Gmail": "Checking your email…",

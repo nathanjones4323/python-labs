@@ -27,7 +27,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, suppress
-from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -48,14 +47,7 @@ from telegram.ext import (
 )
 
 from tee_time_booker.api import create_app
-from tee_time_booker.bot.agent import (
-    BOOK_SLOT,
-    BookingAgent,
-    PendingPayment,
-    Reply,
-    StartedRun,
-    TeeTimeOffer,
-)
+from tee_time_booker.bot.agent import BookingAgent, Reply
 from tee_time_booker.bot.llm import make_model
 from tee_time_booker.bot.rich import (
     Progress,
@@ -66,6 +58,18 @@ from tee_time_booker.bot.rich import (
 )
 from tee_time_booker.bot.tools import BookingTools
 from tee_time_booker.bot.voice import Transcriber, VoiceUnavailable
+from tee_time_booker.cards import (
+    PendingPayment,
+    StartedRun,
+    TeeTimeOffer,
+    course_name,
+    describe_payment,
+    format_offer,
+    format_outcome,
+    format_runs,
+    scheduled_status,
+    slot_label,
+)
 from tee_time_booker.config import BotSettings, Settings
 from tee_time_booker.mcp import create_server
 from tee_time_booker.scheduler import Started, start_due
@@ -101,24 +105,6 @@ schedule, that tap is when you schedule it. {payment_mode}
 
 - /new starts a fresh conversation
 - /runs shows recent runs"""
-
-RUN_STATUS = {
-    "running": "⏳ running",
-    "success": "✅ booked",
-    "dry_run": "🧪 dry run",
-    "unknown": "⚠️ unconfirmed",
-    "error": "❌ failed",
-    "not_open": "📭 not open yet",
-}
-WEEKDAYS = (
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-)
 
 
 class BookingBot:
@@ -374,8 +360,7 @@ class BookingBot:
         )
 
     async def _course_name(self, key: str) -> str:
-        looked_up = await self.tools.call("get_course", {"key": key})
-        return key if looked_up.is_error else looked_up.json()["name"]
+        return await course_name(self.tools.call, key)
 
     async def _ask_to_pay(self, bot: Any, payment: PendingPayment) -> None:
         keyboard = InlineKeyboardMarkup(
@@ -396,97 +381,7 @@ class BookingBot:
         await send_with_retry(bot, payment.chat_id, text, reply_markup=keyboard)
 
     async def _describe_payment(self, payment: PendingPayment) -> str:
-        """What a Confirm will book, read from the plan or request itself
-        rather than from anything the model said. Only a booking that doesn't
-        exist yet (a slot from a card, a new schedule) is described from the
-        call, and the call is exactly what a Confirm runs."""
-        fallback = (
-            f"**💳 Book and pay?**\n\n{escape(f'{payment.tool} {payment.arguments}')}"
-        )
-        try:
-            if payment.tool == BOOK_SLOT:
-                search = payment.arguments["search"]
-                course = await self._course_name(str(search["course"]))
-                return self._slot_lines(payment.arguments["slot"], search, course)
-            if payment.tool in ("create_plan", "create_request"):
-                course = await self._course_name(str(payment.arguments["course"]))
-                return schedule_lines(payment.tool, payment.arguments, course)
-            if payment.tool in ("book_plan", "set_plan_auto_book"):
-                looked_up = await self.tools.call(
-                    "get_plan", {"plan_id": payment.arguments.get("plan_id")}
-                )
-            else:
-                looked_up = await self.tools.call(
-                    "get_request", {"request_id": payment.arguments.get("request_id")}
-                )
-            if looked_up.is_error:
-                return fallback
-            row = looked_up.json()
-            course = await self._course_name(row["course"])
-            if payment.tool == "set_plan_auto_book":
-                return schedule_lines("create_plan", row, course)
-            return self._payment_lines(payment, row, course)
-        except (KeyError, TypeError, ValueError):
-            # Malformed model arguments (e.g. an unparseable target_date) must
-            # not cost the person their Confirm / Cancel buttons.
-            logger.exception("Describing a held payment")
-            return fallback
-
-    def _slot_lines(
-        self, slot: dict[str, Any], row: dict[str, Any], course: str
-    ) -> str:
-        start = datetime.fromisoformat(slot["start"])
-        side = f" ({slot['side']})" if slot.get("side") else ""
-        details = {
-            "Course": course,
-            "Date": format_date(start.date().isoformat()),
-            "Tee-off": f"{format_time(start.time().isoformat())}{side}",
-            "Group": f"{row['players']} players · {row['holes']} holes",
-        }
-        if slot.get("green_fee") is not None:
-            per_player = slot["green_fee"] + (slot.get("service_fee") or 0)
-            details["Green fee"] = f"{format_money(slot['green_fee'])} / player"
-            details["Total"] = f"about {format_money(per_player * row['players'])}"
-        lines = [
-            "**💳 Book this tee time?**"
-            if self.pays
-            else "**🧪 Dry run this tee time?**",
-            detail_table(details),
-            "_Pays at checkout when you confirm._"
-            if self.pays
-            else "_Payment is off: the run stops at checkout and pays nothing._",
-        ]
-        return "\n\n".join(lines)
-
-    @staticmethod
-    def _payment_lines(
-        payment: PendingPayment, row: dict[str, Any], course: str
-    ) -> str:
-        target = (
-            payment.arguments.get("target_date")
-            or row.get("target_date")
-            or row.get("next_target_date")
-        )
-        which = "earliest" if row["prefer_earlier"] else "latest"
-        details = {
-            "Course": course,
-            "Date": format_date(target),
-            "Tee-off": f"{format_time(row['earliest'])} – {format_time(row['latest'])}",
-            "Group": f"{row['players']} players · {row['holes']} holes",
-        }
-        lines = [
-            "**💳 Book and pay?**",
-            detail_table(details),
-            f"_The run takes the {which} open slot in that window and pays at "
-            "checkout._",
-        ]
-        if payment.arguments.get(
-            "wait_for_release", True
-        ) and not payment.arguments.get("target_date"):
-            lines.append(
-                "_If that day isn't released yet, it waits for the release first._"
-            )
-        return "\n\n".join(lines)
+        return await describe_payment(self.tools.call, payment, self.pays)
 
     def _watch(
         self, bot: Any, chat_id: int, run: StartedRun, *, scheduled: bool = False
@@ -659,206 +554,6 @@ async def _retrying(chat_id: int, send: Callable[[], Awaitable[Any]]) -> None:
             logger.warning(f"Sending to chat {chat_id} failed ({e}); retrying")
             wait, backoff = backoff, min(backoff * 2, SEND_BACKOFF_MAX_S)
         await asyncio.sleep(wait)
-
-
-# --- formatting -------------------------------------------------------------
-
-
-def format_date(value: str | None) -> str:
-    if not value:
-        return "?"
-    d = date.fromisoformat(value)
-    return f"{d:%a %b} {d.day}"
-
-
-def format_time(value: str) -> str:
-    t = time.fromisoformat(value)
-    return f"{t.hour % 12 or 12}:{t:%M} {'AM' if t.hour < 12 else 'PM'}"
-
-
-def format_money(value: float) -> str:
-    return f"${value:,.2f}".removesuffix(".00")
-
-
-def format_moment(value: datetime) -> str:
-    """A moment in its own (course-local) time, e.g. 'Sat Oct 31, 11:50 PM'."""
-    return f"{value:%a %b} {value.day}, {format_time(value.time().isoformat())}"
-
-
-def _ordinal(n: int) -> str:
-    suffix = (
-        "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    )
-    return f"{n}{suffix}"
-
-
-def schedule_lines(tool: str, booking: dict[str, Any], course: str) -> str:
-    """The Confirm card for scheduling a booking: `booking` is a create_plan
-    or create_request call's arguments, or a plan the card would arm."""
-    details = {"Course": course}
-    if tool == "create_plan":
-        weekday = WEEKDAYS[int(booking["target_weekday"])]
-        details["Day"] = (
-            f"{weekday}s, the {_ordinal(int(booking['weeks_ahead']))} ahead"
-        )
-        if booking.get("next_target_date"):
-            details["Next date"] = format_date(booking["next_target_date"])
-        title = "**⏰ Book this every week, automatically?**"
-        footer = (
-            "_Books each next date as soon as it opens and pays at checkout, "
-            "without asking again. Pause it any time._"
-        )
-    else:
-        details["Date"] = format_date(str(booking["target_date"]))
-        title = "**⏰ Book this automatically?**"
-        footer = (
-            "_Books it as soon as the day opens and pays at checkout, without "
-            "asking again. Cancel it any time before then._"
-        )
-    details["Tee-off"] = (
-        f"{format_time(str(booking['earliest']))} – "
-        f"{format_time(str(booking['latest']))}"
-    )
-    details["Group"] = f"{booking['players']} players · {booking['holes']} holes"
-    return "\n\n".join([title, detail_table(details), footer])
-
-
-def scheduled_status(booking: dict[str, Any]) -> str:
-    """What a confirmed schedule card says: when it books, from the plan or
-    request the API returned."""
-    target = booking.get("next_target_date") or booking.get("target_date")
-    when = ""
-    if booking.get("first_attempt_at"):
-        first = datetime.fromisoformat(booking["first_attempt_at"])
-        if first > datetime.now(first.tzinfo):
-            when = f" First try {format_moment(first)}."
-        else:
-            when = " It's bookable already, so it tries at the next chance."
-    return f"Scheduled for {format_date(target)}.{when} I'll message you how it goes."
-
-
-def detail_table(details: dict[str, str]) -> str:
-    """Label / value rows. HTML, since a Markdown table needs a header row."""
-    cells = "".join(
-        f"<tr><td><b>{label}</b></td><td>{html.escape(value)}</td></tr>"
-        for label, value in details.items()
-    )
-    return f"<table compact>{cells}</table>"
-
-
-def slot_label(slot: dict[str, Any], number: int | None = None) -> str:
-    """A tee-time slot on a button: its time (the card's table has the price),
-    and its row number when the card spans courses."""
-    label = format_time(datetime.fromisoformat(slot["start"]).time().isoformat())
-    return f"#{number} {label}" if number is not None else label
-
-
-def format_offer(offer: TeeTimeOffer, names: dict[str, str]) -> str:
-    """The card for `offer`; `names` maps its course keys to course names."""
-    day = format_date(offer.slots[0]["start"][:10])
-    several = len(names) > 1
-    title = day if several else f"{escape(next(iter(names.values())))} · {day}"
-    count = len(offer.slots)
-    about = [f"{count} {'time' if count == 1 else 'times'}"]
-    search = next(iter(offer.searches.values()))
-    about += [f"{search['players']} golfers", f"{search['holes']} holes"]
-    if several:
-        about.append(f"{len(names)} courses")
-    # A Side column only when it tells the slots apart.
-    sides = len({slot.get("side") for slot in offer.slots}) > 1
-    head = '<th align="left">#</th><th align="left">Course</th>' if several else ""
-    head += '<th align="left">Time</th>'
-    if sides:
-        head += '<th align="left">Side</th>'
-    head += '<th align="right">Per player</th>'
-    rows = []
-    for number, slot in enumerate(offer.slots, 1):
-        start = datetime.fromisoformat(slot["start"])
-        row = ""
-        if several:
-            row += f"<td>{number}</td><td>{html.escape(names[slot['course']])}</td>"
-        row += f"<td><b>{format_time(start.time().isoformat())}</b></td>"
-        if sides:
-            row += f"<td>{html.escape(slot.get('side') or '')}</td>"
-        fee = slot.get("green_fee")
-        price = f"<b>{format_money(fee)}</b>" if fee is not None else "–"
-        row += f'<td align="right">{price}</td>'
-        rows.append(f"<tr>{row}</tr>")
-    return "\n\n".join(
-        [
-            f"📅 **{title}**",
-            " · ".join(about),
-            f"<table striped compact><tr>{head}</tr>{''.join(rows)}</table>",
-            "_Tap a time to book it._",
-        ]
-    )
-
-
-def _slot(run: dict[str, Any]) -> str:
-    if not run.get("tee_time_local"):
-        return ""
-    start = datetime.fromisoformat(run["tee_time_local"])
-    side = f" ({run['side']})" if run.get("side") else ""
-    return f"{format_time(start.time().isoformat())}{side}"
-
-
-def format_outcome(
-    started: StartedRun, run: dict[str, Any], course: str | None = None
-) -> str:
-    """`course` is the course's name; without it the key stands in."""
-    name = escape(course or started.course)
-    where = f"{name} on {format_date(started.target_date)}"
-    slot = escape(_slot(run))
-    fee = (
-        f"\n\nGreen fee {escape(format_money(float(run['green_fee'])))} per player."
-        if run.get("green_fee")
-        else ""
-    )
-    match run["status"]:
-        case "success":
-            # In code, so it's one tap to copy.
-            confirmation = (
-                f"\n\nConfirmation: `{run['confirmation'].replace('`', '')}`"
-                if run.get("confirmation")
-                else ""
-            )
-            at = f" at **{slot}**" if slot else ""
-            return f"✅ **Booked** {where}{at}.{fee}{confirmation}"
-        case "dry_run":
-            return (
-                f"🧪 **Dry run done:** reached checkout for {slot or 'a slot'} at "
-                f"{where}. Nothing was paid.{fee}"
-            )
-        case "unknown":
-            return (
-                f"⚠️ **Payment submitted, no confirmation** for {where} {slot}.\n\n"
-                "Check your account on the booking site before trying again."
-            )
-        case "not_open":
-            return (
-                f"📭 **Not open yet:** {where} isn't in the site's booking window "
-                "yet. Nothing was booked."
-            )
-        case _:
-            detail = html.escape(run.get("detail") or "no detail")
-            return (
-                f"❌ **The run failed** for {where}.\n\n"
-                f"<blockquote expandable>{detail}</blockquote>"
-            )
-
-
-def format_runs(runs: list[dict[str, Any]]) -> str:
-    if not runs:
-        return "No runs yet."
-    rows = ["| Started | Status | Slot |", "|:--|:--|:--|"]
-    for run in runs:
-        started = datetime.fromisoformat(run["started_at"]).astimezone()
-        status = RUN_STATUS.get(run["status"], escape(run["status"]))
-        rows.append(
-            f"| {started:%a %b} {started.day} {format_time(started.time().isoformat())}"
-            f" | {status} | {escape(_slot(run)) or '–'} |"
-        )
-    return "\n".join(rows)
 
 
 # --- entry point --------------------------------------------------------------

@@ -18,6 +18,7 @@ fastmcp = pytest.importorskip("fastmcp")
 
 import anthropic  # noqa: E402
 import httpx  # noqa: E402
+from tee_time_booker import cards  # noqa: E402
 from tee_time_booker.api import create_app  # noqa: E402
 from tee_time_booker.bot import agent as agent_module  # noqa: E402
 from tee_time_booker.bot import app as app_module  # noqa: E402
@@ -225,7 +226,7 @@ def test_a_stale_button_does_nothing(monkeypatch):
     )
     agent = _agent(claude, FakeTools())
     [payment] = _respond(agent, "book it").payments
-    monkeypatch.setattr(agent_module, "PAYMENT_TTL_S", -1)
+    monkeypatch.setattr(cards, "PAYMENT_TTL_S", -1)
     assert agent.take_payment(payment.id) is None
 
 
@@ -1002,7 +1003,7 @@ def test_confirming_a_schedule_starts_no_run():
 
 
 def test_the_schedule_card_says_what_it_will_book():
-    one_off = app_module.schedule_lines("create_request", SCHEDULE, "Glen Annie")
+    one_off = cards.schedule_lines("create_request", SCHEDULE, "Glen Annie")
     assert one_off.startswith("**⏰ Book this automatically?**")
     assert "<td>Sat Nov 14</td>" in one_off
     assert "8:00 AM – 10:00 AM" in one_off and "without asking again" in one_off
@@ -1013,7 +1014,7 @@ def test_the_schedule_card_says_what_it_will_book():
         "weeks_ahead": 3,
         "next_target_date": "2026-11-08",
     }
-    weekly = app_module.schedule_lines("create_plan", plan, "Glen Annie")
+    weekly = cards.schedule_lines("create_plan", plan, "Glen Annie")
     assert "every week" in weekly
     assert "<td>Sundays, the 3rd ahead</td>" in weekly
     assert "<td>Sun Nov 8</td>" in weekly
@@ -1024,7 +1025,7 @@ def test_a_confirmed_schedule_says_when_it_first_tries():
         "target_date": "2099-11-14",
         "first_attempt_at": "2099-10-24T23:50:00-07:00",
     }
-    assert app_module.scheduled_status(later) == (
+    assert cards.scheduled_status(later) == (
         "Scheduled for Sat Nov 14. First try Sat Oct 24, 11:50 PM. "
         "I'll message you how it goes."
     )
@@ -1032,7 +1033,7 @@ def test_a_confirmed_schedule_says_when_it_first_tries():
         "next_target_date": "2026-10-24",
         "first_attempt_at": "2026-10-01T06:00:00-07:00",
     }
-    assert "bookable already" in app_module.scheduled_status(already)
+    assert "bookable already" in cards.scheduled_status(already)
 
 
 def test_a_day_not_open_yet_reads_plainly():
