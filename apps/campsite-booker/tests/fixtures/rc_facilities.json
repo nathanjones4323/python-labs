@@ -1,37 +1,106 @@
 [
  {
-  "FacilityId": 2001,
-  "PlaceId": 1001,
-  "Name": "Pfeiffer Big Sur Campground",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
+  "FacilityId": 462,
+  "PlaceId": 639,
+  "Name": "North Loop (sites 1-59, 120, 122)",
+  "Description": "North Loop (sites 1-59, 120, 122)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
  },
  {
-  "FacilityId": 2002,
-  "PlaceId": 1001,
-  "Name": "Day Use Parking",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
+  "FacilityId": 464,
+  "PlaceId": 639,
+  "Name": "South Loop (sites 60-119, 121)",
+  "Description": "South Loop (sites 60-119, 121)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
  },
  {
-  "FacilityId": 2003,
-  "PlaceId": 1002,
-  "Name": "Campground",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
+  "FacilityId": 518,
+  "PlaceId": 661,
+  "Name": "Environmental Group Camp Area",
+  "Description": "Environmental Group Camp Area",
+  "FacilityType": 2,
+  "AllowWebBooking": true
  },
  {
-  "FacilityId": 2004,
-  "PlaceId": 1003,
-  "Name": "Doheny Campground",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
+  "FacilityId": 546,
+  "PlaceId": 666,
+  "Name": "Redwood Camp (sites 13-29)",
+  "Description": "Redwood Camp (sites 13-29)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
  },
  {
-  "FacilityId": 2005,
-  "PlaceId": 1001,
-  "Name": "Staff Camp",
-  "AllowWebBooking": false,
-  "IsWebViewable": false
+  "FacilityId": 581,
+  "PlaceId": 639,
+  "Name": "Doheny Group",
+  "Description": "Doheny Group",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 609,
+  "PlaceId": 690,
+  "Name": "Group Sites A & B",
+  "Description": "Group Sites A & B",
+  "FacilityType": 2,
+  "AllowWebBooking": false
+ },
+ {
+  "FacilityId": 611,
+  "PlaceId": 690,
+  "Name": "South Camp (sites 1-78)",
+  "Description": "South Camp (sites 1-78)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 612,
+  "PlaceId": 690,
+  "Name": "Weyland Camp (sites 79-130)",
+  "Description": "Weyland Camp (sites 79-130)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 767,
+  "PlaceId": 690,
+  "Name": "Main Camp (sites 131-188)",
+  "Description": "Main Camp (sites 131-188)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 1130,
+  "PlaceId": 666,
+  "Name": "Ocean Camp (sites 1-12)",
+  "Description": "Ocean Camp (sites 1-12)",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 1940,
+  "PlaceId": 1077,
+  "Name": "Trail Camp",
+  "Description": "Trail Camp                                        ",
+  "FacilityType": 2,
+  "AllowWebBooking": true
+ },
+ {
+  "FacilityId": 2092,
+  "PlaceId": 690,
+  "Name": "Day Use Lot 3",
+  "Description": "Day Use Lot 3",
+  "FacilityType": 2,
+  "AllowWebBooking": false
+ },
+ {
+  "FacilityId": 2093,
+  "PlaceId": 690,
+  "Name": "Day Use Lot 4",
+  "Description": "Day Use Lot 4",
+  "FacilityType": 2,
+  "AllowWebBooking": false
  }
 ]

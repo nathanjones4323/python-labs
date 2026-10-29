@@ -168,42 +168,66 @@ does before any hold or payment.
 
 ReserveCalifornia (California State Parks) is read the same way as
 recreation.gov: the JSON its own pages load, no login. It's UseDirect's
-system, at `calirdr.usedirect.com/rdr/rdr/`:
+system (run by Tyler Technologies), at whatever host the site's own
+`config.json` names as `rdrApiUrl`, read the way the site's script reads
+it. It has moved once: `calirdr.usedirect.com` stopped resolving in 2026,
+and if the config can't be read the last known host is used.
 
 - `fd/places` and `fd/facilities`: every park, and every facility (a
   campground, or a loop of one) in it. There's no search worth the name, so
-  both lists are fetched once (kept 12 hours) and searched here. "big sur"
-  finds Pfeiffer Big Sur by name, then parks whose descriptions say "Big
-  Sur"; `--near` finds them by distance. Facilities named day use, parking,
-  tour or picnic are left out.
+  both lists are fetched once (kept 12 hours) and searched here, by every
+  word of the park or facility name: "big sur" finds Pfeiffer Big Sur's
+  four camps. Nearly every description is just the name again, so for an
+  area use `--near` (`--near 36.25,-121.78 --radius 25` adds Andrew Molera,
+  Julia Pfeiffer Burns and Limekiln). Facilities named day use, parking,
+  tour or picnic are left out. Facilities have no location of their own;
+  the park's is used.
 - `POST search/grid`: each site ("unit") at a facility, with a "slice" per
   night, asked for 30 nights at a time. A night is `Available` when it's
-  free, not locked in someone's cart, not walk-in only, and booked online.
-  A slice's `MinStay` (2 on many weekends) is kept, and a shorter stay
-  arriving that night doesn't match.
+  free, not locked in someone's cart (a lock is someone part-way through
+  booking), not walk-in only, not for a drawing (a lottery) and booked
+  online. Nights out of season, or past the booking window, aren't in the
+  answer at all, so a stay that runs into them doesn't match. A slice's
+  `MinStay` is kept, and a shorter stay arriving that night doesn't match
+  (every night from Oct 2026 to Apr 2027 that was checked had a minimum of
+  1).
 
 A state park's campground id is `rc-{park}-{facility}`, so it can't be
 confused with a recreation.gov id and its link
-(`reservecalifornia.com/park/{park}/{facility}`) comes from the id. Every
-search asks both sites (state parks first, then recreation.gov), and one
-being down leaves the other's results.
+(`reservecalifornia.com/park/{park}/{facility}`, the facility's site list
+and map) comes from the id. Every search asks both sites (state parks
+first, then recreation.gov), and one being down leaves the other's results.
+Facilities booked by phone only (Pfeiffer Big Sur's Group Sites A & B) are
+listed by the CLI but left out of the assistant's searches, like
+recreation.gov's.
 
 Watches work the same, but alerts only have **Open** links (the
 campground's page on ReserveCalifornia; it has none per site). Nothing
 holds or pays there: `auto_hold`, `auto_pay` and `hold` are refused for an
 `rc-` id. ReserveCalifornia opens each day six months ahead at 8 AM
 Pacific; there's no release schedule to read, so a state park watch is
-never armed and is just checked every minute.
+never armed and is just checked every minute. A facility id it doesn't
+know comes back as an error on the watch, not as nothing open.
 
 ReserveCalifornia doesn't say how many people a site holds, so
 `--people` doesn't filter its sites, and site types come from the site's
-name ("Tent Campsite #023" is `TENT CAMPSITE`).
+name, up to its `#`: "Tent Campsite #SC01" is `TENT CAMPSITE`, "Group
+Campsite #GCAB" a group site. No state park site's name says "RV" (they
+say "Hook Up (E/W) Campsite"), so `--type rv` finds none there; `--type
+tent` finds the tent-only sites, not every site a tent fits.
 
-**Not run against the live site yet.** This was written from the field
-names ReserveCalifornia's own script uses, and its API host wasn't
-reachable from where it was built. The first `campgrounds "big sur"` and
-`open` against it will tell: a field it reads differently, a site's
-occupancy, or the page link's form.
+### What's been run against the live site
+
+On Oct 28, 2026: the park and facility lists (299 parks, 516 facilities),
+searching by name and by distance, availability at Pfeiffer Big Sur (South
+Camp) and Doheny (South Loop), a watch checked by the watcher (alert text
+and buttons, with a fake Telegram, and no repeat on the next check, beside
+a recreation.gov watch in the same check), an unknown facility id, and the
+assistant's tools, including the refusals to hold or pay. What it found
+matched the sites' own grids on reservecalifornia.com night by night
+(free, booked and locked). Unit names were checked across 18 facilities.
+Not seen live yet: a walk-in, drawing or minimum-stay night (the parser
+follows the site's script for them).
 
 ## Release days
 
@@ -370,8 +394,8 @@ uv run --package campsite-booker alembic revision --autogenerate -m "what change
 
 Tests use no network. recreation.gov's API responses are real ones trimmed
 into `tests/fixtures` (Santa Cruz Island Scorpion, November 2026).
-ReserveCalifornia's (`rc_*`) are made up in the shape its script reads,
-with made-up ids: replace them with real ones once it's been run. The
+ReserveCalifornia's (`rc_*`) are real ones trimmed too (around Big Sur
+and Doheny, and Pfeiffer Big Sur's South Camp for Nov 6–11, 2026). The
 database is a throwaway SQLite file migrated with Alembic. Telegram is a
 fake. `test_pages.py` drives a headless Chromium over recreation.gov's own
 pages, trimmed into `tests/fixtures/pages` (the campsite calendar, order
