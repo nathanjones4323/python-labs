@@ -2,26 +2,31 @@
 open at them, read into recgov's `Campground` and `Campsite` so the rest of
 the app treats both sites alike.
 
-Like recreation.gov's, these are the endpoints the website's own pages call
-(its script sends them to `calirdr.usedirect.com/rdr/rdr/`, UseDirect's
-booking system), with no login:
+Like recreation.gov's, these are the endpoints the website's own pages call,
+with no login. The host is whatever the site's `config.json` names as
+`rdrApiUrl` (UseDirect's booking system, run by Tyler Technologies), read
+as the site's own script does: it moved once already, and the old
+`calirdr.usedirect.com` stopped resolving.
 
 - `fd/places`: every park, with its name and location
 - `fd/facilities`: every facility (a campground, or a loop of one) and the
   park it's in
 - `POST search/grid`: each site ("unit") at a facility and a "slice" for
-  every night: `IsFree`, `IsWalkin`, `IsBlocked`, `Lock` and `MinStay`
+  every night: `IsFree`, `IsWalkin`, `IsBlocked`, `Lock`,
+  `IsReservationDraw` and `MinStay`
 
 Parks have no search endpoint worth the name (`fd/citypark/namecontains`
 is the search box's autocomplete), so the two lists are fetched once and
 searched here, by name or distance. Big Sur, say, is Pfeiffer Big Sur by
-name, and Andrew Molera or Limekiln by their descriptions or by distance.
+name, and Andrew Molera or Limekiln by distance: most descriptions are just
+the park's name again.
 
 A campground id here is `rc-{park}-{facility}` (`rc-690-766`), so it
 can't be mistaken for one of recreation.gov's and its page link
 (`/park/{park}/{facility}`) comes from the id alone. A night is `Available`
-when the site's free, not locked in someone's cart, not walk-in only and
-booked online; that's what the website lets you pick.
+when the site's free, not locked in someone's cart, not walk-in only, not
+for a drawing (a lottery) and booked online; that's what the website lets
+you pick.
 
 Only searching and watching: holding (the cart) is recreation.gov's.
 """
@@ -34,6 +39,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from campsite_booker.recgov import (
     AVAILABLE,
@@ -46,11 +52,16 @@ from campsite_booker.recgov import (
 )
 
 SITE_URL = "https://www.reservecalifornia.com"
-API_URL = "https://calirdr.usedirect.com/rdr/rdr/"
+CONFIG_URL = f"{SITE_URL}/config.json"
+# `rdrApiUrl` in CONFIG_URL as of Oct 28, 2026, for when that can't be read.
+API_URL = (
+    "https://california-rdr.prod.cali.rd12.recreation-management.tylerapp.com/rdr/"
+)
 SITE = "ReserveCalifornia"
 RESERVED = "Reserved"
 WALK_IN = "Walk-in"
 NOT_RESERVABLE = "Not Reservable"
+DRAWING = "Drawing Only"
 # The park and facility lists change a few times a year.
 CATALOG_TTL_S = 12 * 3600
 # Nights per `search/grid` request (the website asks for a week or two).
@@ -172,8 +183,9 @@ def _text(html: str) -> str:
 
 def search_catalog(listings: list[Listing], query: str) -> list[Campground]:
     """Campgrounds whose facility or park names have every word of `query`,
-    then those whose descriptions have it as a phrase ("big sur" finds
-    Pfeiffer Big Sur, then the parks on the Big Sur coast)."""
+    then those whose descriptions have it as a phrase. Few descriptions say
+    more than the name, so an area ("the parks on the Big Sur coast") is a
+    search by distance."""
     words = query.lower().split()
     if not words:
         return []
@@ -215,8 +227,10 @@ def near_catalog(
 
 def site_type(unit_name: str) -> str:
     """A unit's name without its number, as recreation.gov writes types:
-    "Tent Campsite #023" → "TENT CAMPSITE"."""
-    kind = re.sub(r"\s*(#\s*)?\d+[A-Z]?$", "", unit_name.strip(), flags=re.I)
+    "Tent Campsite #SC01" → "TENT CAMPSITE". The number follows a `#` and
+    can have letters ("#B103" boat-in, "#GCAB" a group site)."""
+    kind = unit_name.strip().partition("#")[0]
+    kind = re.sub(r"\s+\d+[A-Z]?$", "", kind, flags=re.I)
     return " ".join(kind.split()).upper() or "CAMPSITE"
 
 
@@ -225,6 +239,8 @@ def _status(slice_: dict[str, Any], books_online: bool) -> str:
         return WALK_IN
     if not books_online:
         return NOT_RESERVABLE
+    if slice_.get("IsReservationDraw"):
+        return DRAWING
     if (
         slice_.get("IsFree")
         and slice_.get("Lock") is None
@@ -237,7 +253,9 @@ def _status(slice_: dict[str, Any], books_online: bool) -> str:
 def parse_grid(payload: dict[str, Any]) -> list[Campsite]:
     """Every site in a `search/grid` response, with its nights."""
     facility = payload.get("Facility")
-    if not isinstance(facility, dict):
+    # An unknown facility still comes back as one, with no units and a
+    # Message ("Invalid FacilityId specified…").
+    if not isinstance(facility, dict) or facility.get("Units") is None:
         raise ReserveCaliforniaError(
             f"{SITE} sent no availability: {payload.get('Message') or 'no reason'}"
         )
@@ -283,10 +301,24 @@ def windows(first: date, last: date, days: int = GRID_DAYS) -> list[tuple[date, 
 
 
 def _api_date(day: date) -> str:
-    return day.strftime("%m-%d-%Y")
+    # The site's `apiDateFormat` (it took "%m-%d-%Y" too, Oct 2026).
+    return day.isoformat()
 
 
 # --- the client -----------------------------------------------------------------
+
+
+def api_url() -> str:
+    """The API host the website's own script would use, from its
+    `config.json`; `API_URL` if that can't be read."""
+    try:
+        response = httpx.get(CONFIG_URL, headers={"User-Agent": USER_AGENT}, timeout=10)
+        response.raise_for_status()
+        url = response.json()["rdrApiUrl"]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        logger.warning(f"Couldn't read {SITE}'s API host ({e}); using {API_URL}")
+        return API_URL
+    return url if url.endswith("/") else f"{url}/"
 
 
 class ReserveCalifornia:
@@ -295,7 +327,7 @@ class ReserveCalifornia:
 
     def __init__(self, client: httpx.Client | None = None) -> None:
         self._client = client or httpx.Client(
-            base_url=API_URL,
+            base_url=api_url(),
             headers={
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json",

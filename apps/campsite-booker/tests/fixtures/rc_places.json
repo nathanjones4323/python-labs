@@ -1,28 +1,46 @@
 [
  {
-  "PlaceId": 1001,
-  "Name": "Pfeiffer Big Sur SP",
-  "Latitude": 36.2505,
-  "Longitude": -121.7835,
-  "Description": "<p>Redwoods along the Big Sur River.</p>",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
- },
- {
-  "PlaceId": 1002,
-  "Name": "Limekiln SP",
-  "Latitude": 35.999,
-  "Longitude": -121.519,
-  "Description": "<p>Camp among redwoods on the <b>Big Sur</b> coast.</p>",
-  "AllowWebBooking": true,
-  "IsWebViewable": true
- },
- {
-  "PlaceId": 1003,
+  "PlaceId": 639,
   "Name": "Doheny SB",
-  "Latitude": 33.461,
-  "Longitude": -117.687,
-  "Description": "A beach campground in Dana Point.",
+  "Description": "Doheny State Beach",
+  "Latitude": 33.46222222,
+  "Longitude": -117.68,
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 661,
+  "Name": "Julia Pfeiffer Burns SP",
+  "Description": "Julia Pfeiffer Burns State Park",
+  "Latitude": 36.15892586,
+  "Longitude": -121.6704589,
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 666,
+  "Name": "Limekiln SP",
+  "Description": "Limekiln State Park",
+  "Latitude": 36.00990485,
+  "Longitude": -121.5180129,
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 690,
+  "Name": "Pfeiffer Big Sur SP",
+  "Description": "Pfeiffer Big Sur State Park",
+  "Latitude": 36.25305556,
+  "Longitude": -121.7811111,
+  "AllowWebBooking": true,
+  "IsWebViewable": true
+ },
+ {
+  "PlaceId": 1077,
+  "Name": "Andrew Molera SP",
+  "Description": "Andrew Molera SP",
+  "Latitude": 36.28840486,
+  "Longitude": -121.844013,
   "AllowWebBooking": true,
   "IsWebViewable": true
  }

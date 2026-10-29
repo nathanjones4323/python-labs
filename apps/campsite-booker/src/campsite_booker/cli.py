@@ -152,7 +152,10 @@ def main(argv: list[str] | None = None) -> None:
                 )
             for c in found:
                 miles = f"{c.distance_miles:5.1f} mi  " if c.distance_miles else ""
-                print(f"{c.id:>11}  {miles}{c.name} ({c.park or c.state or ''})")
+                # A state park's name already starts with its park.
+                where = c.park or c.state or ""
+                where = "" if where and c.name.startswith(where) else f" ({where})"
+                print(f"{c.id:>11}  {miles}{c.name}{where}")
             return
 
         if args.command == "open":
