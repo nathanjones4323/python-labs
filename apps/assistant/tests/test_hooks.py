@@ -10,6 +10,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -86,47 +87,20 @@ def test_unreadable_payload_is_denied(payload: Any) -> None:
     assert out["permissionDecision"] == "deny"
 
 
-@pytest.mark.parametrize(
-    "tool",
-    [
-        "mcp__tee-time-booker__delete_plan",
+def test_nothing_asks_and_email_and_event_deletes_are_blocked() -> None:
+    permissions = SETTINGS["permissions"]
+    assert permissions["defaultMode"] == "bypassPermissions"
+    assert "ask" not in permissions
+    assert set(permissions["deny"]) == {
+        "mcp__claude_ai_Google_Calendar__delete_event",
         "mcp__claude_ai_Gmail__send_message",
         "mcp__claude_ai_Gmail__reply",
         "mcp__claude_ai_Gmail__forward",
-        "Bash",
-    ],
-)
-def test_high_impact_tools_are_denied(tool: str) -> None:
-    assert tool in SETTINGS["permissions"]["deny"]
-    assert tool not in SETTINGS["permissions"]["allow"]
+    }
 
 
-@pytest.mark.parametrize(
-    "tool", ["mcp__tee-time-booker__book_plan", "mcp__tee-time-booker__run_request"]
-)
-def test_booking_always_asks(tool: str) -> None:
-    # `ask` beats an `allow` rule, so a wildcard allow can't skip the prompt.
-    assert tool in SETTINGS["permissions"]["ask"]
-    assert tool not in SETTINGS["permissions"]["allow"]
-    assert tool not in SETTINGS["permissions"]["deny"]
-
-
-def test_every_allowed_mcp_tool_names_a_configured_server() -> None:
-    servers = set(MCP["mcpServers"]) | {"claude_ai_Google_Calendar", "claude_ai_Gmail"}
-    for rule in SETTINGS["permissions"]["allow"]:
-        if rule.startswith("mcp__"):
-            assert rule.split("__")[1] in servers, rule
-
-
-def test_calendar_guard_path_exists() -> None:
-    commands = [
-        hook["command"]
-        for group in SETTINGS["hooks"]["PreToolUse"]
-        for hook in group["hooks"]
-    ]
-    guard = next(c for c in commands if "calendar_guard.py" in c)
-    rel = guard.split('"${CLAUDE_PROJECT_DIR}/')[1].split('"')[0]
-    assert (PROJECT / rel).is_file()
+def test_tee_times_get_the_bots_cards() -> None:
+    assert "--cards" in MCP["mcpServers"]["tee-time-booker"]["args"]
 
 
 # --- telegram_progress.py ---------------------------------------------------
@@ -145,6 +119,7 @@ def load_progress() -> Any:
 
 
 progress = load_progress()
+
 
 
 def channel_prompt(chat_id: str = CHAT) -> dict[str, Any]:
@@ -364,3 +339,115 @@ def test_memory_guard_is_unchanged() -> None:
             }
         ],
     }
+
+
+# --- payment_guard.py ---------------------------------------------------------
+
+
+def tap(data: str) -> dict[str, Any]:
+    entry = channel_prompt()
+    entry["message"]["content"] = entry["message"]["content"].replace(
+        'message_id="8"', f'message_id="8" button="{data}"'
+    )
+    return entry
+
+
+def guard(
+    tool: str, tool_input: Any, entries: list[dict[str, Any]], tmp_path: Path
+) -> dict[str, Any] | None:
+    """The guard's decision, or None when it lets the call through."""
+    path = tmp_path / "t.jsonl"
+    path.write_text(transcript(*entries))
+    payload = {"tool_name": tool, "tool_input": tool_input, "transcript_path": str(path)}
+    done = subprocess.run(
+        [sys.executable, str(HOOKS / "payment_guard.py")],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if not done.stdout:
+        return None
+    output: dict[str, Any] = json.loads(done.stdout)["hookSpecificOutput"]
+    return output
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("mcp__tee-time-booker__run_request", {"request_id": "r", "submit_payment": True}),
+        ("mcp__tee-time-booker__book_plan", {"plan_id": "p", "submit_payment": "true"}),
+        ("mcp__tee-time-booker__create_plan", {"auto_book": True}),
+        ("mcp__tee-time-booker__create_request", {"auto_book": 1}),
+        ("mcp__tee-time-booker__set_plan_auto_book", {"plan_id": "p", "enabled": True}),
+        ("mcp__campsite-booker__hold_campsite", {"pay": True}),
+        ("mcp__campsite-booker__pay_hold", {"hold_id": 3}),
+        ("mcp__campsite-booker__set_watch_auto_pay", {"watch_id": 3}),
+        ("Bash", {"command": "uv run --package tee-time-booker tee-time-booker"}),
+        ("Bash", {"command": "TEE_TIME_SUBMIT_PAYMENT=true python -m x"}),
+        ("Bash", {"command": "cat ../campsite-booker/.env"}),
+        ("Bash", {"command": "cd ../tee*; cat .env"}),
+        ("Bash", {"command": "sed -i '' /payment/d .claude/settings.json"}),
+    ],
+)
+def test_paying_directly_is_denied(tool: str, tool_input: Any, tmp_path: Path) -> None:
+    # Even on a tap's turn: paying only goes through press_button.
+    out = guard(tool, tool_input, [tap("tee:pay:x")], tmp_path)
+    assert out is not None and out["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    ("tool", "tool_input"),
+    [
+        ("mcp__tee-time-booker__run_request", {"request_id": "r", "submit_payment": False}),
+        ("mcp__tee-time-booker__create_request", {"course": "x"}),
+        ("mcp__tee-time-booker__delete_plan", {"plan_id": "p"}),
+        ("mcp__tee-time-booker__search_tee_times", {"date": "2026-10-31"}),
+        ("mcp__campsite-booker__hold_campsite", {"campsite_id": "10"}),
+        ("mcp__campsite-booker__set_watch_auto_pay", {"watch_id": 3, "on": False}),
+        ("mcp__tee-time-booker__press_button", {"data": "tee:book:abc:0"}),
+        ("mcp__tee-time-booker__press_button", {"data": "tee:dry:abc"}),
+        ("mcp__campsite-booker__press_button", {"data": "camp:hold:1"}),
+        ("Bash", {"command": "ls ~/Downloads && git status"}),
+    ],
+)
+def test_everything_else_runs(tool: str, tool_input: Any, tmp_path: Path) -> None:
+    assert guard(tool, tool_input, [TERMINAL_PROMPT], tmp_path) is None
+
+
+@pytest.mark.parametrize("data", ["tee:pay:abc", "camp:pay:3", "camp:autopay:3"])
+def test_a_paying_button_needs_that_very_tap(data: str, tmp_path: Path) -> None:
+    tool = "mcp__x__press_button"
+    call = {"data": data}
+    assert guard(tool, call, [tap(data)], tmp_path) is None
+    # The tool result that follows a tap doesn't change whose turn it is.
+    assert guard(tool, call, [tap(data), TOOL_RESULT], tmp_path) is None
+    for entries in (
+        [TERMINAL_PROMPT],
+        [channel_prompt()],
+        [tap(data + "0")],
+        [tap("tee:book:abc:0")],
+        [tap(data), TERMINAL_PROMPT],
+        # An interrupt or slash command has no origin but still ends the turn.
+        [tap(data), {"type": "user", "message": {"content": "[Request interrupted by user]"}}],
+        [tap(data), {"type": "user", "message": {"content": "<command-name>/clear</command-name>"}}],
+    ):
+        out = guard(tool, call, entries, tmp_path)
+        assert out is not None and out["permissionDecision"] == "deny", entries
+
+
+@pytest.mark.parametrize("payload", ["not json", "[]"])
+def test_guard_fails_closed(payload: str) -> None:
+    out = run_hook("payment_guard.py", payload)
+    assert out["permissionDecision"] == "deny"
+
+
+def test_guard_runs_on_the_booking_apps_and_the_shell() -> None:
+    group = next(
+        g
+        for g in SETTINGS["hooks"]["PreToolUse"]
+        if "payment_guard.py" in g["hooks"][0]["command"]
+    )
+    for tool in ("Bash", "mcp__tee-time-booker__press_button", "mcp__campsite-booker__pay_hold"):
+        assert re.fullmatch(group["matcher"], tool)
+    assert not re.fullmatch(group["matcher"], "mcp__garmin__get_stats")

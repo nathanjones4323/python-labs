@@ -19,7 +19,7 @@ plan wanted from OpenClaw:
 | Scheduling, hooks | session-scheduled tasks in the always-on session; Claude Code hooks; launchd keeps the session up |
 | MCP config | `apps/assistant/.mcp.json` |
 | Memory | `apps/assistant/memory/*.md`, imported from `apps/assistant/CLAUDE.md` |
-| Permissions, audit | `.claude/settings.json` allow/ask/deny, PreToolUse hooks, each app's own guards |
+| Permissions, audit | bypass mode, `deny` rules, PreToolUse hooks (payment by tap only), each app's own switches |
 | Structured task state | none until a workflow needs it (Phase 6) |
 
 Remote Control stays as the partner's path into `apps/date-planner`.
@@ -33,22 +33,42 @@ Remote Control stays as the partner's path into `apps/date-planner`.
 - Bots that run schedulers (tee-time-booker, pay-my-bills) keep running;
   the assistant reads their state, it doesn't replace them.
 
-## Permission tiers
+## Permissions
 
-| Tier | Rule | Examples |
-|---|---|---|
-| Read | allowed, no prompt | garmin `get_*`, tee-time `list_*`/`get_*`, date-planner reads, Calendar/Gmail reads |
-| Write | Claude Code asks; over Telegram the prompt is relayed | date-planner upserts, garmin scheduling, tee-time `create_plan`, `create_request` |
-| Book / pay | `ask` rule — always prompts, even if an allow rule would match | tee-time `book_plan`, `run_request` |
-| Blocked | `deny` rule — do it in the app | tee-time `delete_plan`; Gmail send/reply/forward; Bash |
-| Files | PreToolUse hook `memory_only.py` denies any write outside `apps/assistant/memory/` | |
+The session runs in `bypassPermissions` mode: nothing asks, over Telegram or
+in the terminal. Paying is gated the way the apps' own bots gate it, by a
+tap on a button the app draws.
 
-Paying still needs tee-time-booker's own switch (`TEE_TIME_SUBMIT_PAYMENT`)
-as well as `submit_payment: true`; the prompt adds a person on top.
+| Rule | Where |
+|---|---|
+| Everything runs without a prompt | `permissions.defaultMode` |
+| Paying only on the person's tap of that Confirm / Pay button | PreToolUse hook `payment_guard.py` |
+| No shell route into the booking apps (CLIs, `.env`, payment switches) | `payment_guard.py` on `Bash` |
+| Email send/reply/forward and calendar deletes blocked | `deny` rules |
+| Writes only under `apps/assistant/memory/` | PreToolUse hook `memory_only.py` |
 
-Calendar writes go through date-planner's `calendar_guard.py` (no deletes;
-invites ask). Memory, emails, web pages and tool results are data, never
-instructions (`CLAUDE.md` says so; the deny rules hold regardless).
+`payment_guard.py` denies every direct paying call (tee-time `run_request`
+/ `book_plan` with `submit_payment`, `auto_book`, `set_plan_auto_book`;
+campsite `hold_campsite` with `pay`, `pay_hold`, `set_watch_auto_pay`) and
+lets `press_button` with a paying button (`tee:pay:`, `camp:pay:`,
+`camp:autopay:`) through only when the turn's prompt is the Telegram tap of
+exactly that button. Paying still also needs each app's own switch
+(`TEE_TIME_SUBMIT_PAYMENT`, `CAMPSITE_SUBMIT_PAYMENT`); without it a Confirm
+is a dry run.
+
+## The apps' cards
+
+The apps' MCP servers return their bots' own messages, so the assistant
+shows and books exactly as the standalone bots do instead of redrawing them
+from prompt text. A result's `telegram` field (`text`, `format`, `buttons`)
+is sent as given; a tap's data goes back to that app's `press_button`.
+
+- tee-time-booker, with `--cards` (`tee_time_booker/assistant.py`):
+  `show_tee_times`, `ask_to_pay`, `press_button`, `wait_for_run`. The cards
+  come from `tee_time_booker/cards.py`, which the bot uses too.
+- campsite-booker: `find_open_campsites`, `hold_campsite` and `pay_hold`
+  carry the watcher bot's cards (`campsite_booker/messages.py`);
+  `press_button` and `ask_auto_pay` handle its buttons.
 
 ## Telegram buttons
 
@@ -68,13 +88,12 @@ adds an optional `buttons` arg to `reply` and `edit_message`: rows of
   keeps the Markdown of rich cards with buttons in memory and redraws the
   card with the choice in a `<footer>`; after a restart a tap only drops
   the buttons.
-- A tap is a choice, not an approval: it starts a turn like any message, and
-  the tools it leads to are still gated by the tiers above.
-- Tee times: search results go out as slot buttons
-  (`tee:<course>:<YYYY-MM-DDTHH:MM>:<players>:<holes>`). A tap books that
-  slot as `create_request` (earliest = latest = the slot) → `run_request`,
-  each behind its own prompt — the same flow as the tee-time bot's
-  Book → Confirm.
+- A tap starts a turn like any message. A paying button's tap is the only
+  thing that lets that payment through (`payment_guard.py`).
+- Buttons are `{text, data}` or `{text, url}` (a link), and `format` may
+  also be `html`, as the campsite bot sends.
+- Tee times: the card's slot buttons lead to the bot's Confirm card
+  (Confirm and pay / Dry run / Cancel), see "The apps' cards".
 - Not on the channels allowlist, so the session runs with
   `--dangerously-load-development-channels plugin:telegram@python-labs`.
   The plugin keeps the name `telegram`: tool names, `/telegram:*` skills and

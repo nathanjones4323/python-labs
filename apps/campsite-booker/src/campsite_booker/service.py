@@ -208,7 +208,8 @@ class OpenStay:
 
 @dataclass(frozen=True)
 class Alert:
-    watch_id: int
+    # None for a search's card (the assistant's), which no watch found.
+    watch_id: int | None
     watch_name: str
     campground_name: str
     stays: list[OpenStay]

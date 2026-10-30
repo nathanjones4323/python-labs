@@ -4,13 +4,23 @@
 
 Searching and reading watches touch only recreation.gov's and
 ReserveCalifornia's public APIs and the local database. `hold_campsite`
-drives a signed-in browser and puts a site in the account's cart: give it
-a permission prompt in the client. Watches are checked by the watcher
-(`campsite-booker`), not here; a watch made here is picked up on its next
-check as long as it runs against the same database.
+drives a signed-in browser and puts a site in the account's cart; paying
+for it is the client's to gate (the assistant: a tap). Watches are checked
+by the watcher (`campsite-booker`), not here; a watch made here is picked
+up on its next check as long as it runs against the same database.
+
+For an agent that is its own Telegram bot (the assistant), results that the
+watcher's bot would show come with `telegram`: the bot's own card (HTML) and
+buttons (`campsite_booker.messages`), to send as given. Button data is
+`camp:<action>:<id>` and a tap goes to `press_button`, which does what the
+bot does for that button: `hold` holds, `pay` pays for a hold, `autopay`
+turns on a watch's auto-pay, `stop` / `booked` stop a watch. Only `pay` and
+`autopay` spend money; the assistant lets those through only on the turn
+the person's tap of that very button started.
 """
 
 import asyncio
+import itertools
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 
@@ -19,13 +29,15 @@ from fastmcp.exceptions import ToolError
 from loguru import logger
 from pydantic import Field
 
-from campsite_booker import booker, service
+from campsite_booker import booker, messages, service
 from campsite_booker.availability import StayCriteria, parse_weekdays
 from campsite_booker.campgrounds import Campgrounds
 from campsite_booker.config import Settings
 from campsite_booker.db import (
+    BOOKED,
     HELD,
     PAID,
+    STOPPED,
     Hold,
     Watch,
     make_session_factory,
@@ -67,6 +79,10 @@ beaches, e.g. Pfeiffer Big Sur). Other states' parks aren't covered.
   person the site's link to add it to their cart themselves; once they say
   it's there, `pay_hold` can pay for it (it checks the cart has it).
 - `set_watch_auto_pay` makes a watch pay for its automatic hold too.
+- A `telegram` field in a result is the watcher bot's own card for it
+  (`text`, `format`, `buttons`): send it as given. A tapped `camp:` button
+  goes to `press_button`. Paying is a tap on a card's Pay button
+  (`ask_auto_pay` draws the one for a watch's auto-pay).
 - A watch for dates not on sale yet is armed for the release that opens
   them: `create_watch` says when (`on_sale_at`), and the watcher polls every
   couple of seconds from just before it.
@@ -77,6 +93,19 @@ arrival date; flexible trips give an arrival range and optionally weekdays.
 
 # Stays returned per campground by a search; the rest are counted.
 STAYS_PER_CAMPGROUND = 15
+# Button data prefix: the assistant's chat also has other apps' buttons.
+PREFIX = "camp:"
+# Search-card stays kept for their Hold buttons (up to 8 per campground).
+FOUND_MAX = 200
+
+
+def card(text: str, rows: list[list[messages.Button]] | None = None) -> dict:
+    """A message for the assistant to send as is: HTML, as the bot sends."""
+    out: dict[str, Any] = {"text": text, "format": "html"}
+    if rows:
+        out["buttons"] = rows
+    return out
+
 
 Dates = Annotated[date, Field(description="YYYY-MM-DD")]
 Weekdays = Annotated[
@@ -209,6 +238,83 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         except (RecGovError, service.NotFound, ValueError) as e:
             raise ToolError(f"{type(e).__name__}: {e}") from e
 
+    # Stays a search card offered, by the number on their Hold button; only
+    # the latest FOUND_MAX, as an old card's openings have likely gone.
+    found: dict[int, service.HoldTarget] = {}
+    numbers = itertools.count(1)
+
+    def offer(target: service.HoldTarget) -> int:
+        key = next(numbers)
+        found[key] = target
+        while len(found) > FOUND_MAX:
+            del found[next(iter(found))]
+        return key
+
+    def hold_card(hold: Hold) -> dict[str, Any]:
+        text = messages.hold_result(hold, settings.timezone)
+        rows = messages.hold_buttons(
+            hold, hold.watch_id, settings.submit_payment, prefix=PREFIX
+        )
+        return {**hold_dict(hold), "telegram": card(text, rows)}
+
+    async def hold_target(
+        target: service.HoldTarget, pay_group_size: int | None
+    ) -> dict[str, Any]:
+        """Hold (and with `pay_group_size`, pay for) `target`, unless it's
+        already in the cart or paid for."""
+        stay = target.stay
+        held = await run(service.live_hold, sessions, stay, utcnow())
+        if held is not None:
+            logger.info(
+                f"Not holding {stay.campsite_id} on {stay.check_in}: "
+                f"hold {held.id} already has it"
+            )
+            out = hold_card(held)
+            out["telegram"]["text"] = messages.already_held(held, settings.timezone)
+            return out
+        try:
+            result = await asyncio.to_thread(
+                booker.hold, settings, stay, pay_group_size
+            )
+        except booker.LoginRequired as e:
+            raise ToolError(f"LoginRequired: {e}") from e
+        hold = await run(
+            service.record_hold,
+            sessions,
+            target,
+            result.status,
+            result.detail,
+            result.page_url,
+            utcnow(),
+            checkout=result.checkout,
+        )
+        return hold_card(hold)
+
+    async def pay(hold_id: int) -> dict[str, Any]:
+        hold = await run(service.get_hold, sessions, hold_id)
+        if hold.checkout_status == PAID:
+            return hold_card(hold)
+        refusal = service.pay_refusal(hold)
+        if refusal:
+            raise ToolError(refusal)
+        group_size = await run(
+            service.hold_group_size, sessions, hold, settings.group_size
+        )
+        try:
+            result, _ = await asyncio.to_thread(
+                booker.pay,
+                settings,
+                hold.page_url,
+                group_size,
+                f"hold-{hold_id}",
+                service.cart_item(hold),
+            )
+        except booker.LoginRequired as e:
+            raise ToolError(f"LoginRequired: {e}") from e
+        return hold_card(
+            await run(service.record_checkout, sessions, hold_id, result, utcnow())
+        )
+
     @mcp.tool
     async def search_campgrounds(
         query: Annotated[
@@ -281,7 +387,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
             raise ToolError("Give campground_ids, a query, or latitude and longitude")
         campgrounds = [c for c in campgrounds if c.reservable][:max_campgrounds]
         results = await run(service.find_open, recgov, campgrounds, crit, today())
-        open_at, nothing, errors = [], [], []
+        open_at, nothing, errors, cards = [], [], [], []
         for r in results:
             if r.error:
                 errors.append({"name": r.campground.name, "error": r.error})
@@ -293,9 +399,29 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                         "stays": [stay_dict(s) for s in r.stays[:STAYS_PER_CAMPGROUND]],
                     }
                 )
+                # The watcher's alert, as if a watch had found these.
+                alert = service.Alert(
+                    watch_id=None,
+                    watch_name=f"Open now · {nights} night{'s' if nights != 1 else ''}",
+                    campground_name=r.campground.name,
+                    stays=[
+                        service.OpenStay(
+                            offer(service.HoldTarget(s, r.campground.name)), s
+                        )
+                        for s in r.stays[: messages.ALERT_LIST_MAX]
+                    ],
+                    auto_hold=False,
+                )
+                rows = messages.alert_buttons(alert, prefix=PREFIX)
+                cards.append(card(messages.alert(alert), rows))
             else:
                 nothing.append(r.campground.name)
-        return {"open": open_at, "nothing_open": nothing, "errors": errors}
+        return {
+            "open": open_at,
+            "nothing_open": nothing,
+            "errors": errors,
+            "telegram": cards,
+        }
 
     @mcp.tool
     async def create_watch(
@@ -417,34 +543,10 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         stay = await run(
             service.stay_at, recgov, campground_id, campsite_id, check_in, nights
         )
-        held = await run(service.live_hold, sessions, stay, utcnow())
-        if held is not None:
-            logger.info(
-                f"Not holding {campsite_id} on {check_in}: "
-                f"hold {held.id} already has it"
-            )
-            return hold_dict(held)
         target = service.HoldTarget(stay, campground.name)
-        try:
-            result = await asyncio.to_thread(
-                booker.hold,
-                settings,
-                stay,
-                (group_size or settings.group_size) if pay else None,
-            )
-        except booker.LoginRequired as e:
-            raise ToolError(f"LoginRequired: {e}") from e
-        hold = await run(
-            service.record_hold,
-            sessions,
-            target,
-            result.status,
-            result.detail,
-            result.page_url,
-            utcnow(),
-            checkout=result.checkout,
+        return await hold_target(
+            target, (group_size or settings.group_size) if pay else None
         )
-        return hold_dict(hold)
 
     @mcp.tool
     async def pay_hold(hold_id: int) -> dict[str, Any]:
@@ -453,29 +555,58 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         `challenged` hold (recreation.gov wanted a human check) can be paid
         once the user has added the site on recreation.gov themselves; it
         stops if the cart doesn't have it."""
-        hold = await run(service.get_hold, sessions, hold_id)
-        if hold.checkout_status == PAID:
-            return hold_dict(hold)
-        refusal = service.pay_refusal(hold)
-        if refusal:
-            raise ToolError(refusal)
-        group_size = await run(
-            service.hold_group_size, sessions, hold, settings.group_size
-        )
-        try:
-            result, _ = await asyncio.to_thread(
-                booker.pay,
-                settings,
-                hold.page_url,
-                group_size,
-                f"hold-{hold_id}",
-                service.cart_item(hold),
+        return await pay(hold_id)
+
+    @mcp.tool
+    async def ask_auto_pay(watch_id: int) -> dict[str, Any]:
+        """The card asking the person to let a watch pay for its automatic
+        hold (`telegram`, to send as given). Their tap turns it on."""
+        watch = await run(service.get_watch, sessions, watch_id)
+        text = messages.ask_auto_pay(watch, settings.submit_payment)
+        return {"telegram": card(text, messages.ask_auto_pay_buttons(watch_id, PREFIX))}
+
+    @mcp.tool
+    async def press_button(
+        data: Annotated[str, Field(description="The tapped button's data, camp:…")],
+    ) -> dict[str, Any]:
+        """Do what a tapped `camp:` button does, as the watcher's bot would:
+        hold a site, pay for a hold, turn on a watch's auto-pay, or stop a
+        watch. Send `telegram` as given. Holding or paying takes a minute or
+        two (a real browser)."""
+        action, _, raw_id = data.removeprefix(PREFIX).partition(":")
+        if action == "none":
+            return {"note": "Nothing to do; the person said no."}
+        if not raw_id.isdigit():
+            raise ToolError(f"Not a campsite button: {data}")
+        key = int(raw_id)
+        if action == "hold":
+            target = found.get(key)
+            if target is None:
+                return {"telegram": card("That opening is no longer on record.")}
+            return await hold_target(target, None)
+        if action == "pay":
+            return await pay(key)
+        if action == "autopay":
+            watch = await run(service.set_auto_pay, sessions, key, True)
+            done = (
+                "Auto-pay is on"
+                if settings.submit_payment
+                else "Auto-pay is on (dry run)"
             )
-        except booker.LoginRequired as e:
-            raise ToolError(f"LoginRequired: {e}") from e
-        return hold_dict(
-            await run(service.record_checkout, sessions, hold_id, result, utcnow())
-        )
+            return {
+                "telegram": card(f"{done} for #{watch.id}."),
+                **watch_dict(watch),
+            }
+        if action in ("stop", "booked"):
+            reason = BOOKED if action == "booked" else STOPPED
+            watch = await run(service.stop_watch, sessions, key, reason)
+            text = (
+                "Booked — stopped watching."
+                if action == "booked"
+                else "Stopped watching."
+            )
+            return {"telegram": card(f"{text} (#{watch.id})"), **watch_dict(watch)}
+        raise ToolError(f"Not a campsite button: {data}")
 
     @mcp.tool
     async def alert_timing(

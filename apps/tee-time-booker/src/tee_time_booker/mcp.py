@@ -2,6 +2,7 @@
 
     python -m tee_time_booker.mcp             # stdio, for Claude Desktop / Claude Code
     python -m tee_time_booker.mcp --http      # Streamable HTTP on :8001
+    python -m tee_time_booker.mcp --cards     # plus the bot's cards and buttons
 
 FastMCP reads the app's OpenAPI schema and calls the routes in-process, so
 the tool names are the routes' `operation_id`s (`list_plans`, `book_plan`,
@@ -42,7 +43,14 @@ def create_server(app: FastAPI | None = None) -> FastMCP:
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
-    server = create_server()
+    app = create_app()
+    server = create_server(app)
+    if "--cards" in argv:
+        # For an agent that is its own Telegram bot (apps/assistant): the
+        # bot's cards, Confirm buttons and run outcomes (`assistant.py`).
+        from tee_time_booker.assistant import add_card_tools
+
+        add_card_tools(server, pays=app.state.worker.pays(True))
     if "--http" in argv:
         server.run(transport="http", host="127.0.0.1", port=8001)
     else:

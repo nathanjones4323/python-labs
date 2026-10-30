@@ -60,30 +60,17 @@ from campsite_booker.db import (
     BOOKED,
     BY_EMAIL,
     BY_RELEASE,
-    CHALLENGED,
-    HELD,
-    PAID,
     STOPPED,
-    UNKNOWN,
     Hold,
     make_session_factory,
     migrate,
     utcnow,
 )
 from campsite_booker.gmail import AuthenticationRequired, Gmail
-from campsite_booker.recgov import (
-    CART_URL,
-    RESERVATIONS_URL,
-    campground_url,
-    campsite_url,
-    is_state_park,
-)
 from campsite_booker.releases import Release, released
 
 SEND_RETRY_S = 120
 SEND_BACKOFF_MAX_S = 30
-# Hold buttons under one alert (Telegram allows more; a phone screen doesn't).
-HOLD_BUTTONS_MAX = 6
 
 HELP = (
     "I watch recreation.gov and ReserveCalifornia (state parks) for campsites "
@@ -639,102 +626,30 @@ class CampsiteBot:
             await send_with_retry(bot, chat_id, text, **kwargs)
 
 
+def _markup(rows: list[list[messages.Button]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(b["text"], url=b["url"])
+                if "url" in b
+                else InlineKeyboardButton(b["text"], callback_data=b["data"])
+                for b in row
+            ]
+            for row in rows
+        ]
+    )
+
+
 def _alert_buttons(
     alert: service.Alert, held: Collection[int] = ()
 ) -> InlineKeyboardMarkup:
-    """A row per stay not in the cart yet: Open it on recreation.gov (you add
-    it, which gets past a human check), or Hold (the bot tries). A state
-    park's stays only open, on ReserveCalifornia."""
-    rows = [
-        [
-            InlineKeyboardButton(messages.open_button_label(s.stay), url=s.stay.url),
-        ]
-        + (
-            [
-                InlineKeyboardButton(
-                    messages.hold_button_label(s.stay),
-                    callback_data=f"hold:{s.opening_id}",
-                )
-            ]
-            if s.stay.holdable
-            else []
-        )
-        for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
-    ]
-    last = [
-        InlineKeyboardButton("Stop watching", callback_data=f"stop:{alert.watch_id}")
-    ]
-    if len(alert.stays) > HOLD_BUTTONS_MAX or not rows:
-        first = alert.stays[0].stay
-        site = (
-            "ReserveCalifornia"
-            if is_state_park(first.campground_id)
-            else "recreation.gov"
-        )
-        last.insert(
-            0,
-            InlineKeyboardButton(
-                f"Open on {site}", url=campground_url(first.campground_id)
-            ),
-        )
-    rows.append(last)
-    return InlineKeyboardMarkup(rows)
+    return _markup(messages.alert_buttons(alert, held))
 
 
 def _hold_buttons(
     record: Hold, watch_id: int | None, settings: Settings
 ) -> InlineKeyboardMarkup:
-    if record.checkout_status == PAID:
-        rows = [[InlineKeyboardButton("Your reservations", url=RESERVATIONS_URL)]]
-    elif record.status == HELD and record.checkout_status == UNKNOWN:
-        # Confirm was pressed: it may be paid. No second Pay button.
-        rows = [
-            [InlineKeyboardButton("Your reservations", url=RESERVATIONS_URL)],
-            [InlineKeyboardButton("Your cart", url=CART_URL)],
-        ]
-    elif record.status == HELD:
-        label = (
-            "💳 Pay with saved card"
-            if settings.submit_payment
-            else ("💳 Pay (dry run)")
-        )
-        rows = [
-            [InlineKeyboardButton(label, callback_data=f"pay:{record.id}")],
-            [InlineKeyboardButton("Pay on recreation.gov", url=CART_URL)],
-        ]
-    elif record.status == CHALLENGED:
-        # You add it on recreation.gov; paying checks the cart has it.
-        label = (
-            "💳 It's in my cart: pay"
-            if settings.submit_payment
-            else "💳 It's in my cart: pay (dry run)"
-        )
-        rows = [
-            [
-                InlineKeyboardButton(
-                    "Open the site", url=campsite_url(record.campsite_id)
-                )
-            ],
-            [InlineKeyboardButton(label, callback_data=f"pay:{record.id}")],
-        ]
-    else:
-        rows = [
-            [
-                InlineKeyboardButton(
-                    "Open the site", url=campsite_url(record.campsite_id)
-                )
-            ]
-        ]
-    if watch_id is not None:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    "✅ Booked — stop watching",
-                    callback_data=f"booked:{watch_id}",
-                )
-            ]
-        )
-    return InlineKeyboardMarkup(rows)
+    return _markup(messages.hold_buttons(record, watch_id, settings.submit_payment))
 
 
 async def _edit_markup(query: Any, markup: InlineKeyboardMarkup | None) -> None:

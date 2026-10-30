@@ -1,8 +1,16 @@
-"""The Telegram text (HTML), kept apart from the bot so it's easy to test."""
+"""The Telegram text (HTML) and buttons, kept apart from the bot so it's easy
+to test, and so the MCP server's cards (for the assistant) match the bot's.
+
+Buttons are rows of `{"text", "data"}` (a tap comes back as `data`) or
+`{"text", "url"}` (opens a link); the bot turns them into a keyboard. A
+`keep` button's tap leaves the message and its other buttons in place: the
+assistant's Telegram plugin reads it, and the bot never edits an alert on a
+Hold tap anyway."""
 
 from collections.abc import Collection
 from datetime import date, datetime
 from html import escape
+from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 from campsite_booker.db import (
@@ -12,15 +20,34 @@ from campsite_booker.db import (
     FAILED,
     HELD,
     PAID,
+    UNKNOWN,
     Hold,
     Watch,
     utcnow,
 )
-from campsite_booker.recgov import Stay, is_state_park
+from campsite_booker.recgov import (
+    CART_URL,
+    RESERVATIONS_URL,
+    Stay,
+    campground_url,
+    campsite_url,
+    is_state_park,
+)
 from campsite_booker.service import Alert, TimingSummary, Waiting
 
 # Stays listed in one alert; the rest are counted.
 ALERT_LIST_MAX = 8
+# Hold buttons under one alert (Telegram allows more; a phone screen doesn't).
+HOLD_BUTTONS_MAX = 6
+
+
+class Button(TypedDict, total=False):
+    text: str
+    data: str
+    url: str
+    keep: bool
+
+
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -89,6 +116,114 @@ def open_button_label(stay: Stay) -> str:
 
 def hold_button_label(stay: Stay) -> str:
     return f"🤖 Hold {stay.site}"
+
+
+def alert_buttons(
+    alert: Alert, held: Collection[int] = (), prefix: str = ""
+) -> list[list[Button]]:
+    """A row per stay not in the cart yet: Open it on recreation.gov (you add
+    it, which gets past a human check), or Hold (the bot tries). A state
+    park's stays only open, on ReserveCalifornia. `prefix` goes before each
+    button's data."""
+    rows: list[list[Button]] = [
+        [Button(text=open_button_label(s.stay), url=s.stay.url)]
+        + (
+            [
+                Button(
+                    text=hold_button_label(s.stay),
+                    data=f"{prefix}hold:{s.opening_id}",
+                    keep=True,
+                )
+            ]
+            if s.stay.holdable
+            else []
+        )
+        for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
+    ]
+    last: list[Button] = []
+    if alert.watch_id is not None:
+        last.append(Button(text="Stop watching", data=f"{prefix}stop:{alert.watch_id}"))
+    if len(alert.stays) > HOLD_BUTTONS_MAX or not rows:
+        first = alert.stays[0].stay
+        site = (
+            "ReserveCalifornia"
+            if is_state_park(first.campground_id)
+            else "recreation.gov"
+        )
+        last.insert(
+            0, Button(text=f"Open on {site}", url=campground_url(first.campground_id))
+        )
+    if last:
+        rows.append(last)
+    return rows
+
+
+def hold_buttons(
+    record: Hold, watch_id: int | None, submit_payment: bool, prefix: str = ""
+) -> list[list[Button]]:
+    """What can be done with a hold: pay for it, look at it, or stop the
+    watch that found it."""
+    if record.checkout_status == PAID:
+        rows = [[Button(text="Your reservations", url=RESERVATIONS_URL)]]
+    elif record.status == HELD and record.checkout_status == UNKNOWN:
+        # Confirm was pressed: it may be paid. No second Pay button.
+        rows = [
+            [Button(text="Your reservations", url=RESERVATIONS_URL)],
+            [Button(text="Your cart", url=CART_URL)],
+        ]
+    elif record.status == HELD:
+        label = "💳 Pay with saved card" if submit_payment else "💳 Pay (dry run)"
+        rows = [
+            [Button(text=label, data=f"{prefix}pay:{record.id}")],
+            [Button(text="Pay on recreation.gov", url=CART_URL)],
+        ]
+    elif record.status == CHALLENGED:
+        # You add it on recreation.gov; paying checks the cart has it.
+        label = (
+            "💳 It's in my cart: pay"
+            if submit_payment
+            else "💳 It's in my cart: pay (dry run)"
+        )
+        rows = [
+            [Button(text="Open the site", url=campsite_url(record.campsite_id))],
+            [Button(text=label, data=f"{prefix}pay:{record.id}")],
+        ]
+    else:
+        rows = [[Button(text="Open the site", url=campsite_url(record.campsite_id))]]
+    if watch_id is not None:
+        rows.append(
+            [
+                Button(
+                    text="✅ Booked — stop watching",
+                    data=f"{prefix}booked:{watch_id}",
+                )
+            ]
+        )
+    return rows
+
+
+def ask_auto_pay(watch: Watch, submit_payment: bool) -> str:
+    """Asks to let `watch` pay for its automatic hold (the assistant's card)."""
+    mode = (
+        "It pays with the card saved on your recreation.gov account."
+        if submit_payment
+        else "Payment is off, so it stops at checkout and pays nothing."
+    )
+    return (
+        f"💳 <b>Pay automatically?</b>\n\n"
+        f"When <b>{escape(watch.campground_name)}</b> "
+        f"({escape(watch.name)}) opens up, hold the first site and "
+        f"pay for it without asking. {mode}"
+    )
+
+
+def ask_auto_pay_buttons(watch_id: int, prefix: str = "") -> list[list[Button]]:
+    return [
+        [
+            Button(text="Turn on auto-pay", data=f"{prefix}autopay:{watch_id}"),
+            Button(text="Not now", data=f"{prefix}none"),
+        ]
+    ]
 
 
 def holding(stay: Stay, campground_name: str) -> str:
