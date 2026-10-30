@@ -386,6 +386,8 @@ def guard(
         ("Bash", {"command": "uv run --package tee-time-booker tee-time-booker"}),
         ("Bash", {"command": "TEE_TIME_SUBMIT_PAYMENT=true python -m x"}),
         ("Bash", {"command": "cat ../campsite-booker/.env"}),
+        ("Bash", {"command": "cd ../tee*; cat .env"}),
+        ("Bash", {"command": "sed -i '' /payment/d .claude/settings.json"}),
     ],
 )
 def test_paying_directly_is_denied(tool: str, tool_input: Any, tmp_path: Path) -> None:
@@ -426,6 +428,9 @@ def test_a_paying_button_needs_that_very_tap(data: str, tmp_path: Path) -> None:
         [tap(data + "0")],
         [tap("tee:book:abc:0")],
         [tap(data), TERMINAL_PROMPT],
+        # An interrupt or slash command has no origin but still ends the turn.
+        [tap(data), {"type": "user", "message": {"content": "[Request interrupted by user]"}}],
+        [tap(data), {"type": "user", "message": {"content": "<command-name>/clear</command-name>"}}],
     ):
         out = guard(tool, call, entries, tmp_path)
         assert out is not None and out["permissionDecision"] == "deny", entries

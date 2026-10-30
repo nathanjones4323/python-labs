@@ -157,12 +157,15 @@ function assertSendable(f: string): void {
 
 // Fork: Claude's own inline buttons. Their callback data is always prefixed
 // `btn:`, so a button Claude draws can never look like a `perm:` button.
+// A `keep` button is `btk:`: its tap leaves the message and its other buttons
+// as they are, like a Hold button on an alert listing several sites.
 // Telegram caps callback_data at 64 bytes.
 const BUTTON_PREFIX = 'btn:'
+const KEEP_PREFIX = 'btk:'
 const MAX_BUTTON_DATA_BYTES = 64 - BUTTON_PREFIX.length
 
 // A button either comes back as a tap (`data`) or opens a link (`url`).
-type ButtonSpec = { text: string; data?: string; url?: string }
+type ButtonSpec = { text: string; data?: string; url?: string; keep?: boolean }
 
 function buildKeyboard(rows: unknown): InlineKeyboard {
   if (!Array.isArray(rows)) throw new Error('buttons must be an array of rows')
@@ -178,13 +181,14 @@ function buildKeyboard(rows: unknown): InlineKeyboard {
       if (Buffer.byteLength(b.data) > MAX_BUTTON_DATA_BYTES) {
         throw new Error(`button "${b.text}" data is over ${MAX_BUTTON_DATA_BYTES} bytes`)
       }
-      return InlineKeyboard.text(b.text, BUTTON_PREFIX + b.data)
+      return InlineKeyboard.text(b.text, (b.keep === true ? KEEP_PREFIX : BUTTON_PREFIX) + b.data)
     })
   }))
 }
 
 // Message keys (`chat:message`) whose buttons were already pressed, so a
-// double tap that beats the edit can't emit the choice twice.
+// double tap that beats the edit can't emit the choice twice. A keep button
+// counts on its own, as `chat:message:data`.
 const pressedButtons = new Set<string>()
 
 // Fork: rich messages, as the tee-time bot sends them (`sendRichMessage`):
@@ -572,7 +576,7 @@ mcp.setNotificationHandler(
 // Fork: the `buttons` arg shared by reply and edit_message.
 const BUTTONS_SCHEMA = {
   type: 'array',
-  description: `Inline buttons under the message, as rows of {text, data} or {text, url}. A tap on a data button reaches you as a channel message whose meta has button (the data) and message_id (this message); the message is edited to show the choice and its buttons go away. A url button just opens the https link. data is up to ${MAX_BUTTON_DATA_BYTES} bytes.`,
+  description: `Inline buttons under the message, as rows of {text, data} or {text, url}. A tap on a data button reaches you as a channel message whose meta has button (the data) and message_id (this message); the message is edited to show the choice and its buttons go away. A url button just opens the https link. With keep: true, a tap leaves the message and its other buttons as they are, and that button answers once. data is up to ${MAX_BUTTON_DATA_BYTES} bytes.`,
   items: {
     type: 'array',
     items: {
@@ -581,6 +585,7 @@ const BUTTONS_SCHEMA = {
         text: { type: 'string', description: 'Button label.' },
         data: { type: 'string', description: 'Returned to you when tapped.' },
         url: { type: 'string', description: 'An https link the button opens instead.' },
+        keep: { type: 'boolean', description: 'A tap leaves the message and its other buttons in place.' },
       },
       required: ['text'],
     },
@@ -797,7 +802,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
         if (editFormat === 'rich' && editKeyboard) rememberRich(editKey, richText)
         else richWithButtons.delete(editKey)
         // Fresh buttons on a message that was already answered can be tapped again.
-        if (editKeyboard) pressedButtons.delete(editKey)
+        if (editKeyboard) {
+          for (const k of [...pressedButtons]) {
+            if (k === editKey || k.startsWith(`${editKey}:`)) pressedButtons.delete(k)
+          }
+        }
         const id = typeof edited === 'object' ? edited.message_id : args.message_id
         return { content: [{ type: 'text', text: `edited (id: ${id})` }] }
       }
@@ -903,8 +912,9 @@ bot.command('status', async ctx => {
 // edit_message). Only an allowFrom sender counts, as for perm:. The tap is
 // answered, the message is edited to show the choice (which also drops the
 // buttons, so it can't be answered twice), and the choice reaches Claude as
-// a channel message with meta.button and the message's id.
-async function handleButton(ctx: Context, data: string): Promise<void> {
+// a channel message with meta.button and the message's id. A keep button
+// (`btk:`) leaves the message alone and answers once on its own.
+async function handleButton(ctx: Context, data: string, keep: boolean): Promise<void> {
   const access = loadAccess()
   const senderId = String(ctx.from!.id)
   if (!access.allowFrom.includes(senderId)) {
@@ -920,19 +930,22 @@ async function handleButton(ctx: Context, data: string): Promise<void> {
   }
   const chat_id = String(msg.chat.id)
   const key = `${chat_id}:${msg.message_id}`
-  if (pressedButtons.has(key)) {
+  const pressedKey = keep ? `${key}:${data}` : key
+  if (pressedButtons.has(key) || pressedButtons.has(pressedKey)) {
     await ctx.answerCallbackQuery({ text: 'Already chosen.' }).catch(() => {})
     return
   }
-  pressedButtons.add(key)
+  pressedButtons.add(pressedKey)
 
-  const callbackData = BUTTON_PREFIX + data
+  const callbackData = (keep ? KEEP_PREFIX : BUTTON_PREFIX) + data
   const label = msg.reply_markup?.inline_keyboard
     .flat()
     .find(b => 'callback_data' in b && b.callback_data === callbackData)?.text ?? data
   await ctx.answerCallbackQuery({ text: label }).catch(() => {})
   const rich = richWithButtons.get(key)
-  if (rich != null) {
+  if (keep) {
+    // The message stays as sent; the other buttons can still be tapped.
+  } else if (rich != null) {
     // Redrawn from what was sent, with the choice in the footer; the
     // buttons go.
     richWithButtons.delete(key)
@@ -973,8 +986,8 @@ async function handleButton(ctx: Context, data: string): Promise<void> {
 // Security mirrors the text-reply path: allowFrom must contain the sender.
 bot.on('callback_query:data', async ctx => {
   const data = ctx.callbackQuery.data
-  if (data.startsWith(BUTTON_PREFIX)) {
-    await handleButton(ctx, data.slice(BUTTON_PREFIX.length))
+  if (data.startsWith(BUTTON_PREFIX) || data.startsWith(KEEP_PREFIX)) {
+    await handleButton(ctx, data.slice(BUTTON_PREFIX.length), data.startsWith(KEEP_PREFIX))
     return
   }
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(data)

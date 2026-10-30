@@ -20,8 +20,8 @@ the person's tap of that very button started.
 """
 
 import asyncio
+import itertools
 from datetime import date, datetime, timedelta
-from html import escape
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -95,6 +95,8 @@ arrival date; flexible trips give an arrival range and optionally weekdays.
 STAYS_PER_CAMPGROUND = 15
 # Button data prefix: the assistant's chat also has other apps' buttons.
 PREFIX = "camp:"
+# Search-card stays kept for their Hold buttons (up to 8 per campground).
+FOUND_MAX = 200
 
 
 def card(text: str, rows: list[list[messages.Button]] | None = None) -> dict:
@@ -236,12 +238,16 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         except (RecGovError, service.NotFound, ValueError) as e:
             raise ToolError(f"{type(e).__name__}: {e}") from e
 
-    # Stays a search card offered, by the number on their Hold button.
+    # Stays a search card offered, by the number on their Hold button; only
+    # the latest FOUND_MAX, as an old card's openings have likely gone.
     found: dict[int, service.HoldTarget] = {}
+    numbers = itertools.count(1)
 
     def offer(target: service.HoldTarget) -> int:
-        key = len(found) + 1
+        key = next(numbers)
         found[key] = target
+        while len(found) > FOUND_MAX:
+            del found[next(iter(found))]
         return key
 
     def hold_card(hold: Hold) -> dict[str, Any]:
@@ -556,26 +562,8 @@ def create_server(settings: Settings | None = None) -> FastMCP:
         """The card asking the person to let a watch pay for its automatic
         hold (`telegram`, to send as given). Their tap turns it on."""
         watch = await run(service.get_watch, sessions, watch_id)
-        mode = (
-            "It pays with the card saved on your recreation.gov account."
-            if settings.submit_payment
-            else "Payment is off, so it stops at checkout and pays nothing."
-        )
-        text = (
-            f"💳 <b>Pay automatically?</b>\n\n"
-            f"When <b>{escape(watch.campground_name)}</b> "
-            f"({escape(watch.name)}) opens up, hold the first site and "
-            f"pay for it without asking. {mode}"
-        )
-        rows = [
-            [
-                messages.Button(
-                    text="Turn on auto-pay", data=f"{PREFIX}autopay:{watch_id}"
-                ),
-                messages.Button(text="Not now", data=f"{PREFIX}none"),
-            ]
-        ]
-        return {"telegram": card(text, rows)}
+        text = messages.ask_auto_pay(watch, settings.submit_payment)
+        return {"telegram": card(text, messages.ask_auto_pay_buttons(watch_id, PREFIX))}
 
     @mcp.tool
     async def press_button(

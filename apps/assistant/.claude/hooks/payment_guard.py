@@ -18,7 +18,8 @@ Claude Code runs this before every tee-time-booker and campsite-booker tool
   channel message whose `button` attribute is exactly this data. The plugin
   only delivers taps from allowlisted senders.
 * A shell command that reaches the booking apps' code, settings or payment
-  switches (their CLIs book and pay without any card) → deny.
+  switches, a .env file, or this guard's own hooks and settings (their CLIs
+  book and pay without any card) → deny.
 * Anything else → no output, so the call runs as usual.
 
 Stdlib only. A payload it can't read, for a tool it guards, is denied: a
@@ -36,7 +37,8 @@ CHANNEL_SERVER = "plugin:telegram:telegram"
 _TAG = re.compile(r"^\s*<channel\b[^>]*>")
 _BUTTON = re.compile(r'\bbutton="([^"]*)"')
 
-# tool -> the argument that makes it pay.
+# tool -> the argument that makes it pay. tee_time_booker.cards.PAYING_TOOLS
+# (a test there checks they match).
 TEE_PAYING = {
     "book_plan": "submit_payment",
     "run_request": "submit_payment",
@@ -49,7 +51,9 @@ PAYING_BUTTONS = ("tee:pay:", "camp:pay:", "camp:autopay:")
 # The booking apps from the shell: their CLIs, modules, .env files and the
 # switches that turn payment on.
 _BOOKING_SHELL = re.compile(
-    r"tee[-_]time[-_]booker|campsite[-_]booker|SUBMIT_PAYMENT|CREDIT_CARD",
+    r"tee[-_]time[-_]booker|campsite[-_]booker|SUBMIT_PAYMENT|CREDIT_CARD"
+    # Any .env file, and the hooks and settings that run this guard.
+    r"|(?<!\w)\.env\b|\.claude/(?:settings|hooks)",
     re.IGNORECASE,
 )
 
@@ -79,8 +83,14 @@ def turn_button(transcript: str) -> str | None:
             entry = json.loads(line)
         except ValueError:
             continue
-        if isinstance(entry, dict) and entry.get("type") == "user" and entry.get("origin"):
+        if not isinstance(entry, dict) or entry.get("type") != "user":
+            continue
+        if entry.get("origin"):
             prompt = entry
+        elif not entry.get("isMeta") and _is_prompt(entry):
+            # A prompt with no origin (an interrupt, a slash command) still
+            # ends the tap's turn: its button mustn't carry over.
+            prompt = None
     if prompt is None or prompt["origin"] != {"kind": "channel", "server": CHANNEL_SERVER}:
         return None
     content = (prompt.get("message") or {}).get("content")
@@ -89,6 +99,16 @@ def turn_button(transcript: str) -> str | None:
     tag = _TAG.match(content) if isinstance(content, str) else None
     button = _BUTTON.search(tag.group(0)) if tag else None
     return button.group(1) if button else None
+
+
+def _is_prompt(entry: dict[str, Any]) -> bool:
+    """A user entry that's a prompt, not a tool's result."""
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, list):
+        return not any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        )
+    return isinstance(content, str)
 
 
 def pays(flag: str, tool_input: dict[str, Any], default: bool = False) -> bool:

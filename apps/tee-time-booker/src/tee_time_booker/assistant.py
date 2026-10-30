@@ -79,6 +79,11 @@ def card(text: str, buttons: list[list[dict[str, str]]] | None = None) -> dict:
     return out
 
 
+def _runs(payment: PendingPayment) -> bool:
+    """Whether a held payment starts a run now (and so has a dry run)."""
+    return payment.tool == BOOK_SLOT or payment.tool in RUN_TOOLS
+
+
 def _closed(text: str, status: str) -> str:
     """A Confirm card once it's been answered: its buttons go, `status` says
     what became of it (as the bot's `_close_prompt`)."""
@@ -162,7 +167,7 @@ class Cards:
         """The Confirm card for a held payment."""
         self._payments = {k: p for k, p in self._payments.items() if not p.expired}
         self._payments[payment.id] = payment
-        runs = payment.tool == BOOK_SLOT or payment.tool in RUN_TOOLS
+        runs = _runs(payment)
         if runs and self.pays:
             row = [
                 {"text": "Confirm and pay", "data": f"{PREFIX}pay:{payment.id}"},
@@ -194,9 +199,15 @@ class Cards:
             return await self.ask(hold_slot(offer, slot))
         if action not in ("pay", "dry", "cancel"):
             raise ToolError(f"Not a tee-time button: {data}")
-        payment = self._payments.pop(rest, None)
+        payment = self._payments.get(rest)
         if payment is None or payment.expired:
+            self._payments.pop(rest, None)
             return {"telegram": card("That button has expired. Ask me again.")}
+        if action == "dry" and not _runs(payment):
+            # Scheduling has no dry run: run as is, it would arm auto-booking,
+            # which pays later. Only `tee:pay:` (the guarded tap) may do that.
+            raise ToolError("A schedule has no dry run; it needs Confirm")
+        del self._payments[rest]
         text = await describe_payment(self.call, payment, self.pays)
         if action == "cancel":
             return {"telegram": card(_closed(text, "Cancelled. Nothing was paid."))}
@@ -218,7 +229,7 @@ class Cards:
         if result.is_error:
             status = f"That didn't work: {result.text[:300]}"
             return {"telegram": card(_closed(text, status))}
-        if payment.tool != BOOK_SLOT and payment.tool not in RUN_TOOLS:
+        if not _runs(payment):
             status = scheduled_status(result.json())
             return {"telegram": card(_closed(text, status))}
         run = StartedRun.from_result(result)

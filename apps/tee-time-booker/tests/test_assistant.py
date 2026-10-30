@@ -2,14 +2,26 @@
 stub of the API's tools so nothing reaches a booking site."""
 
 import asyncio
+import importlib.util
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 fastmcp = pytest.importorskip("fastmcp")
 
+from tee_time_booker import cards  # noqa: E402
 from tee_time_booker.assistant import add_card_tools  # noqa: E402
+
+# The assistant's payment guard, a stdlib-only hook that can't import `cards`.
+GUARD = (
+    Path(__file__).resolve().parents[2]
+    / "assistant"
+    / ".claude"
+    / "hooks"
+    / "payment_guard.py"
+)
 
 SLOTS = [
     {
@@ -252,6 +264,38 @@ def test_ask_to_pay_only_holds_paying_tools():
     assert asyncio.run(go()).is_error
 
 
+def test_a_schedule_has_no_dry_run():
+    # `tee:dry:` isn't a guarded paying button, so on a held schedule it must
+    # not run the call: that would arm auto-booking, which pays later.
+    calls: list = []
+    server = add_card_tools(_stub(calls), pays=True)
+
+    async def go():
+        async with fastmcp.Client(server) as client:
+            asked = _data(
+                await client.call_tool(
+                    "ask_to_pay",
+                    {
+                        "tool": "create_request",
+                        "arguments": {"course": "x", "auto_book": True},
+                    },
+                )
+            )
+            dry = await client.call_tool(
+                "press_button",
+                {"data": f"tee:dry:{asked['payment_id']}"},
+                raise_on_error=False,
+            )
+            return asked, dry
+
+    asked, dry = asyncio.run(go())
+    assert not any(
+        b["data"].startswith("tee:dry:") for b in _buttons(asked["telegram"])
+    )
+    assert dry.is_error
+    assert not [c for c in calls if c[0] == "create_request"]
+
+
 def test_the_real_server_gets_the_card_tools(seeded, db, tmp_path):
     from tee_time_booker.api import create_app
     from tee_time_booker.config import Settings
@@ -278,3 +322,11 @@ def test_the_real_server_gets_the_card_tools(seeded, db, tmp_path):
     assert {"show_tee_times", "press_button", "ask_to_pay", "wait_for_run"} <= names
     assert {"list_plans", "search_tee_times", "run_request"} <= names
     assert not plans.is_error
+
+
+def test_the_payment_guard_blocks_every_paying_tool():
+    """The guard keeps its own copy of PAYING_TOOLS; they must match."""
+    spec = importlib.util.spec_from_file_location("payment_guard", GUARD)
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    assert guard.TEE_PAYING == cards.PAYING_TOOLS

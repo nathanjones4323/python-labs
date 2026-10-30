@@ -255,6 +255,8 @@ def test_search_hold_and_pay_by_the_bots_cards(server, recgov, monkeypatch):
     hold_button = next(b for b in _buttons(found) if "data" in b)
     assert hold_button["text"] == "🤖 Hold 010"
     assert hold_button["data"].startswith("camp:hold:")
+    # Holding one site leaves the card's other Hold buttons, as in the bot.
+    assert hold_button["keep"] is True
     assert any(b.get("url", "").endswith("/campsites/10") for b in _buttons(found))
     # No watch found these, so there's nothing to stop.
     assert not any(b.get("data", "").startswith("camp:stop:") for b in _buttons(found))
@@ -287,6 +289,24 @@ def test_search_hold_and_pay_by_the_bots_cards(server, recgov, monkeypatch):
     paid = call(server, "press_button", data=pay_button["data"])
     assert paid["checkout_status"] == PAID
     assert "Booked and paid" in paid["telegram"]["text"]
+
+
+def test_only_the_latest_search_stays_are_kept(server, recgov, monkeypatch):
+    monkeypatch.setattr(mcp_module, "FOUND_MAX", 1)
+    recgov.sites["1"] = [
+        site("10", [ARRIVE, ARRIVE + timedelta(days=1)], site="010"),
+        site("11", [ARRIVE, ARRIVE + timedelta(days=1)], site="011"),
+    ]
+    [found] = call(
+        server,
+        "find_open_campsites",
+        arrival_from=ARRIVE.isoformat(),
+        nights=2,
+        campground_ids=["1"],
+    )["telegram"]
+    first, _ = [b["data"] for b in _buttons(found) if "data" in b]
+    gone = call(server, "press_button", data=first)
+    assert gone["telegram"]["text"] == "That opening is no longer on record."
 
 
 def test_auto_pay_is_a_card_then_a_tap(server):
