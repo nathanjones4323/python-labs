@@ -40,7 +40,12 @@ from typing import Any
 
 from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import (
@@ -668,12 +673,18 @@ async def _edit(query: Any, text: str, markup: InlineKeyboardMarkup | None) -> N
         logger.warning(f"Couldn't update the message: {e}")
 
 
+NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+
 async def send_with_retry(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
     """Send an HTML message, riding out a dropped connection or a rate limit.
 
     Gives up (raising) after `SEND_RETRY_S`. A BadRequest is a fault in the
     message itself; it's most likely the HTML, so the words go again plain.
+    No link previews: an alert links each site, and a preview of the first
+    would bury the rest.
     """
+    kwargs.setdefault("link_preview_options", NO_PREVIEW)
     try:
         await _retrying(
             chat_id,

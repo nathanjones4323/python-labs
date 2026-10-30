@@ -130,6 +130,7 @@ def create_watch(
             name=name or default_name(campground, criteria),
             campground_id=campground.id,
             campground_name=campground.name,
+            area=campground.area,
             campsite_ids=sorted(criteria.campsite_ids),
             arrival_from=criteria.arrival_from,
             arrival_to=criteria.arrival_to,
@@ -213,6 +214,8 @@ class Alert:
     watch_name: str
     campground_name: str
     stays: list[OpenStay]
+    # Campground.area, to name the stays by ("Big Sur").
+    area: str
     # The watch wants the first of these held now (and hasn't had its one
     # automatic hold yet).
     auto_hold: bool
@@ -287,6 +290,7 @@ def check_campgrounds(
                     watch.last_error = str(e)
                 continue
             fetched[campground_id] = sites
+            _fill_area(recgov, campground_id, group)
             for watch in group:
                 stays = find_stays(campground_id, sites.values(), watch.criteria, today)
                 fresh = _reconcile(session, watch, stays, now, found_by)
@@ -299,6 +303,7 @@ def check_campgrounds(
                             watch_name=watch.name,
                             campground_name=watch.campground_name,
                             stays=fresh,
+                            area=watch.area or "",
                             auto_hold=watch.auto_hold and watch.auto_held_at is None,
                             auto_pay=watch.auto_pay,
                             group_size=watch.group_size,
@@ -313,6 +318,19 @@ def check_campgrounds(
                             f"at={now.isoformat()}"
                         )
         return Check(alerts, fetched)
+
+
+def _fill_area(recgov: Campgrounds, campground_id: str, watches: list[Watch]) -> None:
+    """Watches made before areas were kept look theirs up, once."""
+    if all(w.area is not None for w in watches):
+        return
+    try:
+        area = recgov.campground(campground_id).area
+    except RecGovError as e:
+        logger.warning(f"Looking up campground {campground_id}'s area failed: {e}")
+        return
+    for watch in watches:
+        watch.area = area
 
 
 def _reconcile(
@@ -400,6 +418,7 @@ def unsent_alerts(sessions: sessionmaker[Session]) -> list[Alert]:
                 watch_name=openings[0].watch.name,
                 campground_name=openings[0].watch.campground_name,
                 stays=[OpenStay(o.id, opening_stay(o)) for o in openings],
+                area=openings[0].watch.area or "",
                 # The automatic hold is only for what's just turned up.
                 auto_hold=False,
             )

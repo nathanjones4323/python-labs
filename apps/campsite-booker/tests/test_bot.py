@@ -5,7 +5,7 @@ from html import escape
 from types import SimpleNamespace
 
 import pytest
-from campsite_booker import booker, service
+from campsite_booker import booker, messages, service
 from campsite_booker.availability import StayCriteria
 from campsite_booker.bot import CampsiteBot
 from campsite_booker.checkout import CartItem, CheckoutResult
@@ -21,14 +21,14 @@ from campsite_booker.db import (
     Watch,
 )
 from campsite_booker.gmail import AuthenticationRequired
-from campsite_booker.recgov import CART_URL, Campground
+from campsite_booker.recgov import CART_URL, Campground, Stay
 from conftest import FakeMailbox, alert_message, site
 from telegram.error import NetworkError
 from telegram.ext import ApplicationHandlerStop
 
 NOW = datetime(2026, 10, 28, 1, 0, tzinfo=UTC)  # Oct 27, 6 PM Pacific
 FRI = date(2026, 11, 6)
-PINES = Campground(id="232447", name="Upper Pines")
+PINES = Campground(id="232447", name="Upper Pines", city="Yosemite National Park")
 
 
 class FakeTelegram:
@@ -123,18 +123,20 @@ def test_an_opening_is_sent_with_hold_buttons_and_marked_sent(db, recgov, make_b
     assert len(tg.sent) == 1
     chat, text, markup = tg.sent[0]
     assert chat == 11
-    assert "Open at Upper Pines" in text
-    assert "Site 040" in text and "Fri Nov 6 → Sun Nov 8, 2 nights" in text
-    # A row per stay: Open it on recreation.gov, or have the bot Hold it.
+    assert "Open at Upper Pines</b> · Yosemite NP" in text
+    assert "Site 040</a>" in text and "Fri Nov 6 → Sun Nov 8, 2 nights" in text
+    # Each site links to its page, to add it yourself.
+    assert '<a href="https://www.recreation.gov/camping/campsites/40">' in text
+    # A row per stay, to have the bot Hold it, named by area, site and dates.
     rows = [[b.callback_data or b.url for b in row] for row in markup.inline_keyboard]
-    assert rows[0][0].endswith("/camping/campsites/40") and rows[0][1].startswith(
-        "hold:"
-    )
-    assert rows[1][0].endswith("/camping/campsites/41") and rows[1][1].startswith(
-        "hold:"
-    )
+    assert rows[0][0].startswith("hold:") and rows[1][0].startswith("hold:")
+    labels = [[b.text for b in row] for row in markup.inline_keyboard]
+    assert labels[:2] == [
+        ["🤖 Hold Yosemite NP · Site 040 · Nov 6–8"],
+        ["🤖 Hold Yosemite NP · Site 041 · Nov 6–8"],
+    ]
     assert rows[2] == [f"stop:{w.id}"]
-    assert "Open one" in text
+    assert "Tap a site above" in text
     assert held == []
     # Delivered: the next check sends nothing.
     assert asyncio.run(bot.check_once(tg)) == 0
@@ -556,3 +558,41 @@ def test_a_state_park_opening_links_to_reservecalifornia_without_hold(
         f"stop:{w.id}",
     ]
     assert held == []
+
+
+def test_button_labels():
+    stay = Stay("1", "10", "010", "", "STANDARD NONELECTRIC", 6, date(2026, 10, 30), 2)
+    assert messages.hold_button_label(stay, "Big Sur") == (
+        "🤖 Hold Big Sur · Site 010 · Oct 30–Nov 1"
+    )
+    assert messages.open_button_label(stay, "") == "Open Site 010 · Oct 30–Nov 1"
+
+
+def test_area_is_the_town_else_the_park():
+    plaskett = Campground(
+        id="231959",
+        name="Plaskett Creek",
+        park="Los Padres National Forest",
+        city="BIG SUR",
+    )
+    assert plaskett.area == "Big Sur"
+    south_camp = Campground(
+        id="rc-690-611", name="South Camp", park="Pfeiffer Big Sur SP"
+    )
+    assert south_camp.area == "Pfeiffer Big Sur SP"
+    assert Campground(id="1", name="Nowhere").area == ""
+
+
+def test_a_watch_from_before_areas_looks_its_area_up(db, recgov, make_bot):
+    w = add_watch(db)
+    with db.begin() as session:
+        session.get(Watch, w.id).area = None
+    recgov.campground = lambda cid: replace(PINES, city="Yosemite Valley")
+    free(recgov, "40")
+    bot, _ = make_bot()
+    tg = FakeTelegram()
+
+    asyncio.run(bot.check_once(tg))
+    assert "· Yosemite Valley" in tg.sent[0][1]
+    with db.begin() as session:
+        assert session.get(Watch, w.id).area == "Yosemite Valley"

@@ -211,6 +211,12 @@ function parseModeOf(format: Format): 'MarkdownV2' | 'HTML' | undefined {
   return format === 'markdownv2' ? 'MarkdownV2' : format === 'html' ? 'HTML' : undefined
 }
 
+// Fork: an app's html card links its items (a campsite alert, each site), and
+// Telegram's preview of the first link would bury the rest, so none there.
+function previewOptionsOf(format: Format): { link_preview_options?: { is_disabled: true } } {
+  return format === 'html' ? { link_preview_options: { is_disabled: true } } : {}
+}
+
 // `$` opens a formula in rich Markdown, so "$20 or $25" would be one. Inside
 // an HTML block a backslash shows as itself, and `$` is literal anyway.
 const HTML_BLOCK = /<(table|footer|blockquote)\b[\s\S]*?<\/\1>/g
@@ -715,6 +721,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               : await bot.api.sendMessage(chat_id, chunks[i], {
                   ...extra,
                   ...(parseMode ? { parse_mode: parseMode } : {}),
+                  ...previewOptionsOf(format),
                 })
             if (format === 'rich' && keyboard && last) {
               rememberRich(`${chat_id}:${sent.message_id}`, chunks[i])
@@ -797,6 +804,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
               {
                 ...(editParseMode ? { parse_mode: editParseMode } : {}),
                 ...(editKeyboard ? { reply_markup: editKeyboard } : {}),
+                ...previewOptionsOf(editFormat),
               },
             )
         if (editFormat === 'rich' && editKeyboard) rememberRich(editKey, richText)

@@ -69,6 +69,12 @@ class Campground:
     def url(self) -> str:
         return campground_url(self.id)
 
+    @property
+    def area(self) -> str:
+        """Where it is, for telling campgrounds apart at a glance: the town
+        ("Big Sur"), else the park; "" when neither is known."""
+        return short_area(display_name(self.city or "") or self.park or "")
+
 
 @dataclass
 class Campsite:
@@ -143,6 +149,22 @@ def campsite_url(campsite_id: str) -> str:
 
 CART_URL = f"{BASE_URL}/cart"
 RESERVATIONS_URL = f"{BASE_URL}/account/reservations"
+
+
+AREA_ABBREVIATIONS = {
+    "National Park": "NP",
+    "National Forest": "NF",
+    "National Recreation Area": "NRA",
+    "National Seashore": "NS",
+    "State Park": "SP",
+}
+
+
+def short_area(area: str) -> str:
+    """ "Yosemite National Park" → "Yosemite NP": it goes on buttons."""
+    for long, short in AREA_ABBREVIATIONS.items():
+        area = area.replace(long, short)
+    return area
 
 
 def display_name(name: str) -> str:
