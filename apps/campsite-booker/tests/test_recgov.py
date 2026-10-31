@@ -106,7 +106,11 @@ def test_retries_a_rate_limit_then_gives_up_on_a_404(monkeypatch):
             httpx.Response(200, json={"campground": {"facility_name": "UPPER PINES"}}),
         ]
     )
+    respx.get("https://www.recreation.gov/api/search").mock(
+        return_value=httpx.Response(500)
+    )
     with RecGov() as client:
+        # Search failing leaves just the park unknown.
         assert client.campground("7").name == "Upper Pines"
 
     respx.get("https://www.recreation.gov/api/camps/campgrounds/8").mock(
@@ -114,6 +118,38 @@ def test_retries_a_rate_limit_then_gives_up_on_a_404(monkeypatch):
     )
     with RecGov() as client, pytest.raises(RecGovError, match="404"):
         client.campground("8")
+
+
+@respx.mock
+def test_a_campground_without_a_town_is_known_by_its_park():
+    respx.get("https://www.recreation.gov/api/camps/campgrounds/231958").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "campground": {"facility_id": "231958", "facility_name": "ARROYO SECO"}
+            },
+        )
+    )
+    search = respx.get("https://www.recreation.gov/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "entity_type": "campground",
+                        "entity_id": "231958",
+                        "name": "ARROYO SECO",
+                        "parent_name": "LOS PADRES NATIONAL FOREST",
+                    }
+                ]
+            },
+        )
+    )
+    with RecGov() as client:
+        arroyo = client.campground("231958")
+    assert search.calls[0].request.url.params["fq"] == "entity_id:231958"
+    assert arroyo.park == "Los Padres National Forest"
+    assert arroyo.area == "Los Padres NF"
 
 
 def test_parse_month_round_trip_with_month_fixture_shape():

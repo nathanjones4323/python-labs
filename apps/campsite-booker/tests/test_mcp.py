@@ -253,11 +253,18 @@ def test_search_hold_and_pay_by_the_bots_cards(server, recgov, monkeypatch):
     assert found["text"].startswith("🏕 <b>Open at Campground 1</b>")
     assert "Site 010" in found["text"]
     hold_button = next(b for b in _buttons(found) if "data" in b)
-    assert hold_button["text"] == "🤖 Hold 010"
+    # Named by site and dates, so it reads without the list.
+    out_day = ARRIVE + timedelta(days=2)
+    dates = (
+        f"{ARRIVE:%b} {ARRIVE.day}–{out_day.day}"
+        if ARRIVE.month == out_day.month
+        else f"{ARRIVE:%b} {ARRIVE.day}–{out_day:%b} {out_day.day}"
+    )
+    assert hold_button["text"] == f"🤖 Hold Site 010 · {dates}"
     assert hold_button["data"].startswith("camp:hold:")
     # Holding one site leaves the card's other Hold buttons, as in the bot.
     assert hold_button["keep"] is True
-    assert any(b.get("url", "").endswith("/campsites/10") for b in _buttons(found))
+    assert '<a href="https://www.recreation.gov/camping/campsites/10">' in found["text"]
     # No watch found these, so there's nothing to stop.
     assert not any(b.get("data", "").startswith("camp:stop:") for b in _buttons(found))
 

@@ -106,6 +106,8 @@ class Watch(Base):
     name: Mapped[str] = mapped_column(String(200))
     campground_id: Mapped[str] = mapped_column(String(20))
     campground_name: Mapped[str] = mapped_column(String(200))
+    # Campground.area ("Big Sur"); None until looked up, "" if there's none.
+    area: Mapped[str | None] = mapped_column(String(100))
     # Empty: any site at the campground.
     campsite_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     arrival_from: Mapped[date]

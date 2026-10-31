@@ -404,6 +404,7 @@ def create_server(settings: Settings | None = None) -> FastMCP:
                     watch_id=None,
                     watch_name=f"Open now · {nights} night{'s' if nights != 1 else ''}",
                     campground_name=r.campground.name,
+                    area=r.campground.area,
                     stays=[
                         service.OpenStay(
                             offer(service.HoldTarget(s, r.campground.name)), s

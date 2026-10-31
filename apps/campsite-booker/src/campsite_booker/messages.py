@@ -37,7 +37,7 @@ from campsite_booker.service import Alert, TimingSummary, Waiting
 
 # Stays listed in one alert; the rest are counted.
 ALERT_LIST_MAX = 8
-# Hold buttons under one alert (Telegram allows more; a phone screen doesn't).
+# Stay buttons under one alert (Telegram allows more; a phone screen doesn't).
 HOLD_BUTTONS_MAX = 6
 
 
@@ -72,12 +72,14 @@ def site_kind(campsite_type: str) -> str:
 
 
 def stay_line(stay: Stay) -> str:
+    """The site links to its page: the buttons are for holding."""
     nights = f"{stay.nights} night{'s' if stay.nights != 1 else ''}"
     loop = f", {escape(stay.loop)}" if stay.loop else ""
     # ReserveCalifornia doesn't say how many a site holds.
     people = f", up to {stay.max_people}" if stay.max_people else ""
     return (
-        f"Site {escape(stay.site)}{loop} ({escape(site_kind(stay.campsite_type))}"
+        f'<a href="{escape(stay.url)}">Site {escape(stay.site)}</a>{loop}'
+        f" ({escape(site_kind(stay.campsite_type))}"
         f"{people}): {day(stay.check_in)} → {day(stay.check_out)}, {nights}"
     )
 
@@ -86,8 +88,9 @@ def alert(item: Alert, held: Collection[int] = ()) -> str:
     """The alert for `item`; stays whose opening id is in `held` are already
     in the cart and say so."""
     count = len(item.stays)
+    area = f" · {escape(item.area)}" if item.area else ""
     lines = [
-        f"🏕 <b>Open at {escape(item.campground_name)}</b>",
+        f"🏕 <b>Open at {escape(item.campground_name)}</b>{area}",
         f"<i>{escape(item.watch_name)}</i>",
         "",
     ]
@@ -104,40 +107,52 @@ def alert(item: Alert, held: Collection[int] = ()) -> str:
     elif any(s.opening_id not in held for s in item.stays):
         lines += [
             "",
-            "Open one to add it to your cart on recreation.gov, or tap 🤖 Hold "
-            "and I'll try (recreation.gov may want a human check first).",
+            "Tap a site above to add it to your cart on recreation.gov, or tap "
+            "🤖 Hold and I'll try (recreation.gov may want a human check first).",
         ]
     return "\n".join(lines)
 
 
-def open_button_label(stay: Stay) -> str:
-    return f"Open {stay.site} · {short_day(stay.check_in)}"
+def short_range(stay: Stay) -> str:
+    """ "Nov 6–8", or "Oct 30–Nov 1" across a month."""
+    start, end = stay.check_in, stay.check_out
+    if start.month == end.month:
+        return f"{short_day(start)}–{end.day}"
+    return f"{short_day(start)}–{short_day(end)}"
 
 
-def hold_button_label(stay: Stay) -> str:
-    return f"🤖 Hold {stay.site}"
+def stay_name(stay: Stay, area: str) -> str:
+    """ "Big Sur · Site 040 · Nov 6–8": a button says where, which site and
+    when, so it reads without the list above."""
+    where = f"{area} · " if area else ""
+    return f"{where}Site {stay.site} · {short_range(stay)}"
+
+
+def open_button_label(stay: Stay, area: str) -> str:
+    return f"Open {stay_name(stay, area)}"
+
+
+def hold_button_label(stay: Stay, area: str) -> str:
+    return f"🤖 Hold {stay_name(stay, area)}"
 
 
 def alert_buttons(
     alert: Alert, held: Collection[int] = (), prefix: str = ""
 ) -> list[list[Button]]:
-    """A row per stay not in the cart yet: Open it on recreation.gov (you add
-    it, which gets past a human check), or Hold (the bot tries). A state
-    park's stays only open, on ReserveCalifornia. `prefix` goes before each
-    button's data."""
+    """A full-width row per stay not in the cart yet: Hold (the bot tries),
+    or, for a state park, Open it on ReserveCalifornia. To add a
+    recreation.gov stay yourself (past a human check), tap its site in the
+    list. `prefix` goes before each button's data."""
     rows: list[list[Button]] = [
-        [Button(text=open_button_label(s.stay), url=s.stay.url)]
-        + (
-            [
-                Button(
-                    text=hold_button_label(s.stay),
-                    data=f"{prefix}hold:{s.opening_id}",
-                    keep=True,
-                )
-            ]
+        [
+            Button(
+                text=hold_button_label(s.stay, alert.area),
+                data=f"{prefix}hold:{s.opening_id}",
+                keep=True,
+            )
             if s.stay.holdable
-            else []
-        )
+            else Button(text=open_button_label(s.stay, alert.area), url=s.stay.url)
+        ]
         for s in [s for s in alert.stays if s.opening_id not in held][:HOLD_BUTTONS_MAX]
     ]
     last: list[Button] = []

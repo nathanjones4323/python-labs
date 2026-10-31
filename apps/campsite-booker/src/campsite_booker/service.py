@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from campsite_booker.alerts import parse_alert
@@ -130,6 +130,7 @@ def create_watch(
             name=name or default_name(campground, criteria),
             campground_id=campground.id,
             campground_name=campground.name,
+            area=campground.area,
             campsite_ids=sorted(criteria.campsite_ids),
             arrival_from=criteria.arrival_from,
             arrival_to=criteria.arrival_to,
@@ -213,6 +214,8 @@ class Alert:
     watch_name: str
     campground_name: str
     stays: list[OpenStay]
+    # Campground.area, to name the stays by ("Big Sur").
+    area: str
     # The watch wants the first of these held now (and hasn't had its one
     # automatic hold yet).
     auto_hold: bool
@@ -299,6 +302,7 @@ def check_campgrounds(
                             watch_name=watch.name,
                             campground_name=watch.campground_name,
                             stays=fresh,
+                            area=watch.area or "",
                             auto_hold=watch.auto_hold and watch.auto_held_at is None,
                             auto_pay=watch.auto_pay,
                             group_size=watch.group_size,
@@ -312,7 +316,30 @@ def check_campgrounds(
                             f"check_in={item.stay.check_in} found_by={found_by} "
                             f"at={now.isoformat()}"
                         )
-        return Check(alerts, fetched)
+        unnamed = {w.campground_id for w in watches if w.area is None}
+    if only is None:
+        _fill_areas(sessions, recgov, unnamed)
+    return Check(alerts, fetched)
+
+
+def _fill_areas(
+    sessions: sessionmaker[Session], recgov: Campgrounds, campground_ids: set[str]
+) -> None:
+    """Watches made before areas were kept look theirs up. It's after the
+    check and on a regular poll only, so it never holds up an alert or a
+    release burst; one that fails is tried again next poll."""
+    for campground_id in sorted(campground_ids):
+        try:
+            area = recgov.campground(campground_id).area
+        except RecGovError as e:
+            logger.warning(f"Looking up campground {campground_id}'s area failed: {e}")
+            continue
+        with sessions.begin() as session:
+            session.execute(
+                update(Watch)
+                .where(Watch.campground_id == campground_id, Watch.area.is_(None))
+                .values(area=area)
+            )
 
 
 def _reconcile(
@@ -400,6 +427,7 @@ def unsent_alerts(sessions: sessionmaker[Session]) -> list[Alert]:
                 watch_name=openings[0].watch.name,
                 campground_name=openings[0].watch.campground_name,
                 stays=[OpenStay(o.id, opening_stay(o)) for o in openings],
+                area=openings[0].watch.area or "",
                 # The automatic hold is only for what's just turned up.
                 auto_hold=False,
             )
