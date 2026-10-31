@@ -44,7 +44,7 @@
       date-planner only work there)
 - [ ] LaunchAgent `com.nathanjones.assistant` (RunAtLoad, KeepAlive, log
       path), kill switch `launchctl bootout gui/$(id -u)/com.nathanjones.assistant`
-- [ ] Read-only pay-my-bills MCP (`query_only` SQLite) + allowlist
+- [x] Read-only pay-my-bills MCP (`query_only` SQLite) + allowlist
 - [ ] Memory: PROJECTS, ROUTINES, DECISIONS, `journal/`; a weekly
       consolidation routine
 - [ ] Date-planner previews in the assistant (`DATE_PLANNER_PREVIEW_DIR`,

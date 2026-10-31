@@ -388,6 +388,7 @@ def guard(
         ("Bash", {"command": "cat ../campsite-booker/.env"}),
         ("Bash", {"command": "cd ../tee*; cat .env"}),
         ("Bash", {"command": "sed -i '' /payment/d .claude/settings.json"}),
+        ("Bash", {"command": "cd ../pay-my-bills && uv run pay-my-bills"}),
     ],
 )
 def test_paying_directly_is_denied(tool: str, tool_input: Any, tmp_path: Path) -> None:
@@ -397,8 +398,23 @@ def test_paying_directly_is_denied(tool: str, tool_input: Any, tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
+    ("command", "says"),
+    [
+        ("uv run --package tee-time-booker tee-time-booker", "booking apps"),
+        ("grep -n '^[A-Z_]*=' ../pay-my-bills/.env", "pay-my-bills"),
+        ("sqlite3 ~/.local/share/pay-my-bills/bills.db .tables", "pay-my-bills"),
+        ("cat ../meal-planner/.env", ".env files"),
+    ],
+)
+def test_a_shell_denial_names_its_reason(command: str, says: str, tmp_path: Path) -> None:
+    out = guard("Bash", {"command": command}, [TERMINAL_PROMPT], tmp_path)
+    assert out is not None and says in out["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize(
     ("tool", "tool_input"),
     [
+        ("mcp__pay-my-bills__bill_status", {}),
         ("mcp__tee-time-booker__run_request", {"request_id": "r", "submit_payment": False}),
         ("mcp__tee-time-booker__create_request", {"course": "x"}),
         ("mcp__tee-time-booker__delete_plan", {"plan_id": "p"}),

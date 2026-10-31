@@ -18,8 +18,9 @@ Claude Code runs this before every tee-time-booker and campsite-booker tool
   channel message whose `button` attribute is exactly this data. The plugin
   only delivers taps from allowlisted senders.
 * A shell command that reaches the booking apps' code, settings or payment
-  switches, a .env file, or this guard's own hooks and settings (their CLIs
-  book and pay without any card) → deny.
+  switches (their CLIs book and pay without any card), pay-my-bills (its CLI
+  is its bot), a .env file, or this guard's own hooks and settings → deny,
+  saying which.
 * Anything else → no output, so the call runs as usual.
 
 Stdlib only. A payload it can't read, for a tool it guards, is denied: a
@@ -48,14 +49,16 @@ TEE_PAYING = {
 }
 CAMP_PAYING = {"hold_campsite": "pay", "set_watch_auto_pay": "on"}
 PAYING_BUTTONS = ("tee:pay:", "camp:pay:", "camp:autopay:")
-# The booking apps from the shell: their CLIs, modules, .env files and the
-# switches that turn payment on.
+# The booking apps from the shell: their CLIs, modules and the switches that
+# turn payment on.
 _BOOKING_SHELL = re.compile(
-    r"tee[-_]time[-_]booker|campsite[-_]booker|SUBMIT_PAYMENT|CREDIT_CARD"
-    # Any .env file, and the hooks and settings that run this guard.
-    r"|(?<!\w)\.env\b|\.claude/(?:settings|hooks)",
+    r"tee[-_]time[-_]booker|campsite[-_]booker|SUBMIT_PAYMENT|CREDIT_CARD",
     re.IGNORECASE,
 )
+# pay-my-bills' CLI is its bot: a second copy would send every request twice.
+_BILLS_SHELL = re.compile(r"pay[-_]my[-_]bills", re.IGNORECASE)
+# Any .env file, and the hooks and settings that run this guard.
+_SECRETS_SHELL = re.compile(r"(?<!\w)\.env\b|\.claude/(?:settings|hooks)")
 
 TEE_REASON = (
     "Paying goes through the person's tap: call ask_to_pay with this tool and "
@@ -68,6 +71,15 @@ CAMP_REASON = (
 SHELL_REASON = (
     "The booking apps run through their MCP tools only, never the shell: "
     "their CLIs can book and pay without the person's tap."
+)
+BILLS_REASON = (
+    "pay-my-bills runs through its MCP tools only (bill_status, "
+    "recent_requests), never the shell: its CLI is its bot, and a second copy "
+    "would send every request twice."
+)
+SECRETS_REASON = (
+    "The shell can't read .env files or this guard's hooks and settings: they "
+    "hold secrets and payment switches. Use the app's MCP tools instead."
 )
 TAP_REASON = (
     "Only the person's own tap of this button can pay. Send the card and "
@@ -127,6 +139,10 @@ def decide(payload: dict[str, Any], transcript: str) -> tuple[str, str] | None:
         command = tool_input.get("command")
         if not isinstance(command, str) or _BOOKING_SHELL.search(command):
             return "deny", SHELL_REASON
+        if _BILLS_SHELL.search(command):
+            return "deny", BILLS_REASON
+        if _SECRETS_SHELL.search(command):
+            return "deny", SECRETS_REASON
         return None
     _, server, name = (tool.split("__", 2) + ["", ""])[:3]
     if server == "tee-time-booker" and name in TEE_PAYING:
