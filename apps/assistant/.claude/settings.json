@@ -1,5 +1,8 @@
 {
-  "enabledMcpjsonServers": ["campsite-booker", "date-planner", "garmin", "tee-time-booker"],
+  "enabledPlugins": {
+    "telegram@python-labs": true
+  },
+  "enabledMcpjsonServers": ["campsite-booker", "date-planner", "garmin", "pay-my-bills", "tee-time-booker"],
   "permissions": {
     "defaultMode": "bypassPermissions",
     "deny": [

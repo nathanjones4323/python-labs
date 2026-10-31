@@ -62,6 +62,7 @@ SERVER_LABELS = {
     "garmin": "Checking Garmin…",
     "campsite-booker": "Working on campsites…",
     "date-planner": "Working on the date…",
+    "pay-my-bills": "Checking your bills…",
     "claude_ai_Google_Calendar": "Checking your calendar…",
     "claude_ai_Gmail": "Checking your email…",
 }

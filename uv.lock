@@ -2255,6 +2255,7 @@ version = "0.1.0"
 source = { editable = "apps/pay-my-bills" }
 dependencies = [
     { name = "alembic" },
+    { name = "fastmcp" },
     { name = "google-api-python-client" },
     { name = "google-auth-oauthlib" },
     { name = "loguru" },
@@ -2271,6 +2272,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.0" },
+    { name = "fastmcp", specifier = ">=4.0" },
     { name = "google-api-python-client", specifier = ">=2.201.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.5.0" },
     { name = "loguru", specifier = ">=0.7.3" },
