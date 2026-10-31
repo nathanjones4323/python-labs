@@ -33,6 +33,8 @@ recreation.gov session still signed in?).
 """
 
 import asyncio
+import html
+import re
 import sys
 from collections.abc import Awaitable, Callable, Collection
 from datetime import date, datetime, timedelta
@@ -657,6 +659,11 @@ def _hold_buttons(
     return _markup(messages.hold_buttons(record, watch_id, settings.submit_payment))
 
 
+# No link previews: an alert links each site, and a preview of the first
+# would bury the rest.
+NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+
 async def _edit_markup(query: Any, markup: InlineKeyboardMarkup | None) -> None:
     try:
         await query.edit_message_reply_markup(reply_markup=markup)
@@ -667,20 +674,21 @@ async def _edit_markup(query: Any, markup: InlineKeyboardMarkup | None) -> None:
 async def _edit(query: Any, text: str, markup: InlineKeyboardMarkup | None) -> None:
     try:
         await query.edit_message_text(
-            text, parse_mode=ParseMode.HTML, reply_markup=markup
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+            link_preview_options=NO_PREVIEW,
         )
     except BadRequest as e:
         logger.warning(f"Couldn't update the message: {e}")
-
-
-NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
 async def send_with_retry(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
     """Send an HTML message, riding out a dropped connection or a rate limit.
 
     Gives up (raising) after `SEND_RETRY_S`. A BadRequest is a fault in the
-    message itself; it's most likely the HTML, so the words go again plain.
+    message itself; it's most likely the HTML, so the words go again as
+    plain text.
     No link previews: an alert links each site, and a preview of the first
     would bury the rest.
     """
@@ -695,7 +703,20 @@ async def send_with_retry(bot: Any, chat_id: int, text: str, **kwargs: Any) -> N
         return
     except BadRequest as e:
         logger.warning(f"HTML message to chat {chat_id} refused ({e}); sending plain")
-    await _retrying(chat_id, lambda: bot.send_message(chat_id, text, **kwargs))
+    plain = plain_text(text)
+    await _retrying(chat_id, lambda: bot.send_message(chat_id, plain, **kwargs))
+
+
+LINK = re.compile(r'<a href="([^"]*)">(.*?)</a>', re.S)
+TAG = re.compile(r"<[^>]+>")
+
+
+def plain_text(text: str) -> str:
+    """`text`'s HTML as Telegram would show it, minus the formatting. A link
+    keeps its address after it, since a recreation.gov site has no button to
+    open it by: "Site 040 (https://…)"."""
+    text = LINK.sub(lambda m: f"{m[2]} ({m[1]})", text)
+    return html.unescape(TAG.sub("", text))
 
 
 async def _retrying(chat_id: int, send: Callable[[], Awaitable[Any]]) -> None:

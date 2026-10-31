@@ -7,6 +7,8 @@ responses in `tests/fixtures` without the network.
 
 - `/api/search?q=&fq=entity_type:campground`: campgrounds matching some text
 - `/api/search/geo?lat=&lng=&radius=`: campgrounds within `radius` miles
+- `/api/search?fq=entity_id:{id}`: one campground's park (`parent_name`),
+  which its detail below gives only as an id
 - `/api/camps/campgrounds/{id}`: one campground's name and rules
 - `/api/camps/campsites/{id}`: one site, and the campground it's in
 - `/api/camps/availability/campground/{id}/month?start_date=`: each site's
@@ -73,7 +75,7 @@ class Campground:
     def area(self) -> str:
         """Where it is, for telling campgrounds apart at a glance: the town
         ("Big Sur"), else the park; "" when neither is known."""
-        return short_area(display_name(self.city or "") or self.park or "")
+        return short_area(display_name(self.city or self.park or ""))
 
 
 @dataclass
@@ -194,7 +196,7 @@ def parse_search(payload: dict[str, Any]) -> list[Campground]:
             Campground(
                 id=str(result["entity_id"]),
                 name=display_name(result.get("name") or ""),
-                park=result.get("parent_name"),
+                park=display_name(result.get("parent_name") or "") or None,
                 city=result.get("city"),
                 state=result.get("state_code"),
                 latitude=_float(result.get("latitude")),
@@ -347,14 +349,28 @@ class RecGov:
         if not raw.get("facility_name"):
             raise RecGovError(f"No campground {campground_id} on recreation.gov")
         address = (raw.get("addresses") or [{}])[0]
+        facility_id = str(raw.get("facility_id") or campground_id)
         return Campground(
-            id=str(raw.get("facility_id") or campground_id),
+            id=facility_id,
             name=display_name(raw["facility_name"]),
+            park=self._park(facility_id),
             city=address.get("city") or raw.get("city"),
             state=address.get("state_code"),
             latitude=_float(raw.get("facility_latitude")),
             longitude=_float(raw.get("facility_longitude")),
         )
+
+    def _park(self, campground_id: str) -> str | None:
+        """The campground's park, from search; None if search can't say."""
+        try:
+            payload = self._get(
+                "/api/search", {"fq": f"entity_id:{campground_id}", "size": 1}
+            )
+        except RecGovError as e:
+            logger.warning(f"Looking up campground {campground_id}'s park failed: {e}")
+            return None
+        found = [c for c in parse_search(payload) if c.id == campground_id]
+        return found[0].park if found else None
 
     def month(self, campground_id: str, month: date) -> list[Campsite]:
         payload = self._get(

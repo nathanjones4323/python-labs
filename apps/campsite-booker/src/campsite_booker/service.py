@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from campsite_booker.alerts import parse_alert
@@ -290,7 +290,6 @@ def check_campgrounds(
                     watch.last_error = str(e)
                 continue
             fetched[campground_id] = sites
-            _fill_area(recgov, campground_id, group)
             for watch in group:
                 stays = find_stays(campground_id, sites.values(), watch.criteria, today)
                 fresh = _reconcile(session, watch, stays, now, found_by)
@@ -317,20 +316,30 @@ def check_campgrounds(
                             f"check_in={item.stay.check_in} found_by={found_by} "
                             f"at={now.isoformat()}"
                         )
-        return Check(alerts, fetched)
+        unnamed = {w.campground_id for w in watches if w.area is None}
+    if only is None:
+        _fill_areas(sessions, recgov, unnamed)
+    return Check(alerts, fetched)
 
 
-def _fill_area(recgov: Campgrounds, campground_id: str, watches: list[Watch]) -> None:
-    """Watches made before areas were kept look theirs up, once."""
-    if all(w.area is not None for w in watches):
-        return
-    try:
-        area = recgov.campground(campground_id).area
-    except RecGovError as e:
-        logger.warning(f"Looking up campground {campground_id}'s area failed: {e}")
-        return
-    for watch in watches:
-        watch.area = area
+def _fill_areas(
+    sessions: sessionmaker[Session], recgov: Campgrounds, campground_ids: set[str]
+) -> None:
+    """Watches made before areas were kept look theirs up. It's after the
+    check and on a regular poll only, so it never holds up an alert or a
+    release burst; one that fails is tried again next poll."""
+    for campground_id in sorted(campground_ids):
+        try:
+            area = recgov.campground(campground_id).area
+        except RecGovError as e:
+            logger.warning(f"Looking up campground {campground_id}'s area failed: {e}")
+            continue
+        with sessions.begin() as session:
+            session.execute(
+                update(Watch)
+                .where(Watch.campground_id == campground_id, Watch.area.is_(None))
+                .values(area=area)
+            )
 
 
 def _reconcile(

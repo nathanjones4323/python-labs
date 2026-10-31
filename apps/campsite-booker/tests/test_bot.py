@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from campsite_booker import booker, messages, service
 from campsite_booker.availability import StayCriteria
-from campsite_booker.bot import CampsiteBot
+from campsite_booker.bot import CampsiteBot, plain_text
 from campsite_booker.checkout import CartItem, CheckoutResult
 from campsite_booker.config import BotSettings
 from campsite_booker.db import (
@@ -592,7 +592,19 @@ def test_a_watch_from_before_areas_looks_its_area_up(db, recgov, make_bot):
     bot, _ = make_bot()
     tg = FakeTelegram()
 
+    # Looked up after the check, so the alert isn't held up for it...
     asyncio.run(bot.check_once(tg))
-    assert "· Yosemite Valley" in tg.sent[0][1]
+    assert "· Yosemite Valley" not in tg.sent[0][1]
     with db.begin() as session:
         assert session.get(Watch, w.id).area == "Yosemite Valley"
+    # ...and named from the next one on.
+    free(recgov, "40", "41")
+    asyncio.run(bot.check_once(tg))
+    assert "· Yosemite Valley" in tg.sent[-1][1]
+
+
+def test_plain_text_keeps_each_links_address():
+    html = (
+        '<b>Open at A &amp; B</b>\n<a href="https://x.test/?a=1&amp;b=2">Site 040</a>'
+    )
+    assert plain_text(html) == "Open at A & B\nSite 040 (https://x.test/?a=1&b=2)"

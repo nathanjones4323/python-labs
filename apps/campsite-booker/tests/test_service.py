@@ -233,6 +233,27 @@ def test_check_campgrounds_only_fetches_the_ones_asked_for(db, recgov):
     assert set(result.sites) == {"9"}
 
 
+def test_watches_made_before_areas_look_theirs_up_on_a_regular_poll(db, recgov):
+    w = watch(db)
+    with db.begin() as session:
+        session.get(Watch, w.id).area = None
+    looked_up = []
+
+    def campground(campground_id):
+        looked_up.append(campground_id)
+        return Campground(id=campground_id, name="Upper Pines", city="YOSEMITE VALLEY")
+
+    recgov.campground = campground
+    # A release burst doesn't stop for it.
+    service.check_campgrounds(db, recgov, NOW, TODAY, {PINES.id})
+    assert looked_up == []
+    check(db, recgov)
+    check(db, recgov)
+    assert looked_up == [PINES.id]
+    with db() as session:
+        assert session.get(Watch, w.id).area == "Yosemite Valley"
+
+
 PINES_RELEASES = {
     "current_release": {"end": "2027-03-14T00:00:00Z"},
     "next_release": {
